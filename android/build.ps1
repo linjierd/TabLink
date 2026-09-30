@@ -3,7 +3,8 @@ param(
     [string]$AndroidSdk,
     [string]$Gradle,
     [string]$UpdateManifestUrl,
-    [switch]$Offline
+    [switch]$Offline,
+    [switch]$ReleasePreview
 )
 $ErrorActionPreference = 'Stop'
 $projectDirectory = $PSScriptRoot
@@ -118,7 +119,9 @@ try {
     }
     & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.StableUpdateSecurityTest $updatePayloadFixture $updateEnvelopeFixture
     if ($LASTEXITCODE -ne 0) { throw 'Stable update security or state test failed.' }
-    $gradleArguments = @('--project-dir', $projectDirectory, '--console=plain', '--no-daemon', 'assembleDebug', 'lintDebug')
+    $gradleTasks = if ($ReleasePreview) { @('assembleRelease','lintRelease') } else { @('assembleDebug','lintDebug') }
+    $gradleArguments = @('--project-dir', $projectDirectory, '--console=plain', '--no-daemon') + $gradleTasks
+    if ($ReleasePreview) { $gradleArguments += '-PtablinkPreviewSigning=true' }
     if ($UpdateManifestUrl) {
         if (-not $UpdateManifestUrl.StartsWith('https://', [StringComparison]::OrdinalIgnoreCase)) {
             throw 'UpdateManifestUrl must use HTTPS.'
@@ -130,8 +133,9 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Android build or lint failed.' }
     $artifactDirectory = Join-Path $projectDirectory 'artifacts'
     New-Item -ItemType Directory -Force -Path $artifactDirectory | Out-Null
-    $apk = Join-Path $artifactDirectory 'TabLink-android-0.8.0-debug.apk'
-    Copy-Item -LiteralPath (Join-Path $projectDirectory 'app\build\outputs\apk\debug\app-debug.apk') -Destination $apk -Force
+    $apk = Join-Path $artifactDirectory $(if ($ReleasePreview) { 'TabLink-android-0.8.1-preview.apk' } else { 'TabLink-android-0.8.1-debug.apk' })
+    $builtApk = if ($ReleasePreview) { 'app\build\outputs\apk\release\app-release.apk' } else { 'app\build\outputs\apk\debug\app-debug.apk' }
+    Copy-Item -LiteralPath (Join-Path $projectDirectory $builtApk) -Destination $apk -Force
     & (Join-Path $JavaHome 'bin\java.exe') -jar (Join-Path $AndroidSdk 'build-tools\35.0.0\lib\apksigner.jar') verify --verbose --min-sdk-version 23 $apk
     if ($LASTEXITCODE -ne 0) { throw 'APK signature verification failed.' }
     Get-FileHash -Algorithm SHA256 -LiteralPath $apk | Format-List Algorithm, Hash, Path

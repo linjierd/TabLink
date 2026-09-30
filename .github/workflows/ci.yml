@@ -21,6 +21,7 @@ jobs:
         shell: pwsh
         run: |
           dotnet build .\src\TabLink.Windows\TabLink.Windows.csproj -c Release --nologo
+          dotnet build .\src\TabLink.Windows\TabLink.Windows.csproj -c Release --nologo -p:EnableBrowserReceiver=false
           dotnet build .\src\TabLink.DriverSetup\TabLink.DriverSetup.csproj -c Release --nologo
       - name: Run managed tests
         shell: pwsh

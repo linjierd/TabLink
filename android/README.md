@@ -1,4 +1,4 @@
-# TabLink Android 客户端 0.8.0
+# TabLink Android 客户端 0.8.1 预览版
 
 供 Windows TabLink 通过 Wi-Fi、USB 网络共享或既有 ADB 通道连接的安卓平板客户端。包名 `com.tablink.client`，启动组件 `com.tablink.client/.MainActivity`。支持 Android 6.0（API 23）及以上；当前构建目标为 Android 15（API 35）。
 
@@ -66,7 +66,7 @@ Set-Location '<repository-root>\android'
 
 其他电脑可通过三个参数指定工具路径；首次需要下载 Gradle 插件依赖时省略 `-Offline`。脚本只在当前进程设置 Java/SDK 环境变量，并在退出时恢复。
 
-输出文件为 `artifacts/TabLink-android-0.8.0-debug.apk`（versionCode 11）。该 APK 使用本机生成且被 Git 忽略的 `build/signing/debug.keystore` 开发签名；这是可安装的测试版本，不是应用商店签名版本。若需要对已安装版本直接升级，应安全保留同一份签名文件，绝不能把正式私钥提交到仓库。
+普通构建输出 `artifacts/TabLink-android-0.8.1-debug.apk`。增加 `-ReleasePreview` 会运行 `assembleRelease` / `lintRelease`，输出不可调试的 `artifacts/TabLink-android-0.8.1-preview.apk`。两者均为 `versionCode 12`，并使用本机生成且被 Git 忽略的 `build/signing/debug.keystore` 开发证书，以便覆盖早期 TabLink 测试安装；它不是应用商店生产签名。应安全保留同一份签名文件，绝不能把私钥提交到仓库。
 
 本机构建时发现系统 SDK 的 build-tools 35.0.0 目录只有未完成安装记录，因此在项目 `.tools/sdk` 中准备了隔离 SDK：复制现有 SDK platform 35，并从 [Google Android 官方仓库](https://dl.google.com/android/repository/build-tools_r35_windows.zip) 下载 build-tools 35.0.0。压缩包使用 [官方 repository 元数据](https://dl.google.com/android/repository/repository2-1.xml) 中 SHA-1 `af059bb67cf7786f45ee0db85e2d24985df1b4b6` 校验。没有修改系统 SDK。`.tools`、`.gradle`、`build` 和 `app/build` 属于本地构建工具或缓存，不应放进用户发行包。
 
@@ -75,7 +75,7 @@ Set-Location '<repository-root>\android'
 电脑端应先检查用户选定的设备未被排除，并且是获准使用的 USB 调试设备。以下命令中的 `SERIAL` 必须是该设备的真实序列号；不要批量对所有设备执行。
 
 ```text
-adb -s SERIAL install -r TabLink-android-0.8.0-debug.apk
+adb -s SERIAL install -r TabLink-android-0.8.1-preview.apk
 adb -s SERIAL reverse --no-rebind tcp:27183 tcp:27183
 adb -s SERIAL shell am start -n com.tablink.client/.MainActivity --es host 127.0.0.1 --ei port 27183 --es token RANDOM_SESSION_TOKEN
 ```

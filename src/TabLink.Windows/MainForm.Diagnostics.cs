@@ -18,6 +18,7 @@ internal sealed partial class MainForm
 
     Control BuildDiagnosticsPanel()
     {
+        repairAdb.Visible=Directory.Exists(Path.Combine(AppContext.BaseDirectory,"tools","platform-tools"));
         var page=new Panel{Dock=DockStyle.Fill,BackColor=Color.White,Padding=new Padding(18)};
         var layout=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=1,RowCount=3};
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));layout.RowStyles.Add(new RowStyle(SizeType.Percent,100));
@@ -70,11 +71,17 @@ internal sealed partial class MainForm
                 try{DevicePolicy.ValidateSettings(snapshot);found.Add(new("配置","通过",$"已加载 {snapshot.ExcludedDevices.Count} 条排除规则。"));}
                 catch(Exception ex){found.Add(new("配置","需要处理",ex.Message+"；请修正配置文件，检测不会覆盖损坏的配置。"));return found;}
                 var bundled=Path.Combine(AppContext.BaseDirectory,"tools","platform-tools","adb.exe");
-                var verification=VerifyBundledAdb(bundled);
-                found.Add(new("内置 ADB",verification is null?"通过":"需要处理",verification??"三件套哈希与随包固定 Google 版本一致。"));
+                var bundleDirectory=Path.GetDirectoryName(bundled)!;
+                var bundleProvided=Directory.Exists(bundleDirectory);
+                var verification=bundleProvided?VerifyBundledAdb(bundled):null;
+                found.Add(bundleProvided
+                    ?new("内置 ADB",verification is null?"通过":"需要处理",verification??"三件套哈希与随包固定 Google 版本一致。")
+                    :new("ADB 组件","信息","公开发行包不再分发 Google Platform-Tools。免调试网络连接不需要 ADB；兼容模式可选择你从 Android 官方安装的 platform-tools/adb.exe。"));
                 var adbLocation=AdbLocator.FindAdbPath(snapshot.AdbPath);
                 if(verification is not null&&string.Equals(adbLocation,bundled,StringComparison.OrdinalIgnoreCase))adbLocation=null;
-                if(adbLocation is null)found.Add(new("ADB 选择","需要处理","当前 ADB 路径失效。内置组件完整时，可点击“修复：使用内置 ADB”。"));
+                if(adbLocation is null)found.Add(new("ADB 选择","需要处理",bundleProvided
+                    ?"当前 ADB 路径失效。内置组件完整时，可点击“修复：使用内置 ADB”。"
+                    :"没有找到已安装的 Android Platform-Tools。ADB 兼容模式请从 Android 官方页面安装后选择 adb.exe；Wi-Fi / USB 网络共享模式不需要 ADB。"));
                 else
                 {
                     var version=await new AdbProcessRunner().RunAsync(adbLocation,["version"],TimeSpan.FromSeconds(4),deadline.Token);

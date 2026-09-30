@@ -2,13 +2,14 @@
 
 验证日期：2026-09-30（Asia/Shanghai）
 
-本文件只记录 0.8.1 Windows 单副屏与按需驱动生命周期的证据。Android、Apple 和 HarmonyOS NEXT 客户端没有在本候选版升版，0.8.0 的既有验证不能替代本次 Windows 生命周期验证。
+本文件记录 0.8.1 Windows 单副屏与按需驱动生命周期证据，以及 0.8.1 Android 公开预览 APK 的构建边界。Apple 和 HarmonyOS NEXT 客户端仍为 0.8.0。旧版验证不能替代本次公开发行包的独立构建与审计。
 
 ## 候选版边界
 
 - Windows `TabLink.exe` 的项目版本设为 `0.8.1`。
-- Android 交付仍使用 `android/artifacts/TabLink-android-0.8.0-debug.apk`。
+- Android 公开预览交付使用 `android/artifacts/TabLink-android-0.8.1-preview.apk`，`versionCode 12`；它是不可调试的 release 构建，但沿用既有开发证书以支持早期测试安装覆盖升级，并非应用商店生产签名。
 - 构建脚本不生成或发布公网更新清单，也不调用驱动安装命令。
+- 公共 Windows 包使用 `-PublicRelease` 构建为 self-contained x64，并排除 Google Platform-Tools 二进制和 SIPSorcery 浏览器接收组件；ADB 兼容模式可使用用户自行安装的官方 ADB。
 - 最终输出必须来自一个新建或空的目录；`SHA256SUMS.txt` 只在全部测试、自测和复制完成后生成。
 
 ## 自动化回归范围
@@ -95,6 +96,6 @@
 
 截图中的 65.6 fps 和“屏幕 90 Hz / 请求 90 Hz”是该时刻的应用叠加状态，证明本次会话按 90 Hz 模式请求并显示；它不代表长时间稳定保持 90 fps，也不是外部仪器对面板刷新率的测量。现场仅核对了 TabLink 精确目标和原物理主屏，未对 ToDesk、向日葵等第三方虚拟显示驱动做完整的前后事件审计。
 
-连接的 Android 客户端仍为 0.7.1。它已完成本次 Windows 0.8.1 的实际连接、90 Hz 传输和断开卸载检查；此前尝试的 0.8.0 原地安装没有在该平板的厂商安装器中提交，因此本记录不声称 Android 已升级到 0.8.0。
+上述 02:04 至 02:07 的现场生命周期检查使用的是 Android 客户端 0.7.1。它验证了 Windows 0.8.1 与旧客户端的兼容连接、90 Hz 请求和断开卸载流程；它不构成 Android 0.8.1 预览 APK 的真机安装或覆盖升级验收。
 
-本次没有执行公网发布。
+Android 0.8.1 预览 APK 的版本、不可调试属性和签名会在 GitHub 预发布包生成时单独验证。没有实际完成的真机安装、覆盖升级或长时间传输，不会记为通过。

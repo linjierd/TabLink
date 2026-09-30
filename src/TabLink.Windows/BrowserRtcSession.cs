@@ -1,3 +1,4 @@
+#if !TABLINK_NO_BROWSER
 using System.Net;
 using System.Net.WebSockets;
 using System.Text;
@@ -14,6 +15,7 @@ namespace TabLink.Windows;
 // no unencrypted media or input is accepted on this transport.
 internal sealed class BrowserRtcSession : IAsyncDisposable
 {
+    internal static bool IsSupported => true;
     readonly IPAddress address;
     readonly int mediaPort;
     readonly WebSocket socket;
@@ -362,3 +364,4 @@ internal sealed class BrowserRtcSession : IAsyncDisposable
         finally {report(new(Id,"closed","浏览器副屏已断开。"));lifetime.Dispose();}
     }
 }
+#endif

@@ -30,7 +30,9 @@ internal sealed partial class MainForm
         var page=new Panel{Dock=DockStyle.Fill,BackColor=Color.White,Padding=new Padding(18),AutoScroll=true};
         var layout=new TableLayoutPanel{Dock=DockStyle.Top,AutoSize=true,ColumnCount=1,RowCount=6};
         for(var i=0;i<layout.RowCount;i++)layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        var help=new Label{AutoSize=true,MaximumSize=new Size(820,0),ForeColor=muted,Text="本地离线 HTTPS + WebRTC。首次使用需信任本机证书；当前只允许一台设备作为副屏。"};
+        var help=new Label{AutoSize=true,MaximumSize=new Size(820,0),ForeColor=muted,Text=BrowserRtcSession.IsSupported
+            ?"本地离线 HTTPS + WebRTC。首次使用需信任本机证书；当前只允许一台设备作为副屏。"
+            :"此公开发行包未包含浏览器 WebRTC 接收组件。Android 手机和平板请使用原生 APK，通过 Wi-Fi、USB 网络共享或 ADB 兼容模式连接。"};
         layout.Controls.Add(help,0,0);
         var route=new TableLayoutPanel{Dock=DockStyle.Top,AutoSize=true,ColumnCount=3,RowCount=1,Margin=new Padding(0,10,0,10)};
         route.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,90));route.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));route.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -62,6 +64,7 @@ internal sealed partial class MainForm
     Task StartBrowserAsync()=>browserStartTask=StartBrowserCoreAsync();
     async Task StartBrowserCoreAsync()
     {
+        if(!BrowserRtcSession.IsSupported)throw new NotSupportedException("此公开发行包未包含浏览器 WebRTC 接收组件；请使用 Android 原生客户端。");
         if(browserHost is not null)return;
         if(HasAnySessions)throw new InvalidOperationException("TabLink 只允许一个副屏连接。请先停止当前原生连接。");
         var selected=browserNetworks.SelectedItem as NetworkInterfaceChoice??throw new IOException("请先选择可用的 Wi-Fi 或 USB 网络共享线路。");
@@ -191,7 +194,7 @@ internal sealed partial class MainForm
     void UpdateBrowserButtons(bool ready)
     {
         browserNetworks.Enabled=refreshBrowserNetworks.Enabled=ready&&browserHost is null;
-        startBrowser.Enabled=ready&&!HasAnySessions&&browserHost is null&&browserNetworks.SelectedItem is NetworkInterfaceChoice;
+        startBrowser.Enabled=BrowserRtcSession.IsSupported&&ready&&!HasAnySessions&&browserHost is null&&browserNetworks.SelectedItem is NetworkInterfaceChoice;
         newBrowserPair.Enabled=exportCa.Enabled=ready&&browserHost is not null;
         copyBrowserUri.Enabled=ready&&browserHost is not null&&browserUri is not null;
         stopBrowser.Enabled=stopBrowserDevice.Enabled=ready&&browserHost is not null;

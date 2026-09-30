@@ -5,8 +5,9 @@ TabLink 0.8.1 是 Windows 电脑端的本地候选版。它把虚拟显示资源
 ## 版本与分发范围
 
 - Windows 主程序版本为 `0.8.1`。
-- Android APK、Apple 工程和 HarmonyOS NEXT 工程仍为 `0.8.0`，协议没有变化。
-- 本候选版不生成、不签名也不发布新的公网稳定频道清单。公开稳定频道在另行完成全平台制品、签名、真实设备验收和发布复核前仍保持 0.8.0。
+- Android 公开预览 APK 为 `0.8.1`、`versionCode 12`，协议没有变化；它使用既有开发证书签名以便覆盖早期测试安装，但不是应用商店正式签名。Apple 与 HarmonyOS NEXT 工程仍为 `0.8.0`。
+- 本候选版不生成、不签名也不发布新的公网稳定频道清单。公开稳定自动更新频道在另行完成全平台制品、正式签名、真实设备验收和发布复核前仍保持 0.8.0。
+- 全球公开的 GitHub Windows 预览包采用 `PublicRelease` 模式：不分发 Google Platform-Tools 二进制，也不包含具有地域分发限制的 SIPSorcery 浏览器接收组件；Android 原生 Wi-Fi、USB 网络和 ADB 兼容连接保留。Windows x64 ZIP 为 self-contained。
 - 完整目录仍必须作为一个整体交付；不要只复制 `TabLink.exe`，因为按需驱动依赖 `TabLink.DriverSetup.exe`、签名驱动文件和配套配置。
 
 ## 单副屏规则

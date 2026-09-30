@@ -3,7 +3,7 @@
 [![CI](https://github.com/linjierd/TabLink/actions/workflows/ci.yml/badge.svg)](https://github.com/linjierd/TabLink/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/TabLink%20code-MIT-blue.svg)](LICENSE)
 
-Windows 电脑端当前本地候选版为 **0.8.1**，改为全局只允许一个扩展副屏，并在实际连接时按需安装虚拟显示设备、断开后移除该设备，见 [0.8.1 发布说明](RELEASE-0.8.1.md) 与 [0.8.1 验证记录](VERIFICATION-0.8.1.md)。Android 客户端及公开稳定频道仍为 **0.8.0**；本地候选版没有发布到公网，也不会把 0.8.1 当作已完成的全平台自动更新。0.8.0 的签名更新设计见 [0.8.0 发布说明](RELEASE-0.8.0.md)、[自动更新设计与发布说明](AUTO-UPDATE.md) 及 [0.8.0 验证记录](VERIFICATION-0.8.0.md)。
+Windows 电脑端当前候选版为 **0.8.1**，改为全局只允许一个扩展副屏，并在实际连接时按需安装虚拟显示设备、断开后移除该设备，见 [0.8.1 发布说明](RELEASE-0.8.1.md) 与 [0.8.1 验证记录](VERIFICATION-0.8.1.md)。Android 公开预览 APK 同步为 **0.8.1 / build 12**，协议没有变化；已签名的公网稳定自动更新频道仍保持 **0.8.0**，不会仅因 GitHub 预览包而自动切换。0.8.0 的签名更新设计见 [0.8.0 发布说明](RELEASE-0.8.0.md)、[自动更新设计与发布说明](AUTO-UPDATE.md) 及 [0.8.0 验证记录](VERIFICATION-0.8.0.md)。
 
 以下保留既有功能说明和历史记录；旧版运行条件、ADB 外置说明及旧帧率结果以新版说明为准，不能作为 0.8.1 单副屏生命周期的验证结果。
 
@@ -134,7 +134,7 @@ H.264 确认来自 MediaCodec 的帧显示回调，不把接收字节、送入�
 
 ## 文件、日志与构建
 
-完整交付目录包含 Windows 程序、独立更新器、`android/TabLink.apk`、`drivers/VirtualDisplayDriver/`、`tools/ffmpeg/`；不要只复制 `TabLink.exe`。当前发布为依赖已安装 .NET 10 Desktop Runtime 的 Windows x64 构建。
+完整交付目录包含 Windows 程序、独立更新器、`android/TabLink.apk`、`drivers/VirtualDisplayDriver/`、`tools/ffmpeg/`；不要只复制 `TabLink.exe`。GitHub 的公开 Windows x64 预览包采用 self-contained 构建，无需另装 .NET；普通源码构建默认仍可使用 framework-dependent 模式。
 
 | 位置 | 内容 |
 | --- | --- |
@@ -160,7 +160,7 @@ dotnet run --project tests/TabLink.Core.Tests -c Release
 .\build.ps1 -SkipAndroid
 ```
 
-`-SkipAndroid` 使用已有 `android/artifacts/TabLink-android-0.8.0-debug.apk`；0.8.1 没有改变 Android 客户端版本。省略该参数会调用 Android 构建并注入正式稳定频道地址。脚本串行运行单屏驱动配置、显示分配、清理与生命周期回归，再发布 Windows 程序、更新器和管理组件，复制 APK、固定 FFmpeg 及其许可与完整对应源码，运行更新和传输自测，并生成 `dist/TabLink/SHA256SUMS.txt`。构建过程不会安装驱动、创建设备或连接平板。
+普通构建使用 `android/artifacts/TabLink-android-0.8.1-debug.apk`；`-PublicRelease` 会生成不可调试但仍使用既有开发证书的 `TabLink-android-0.8.1-preview.apk`，并注入正式稳定频道地址。公开构建同时生成 self-contained Windows x64 程序、排除不可全球再分发的浏览器接收依赖和 Google ADB 二进制。脚本串行运行单屏驱动配置、显示分配、清理与生命周期回归，复制 APK、固定 FFmpeg 及其许可与完整对应源码，运行更新和传输自测，并生成 `SHA256SUMS.txt`。构建过程不会安装驱动、创建设备或连接平板。
 
 构建脚本通过 `dotnet TabLink.dll --self-test` 运行纯传输测试，不触发程序启动的 UAC 授权。自测使用系统分配的临时回环端口，不占用实际副屏的 27183，因此可以在现有连接保持时运行。自测只使用合成字节、回环 TCP 和 fake input，不捕获桌面、不访问真实 ADB、不更改显示器。目前 Core 30 项和 Windows 传输 20 项测试覆盖设备排除、授权重查、模式解析、视频包计数、确认边界和连接状态归零。
 

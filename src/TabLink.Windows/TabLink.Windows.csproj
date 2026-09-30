@@ -9,16 +9,18 @@
     <AssemblyName>TabLink</AssemblyName>
     <Version>0.8.1</Version>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <EnableBrowserReceiver Condition="'$(EnableBrowserReceiver)' == ''">true</EnableBrowserReceiver>
+    <DefineConstants Condition="'$(EnableBrowserReceiver)' != 'true'">$(DefineConstants);TABLINK_NO_BROWSER</DefineConstants>
   </PropertyGroup>
   <ItemGroup><ProjectReference Include="../TabLink.Core/TabLink.Core.csproj" /></ItemGroup>
   <ItemGroup><ProjectReference Include="../TabLink.Updater/TabLink.Updater.csproj" ReferenceOutputAssembly="false" /></ItemGroup>
   <ItemGroup><PackageReference Include="QRCoder" Version="1.6.0" /></ItemGroup>
   <ItemGroup>
-    <PackageReference Include="SIPSorcery" Version="10.0.16" />
+    <PackageReference Include="SIPSorcery" Version="10.0.16" Condition="'$(EnableBrowserReceiver)' == 'true'" />
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
-    <EmbeddedResource Include="../../browser/assets/*" Link="BrowserAssets/%(Filename)%(Extension)" />
+    <EmbeddedResource Include="../../browser/assets/*" Link="BrowserAssets/%(Filename)%(Extension)" Condition="'$(EnableBrowserReceiver)' == 'true'" />
     <Content Include="update-channel.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
-    <Content Include="../../third_party/sipsorcery/10.0.16/LICENSE.md;../../third_party/sipsorcery/10.0.16/NOTICE.md;../../third_party/sipsorcery/10.0.16/sipsorcery.nuspec" Link="licenses/sipsorcery/10.0.16/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="../../third_party/sipsorcery/10.0.16/LICENSE.md;../../third_party/sipsorcery/10.0.16/NOTICE.md;../../third_party/sipsorcery/10.0.16/sipsorcery.nuspec" Link="licenses/sipsorcery/10.0.16/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Condition="'$(EnableBrowserReceiver)' == 'true'" />
   </ItemGroup>
   <Target Name="CopyTabLinkUpdater" AfterTargets="Build">
     <ItemGroup>
