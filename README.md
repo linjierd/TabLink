@@ -11,6 +11,12 @@ TabLink 是 Windows + Android 扩展桌面应用。Windows 通过已签名的开
 
 APK 会读取平板的原生尺寸、当前方向、支持的刷新率和活动模式。电脑端据此匹配副屏，支持横竖屏重新匹配、短暂中断后的重连，以及停止连接时自动收回副屏。
 
+> **项目愿望 / Project vision**
+>
+> 我想持续做一些免费、好用、真正解决实际问题的小软件。如果你有新想法、功能建议，或遇到希望用软件解决的问题，欢迎通过 [GitHub Issues](https://github.com/linjierd/TabLink/issues) 告诉我。
+>
+> My goal is to keep building small, free, useful tools that solve real problems. If you have an idea, a feature request, or a problem you'd like software to solve, feel free to open a [GitHub Issue](https://github.com/linjierd/TabLink/issues).
+
 ## 作者
 
 - **张林杰（Jey）** · GitHub：[@linjierd](https://github.com/linjierd)
