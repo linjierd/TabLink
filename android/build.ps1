@@ -33,6 +33,10 @@ if (-not (Test-Path -LiteralPath (Join-Path $AndroidSdk 'build-tools\35.0.0\aapt
     throw "Android SDK build-tools 35.0.0 is incomplete in: $AndroidSdk"
 }
 if (-not $Gradle) {
+    $localGradle = Join-Path $projectDirectory '.tools\gradle-8.13\gradle-8.13\bin\gradle.bat'
+    if (Test-Path -LiteralPath $localGradle) { $Gradle = $localGradle }
+}
+if (-not $Gradle) {
     $gradleRoot = Join-Path $env:USERPROFILE '.gradle\wrapper\dists\gradle-8.13-bin'
     if (Test-Path -LiteralPath $gradleRoot) {
         $Gradle = Get-ChildItem -LiteralPath $gradleRoot -Filter gradle.bat -File -Recurse | Select-Object -First 1 -ExpandProperty FullName
@@ -42,10 +46,23 @@ if (-not $Gradle) { throw 'Specify -Gradle with the path to Gradle 8.13 bin\grad
 $savedJavaHome = $env:JAVA_HOME
 $savedAndroidHome = $env:ANDROID_HOME
 $savedAndroidSdkRoot = $env:ANDROID_SDK_ROOT
+$savedAndroidUserHome = $env:ANDROID_USER_HOME
+$savedGradleUserHome = $env:GRADLE_USER_HOME
+$savedTemp = $env:TEMP
+$savedTmp = $env:TMP
 try {
+    $toolStateRoot = Join-Path $projectDirectory '.tools'
+    $androidUserHome = Join-Path $toolStateRoot 'android-user-home'
+    $gradleUserHome = Join-Path $toolStateRoot 'gradle-user-home'
+    $temporaryDirectory = Join-Path $toolStateRoot 'tmp'
+    New-Item -ItemType Directory -Force -Path $androidUserHome,$gradleUserHome,$temporaryDirectory | Out-Null
     $env:JAVA_HOME = $JavaHome
     $env:ANDROID_HOME = $AndroidSdk
     $env:ANDROID_SDK_ROOT = $AndroidSdk
+    $env:ANDROID_USER_HOME = $androidUserHome
+    $env:GRADLE_USER_HOME = $gradleUserHome
+    $env:TEMP = $temporaryDirectory
+    $env:TMP = $temporaryDirectory
     $signingDirectory = Join-Path $projectDirectory 'build\signing'
     New-Item -ItemType Directory -Force -Path $signingDirectory | Out-Null
     $keyStore = Join-Path $signingDirectory 'debug.keystore'
@@ -143,4 +160,8 @@ try {
     $env:JAVA_HOME = $savedJavaHome
     $env:ANDROID_HOME = $savedAndroidHome
     $env:ANDROID_SDK_ROOT = $savedAndroidSdkRoot
+    $env:ANDROID_USER_HOME = $savedAndroidUserHome
+    $env:GRADLE_USER_HOME = $savedGradleUserHome
+    $env:TEMP = $savedTemp
+    $env:TMP = $savedTmp
 }
