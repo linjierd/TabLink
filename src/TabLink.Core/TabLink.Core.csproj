@@ -4,5 +4,12 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Authors>张林杰（Jey / @linjierd）</Authors>
+    <Company>张林杰（Jey / @linjierd）</Company>
+    <Product>TabLink</Product>
+    <Copyright>Copyright © 2026 张林杰（Jey / @linjierd） and TabLink contributors</Copyright>
+    <PackageProjectUrl>https://linjie.space/</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/linjierd/TabLink</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
   </PropertyGroup>
 </Project>

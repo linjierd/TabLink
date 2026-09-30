@@ -1,5 +1,7 @@
 # TabLink 原生 iOS / iPadOS 客户端源码
 
+作者：**张林杰（Jey / [@linjierd](https://github.com/linjierd)）** · 博客：[Linjie / 开发笔记](https://linjie.space/)
+
 这是使用 **UIKit、Network.framework、VideoToolbox 和 Metal** 的原生客户端，不包含 WebView 或网页播放器。工程版本为 `0.8.0`、Apple 平台 build `2`，最低系统为 **iOS / iPadOS 17.0**。当前交付是可供 Mac 构建的完整源工程，**尚未经过 Swift 编译、Xcode 构建、签名、App Store 跳转或 Apple 真机验证，没有 IPA**。
 
 ## 打开与构建

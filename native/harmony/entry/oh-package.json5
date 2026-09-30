@@ -1,5 +1,5 @@
 {
   "name": "entry", "version": "0.8.0", "description": "TabLink native receiver",
-  "main": "", "author": "TabLink", "license": "",
+  "main": "", "author": "Jey", "license": "MIT",
   "dependencies": { "libtablink_codec.so": "file:./src/main/cpp/types/libtablink_codec" }
 }

@@ -1,5 +1,7 @@
 # TabLink Android 客户端 0.8.1 预览版
 
+作者：**张林杰（Jey / [@linjierd](https://github.com/linjierd)）** · 博客：[Linjie / 开发笔记](https://linjie.space/)
+
 供 Windows TabLink 通过 Wi-Fi、USB 网络共享或既有 ADB 通道连接的安卓平板客户端。包名 `com.tablink.client`，启动组件 `com.tablink.client/.MainActivity`。支持 Android 6.0（API 23）及以上；当前构建目标为 Android 15（API 35）。
 
 Wi-Fi 与 USB 网络共享使用相同的 TLS 配对通道，无需 ADB 或 USB 调试。既有 ADB 通道仍仅通过 `127.0.0.1` 明文连接，由电脑端对用户选定设备建立 `adb reverse`。APK 不枚举或切换 USB 设备模式，不使用 Android Open Accessory 模式；“打开 USB 网络共享设置”只打开系统设置页面，由用户操作共享开关。

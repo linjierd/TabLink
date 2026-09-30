@@ -1,5 +1,7 @@
 # TabLink 原生 HarmonyOS NEXT 接收端
 
+作者：**张林杰（Jey / [@linjierd](https://github.com/linjierd)）** · 博客：[Linjie / 开发笔记](https://linjie.space/)
+
 这是可在 DevEco Studio 打开的 **ArkUI + C++ AVCodec 源码工程**。它没有 WebView、HTML 或浏览器解码层。当前版本元数据为 `0.8.0`、Harmony `versionCode 800`。当前提交尚未经过 Harmony SDK 编译、签名、安装、应用市场跳转或鸿蒙真机验证；本机没有 DevEco Studio / HarmonyOS SDK，也没有连接的 HarmonyOS NEXT 设备。因此此目录不提供 HAP，不代表已有可安装、已验收的鸿蒙版本。
 
 ## 已实现的代码路径

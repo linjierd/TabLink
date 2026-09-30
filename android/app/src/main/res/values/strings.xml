@@ -1,4 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">TabLink 平板副屏</string>
+    <string name="about_title">关于 TabLink</string>
+    <string name="about_author">作者：张林杰（Jey / @linjierd）</string>
+    <string name="about_github">GitHub：github.com/linjierd</string>
+    <string name="about_blog">博客：linjie.space</string>
+    <string name="about_github_url" translatable="false">https://github.com/linjierd</string>
+    <string name="about_blog_url" translatable="false">https://linjie.space/</string>
 </resources>

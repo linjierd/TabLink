@@ -11,6 +11,13 @@ TabLink 是 Windows + Android 扩展桌面应用。Windows 通过已签名的开
 
 APK 会读取平板的原生尺寸、当前方向、支持的刷新率和活动模式。电脑端据此匹配副屏，支持横竖屏重新匹配、短暂中断后的重连，以及停止连接时自动收回副屏。
 
+## 作者
+
+- **张林杰（Jey）** · GitHub：[@linjierd](https://github.com/linjierd)
+- 博客：[Linjie / 开发笔记](https://linjie.space/)
+
+作者与项目链接也记录在 [AUTHORS.md](AUTHORS.md) 中。
+
 ## 开源范围与许可证
 
 TabLink 自有源码采用 [MIT License](LICENSE)。公开仓库只跟踪源码、测试、补丁、依赖来源和许可证；本机诊断、设备标识、构建缓存、ADB/FFmpeg 下载文件、APK 和完整发行包不进入 Git 历史。发布二进制通过 GitHub Release 或项目下载服务提供，并应附带 SHA-256 与适用的第三方许可。

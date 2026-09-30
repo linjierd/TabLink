@@ -135,6 +135,7 @@ foreach ($legacy in @('LICENSE','README.txt','TABLINK-NOTICE.md')) {
     if (Test-Path -LiteralPath $legacyPath) { Remove-Item -LiteralPath $legacyPath }
 }
 Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md') -Destination $publishRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot 'AUTHORS.md') -Destination $publishRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot 'LICENSE') -Destination $publishRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot 'THIRD_PARTY_NOTICES.md') -Destination $publishRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot 'RELEASE-0.8.1.md') -Destination $publishRoot

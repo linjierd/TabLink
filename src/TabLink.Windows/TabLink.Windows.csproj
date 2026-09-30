@@ -8,6 +8,13 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>TabLink</AssemblyName>
     <Version>0.8.1</Version>
+    <Authors>张林杰（Jey / @linjierd）</Authors>
+    <Company>张林杰（Jey / @linjierd）</Company>
+    <Product>TabLink</Product>
+    <Copyright>Copyright © 2026 张林杰（Jey / @linjierd） and TabLink contributors</Copyright>
+    <PackageProjectUrl>https://linjie.space/</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/linjierd/TabLink</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <EnableBrowserReceiver Condition="'$(EnableBrowserReceiver)' == ''">true</EnableBrowserReceiver>
     <DefineConstants Condition="'$(EnableBrowserReceiver)' != 'true'">$(DefineConstants);TABLINK_NO_BROWSER</DefineConstants>

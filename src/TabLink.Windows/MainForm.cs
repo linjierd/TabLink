@@ -176,7 +176,7 @@ internal sealed partial class MainForm : Form
     {
         var root=new TableLayoutPanel{Dock=DockStyle.Fill,Padding=new Padding(16),ColumnCount=1,RowCount=4};
         root.RowStyles.Add(new RowStyle(SizeType.Absolute,96));root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent,100));root.RowStyles.Add(new RowStyle(SizeType.Absolute,26));Controls.Add(root);
+        root.RowStyles.Add(new RowStyle(SizeType.Percent,100));root.RowStyles.Add(new RowStyle(SizeType.Absolute,48));Controls.Add(root);
         var header=new FlowLayoutPanel{Dock=DockStyle.Top,AutoSize=true,MinimumSize=new Size(0,88),FlowDirection=FlowDirection.TopDown,WrapContents=false,Margin=new Padding(0,0,0,8)};
         header.Controls.Add(new Label{Text="TabLink",Font=new Font("Segoe UI",22,FontStyle.Bold),AutoSize=true,ForeColor=accent});
         header.Controls.Add(new Label{Text="让手机、平板成为电脑的独立扩展桌面",AutoSize=true,ForeColor=muted});root.Controls.Add(header,0,0);
@@ -233,7 +233,21 @@ internal sealed partial class MainForm : Form
         supportLayout.Controls.Add(BuildDiagnosticsPanel(),0,0);
         var logBox=new GroupBox{Text="连接记录",Dock=DockStyle.Fill,Padding=new Padding(10)};logBox.Controls.Add(log);supportLayout.Controls.Add(logBox,0,1);support.Controls.Add(supportLayout);
 
-        root.Controls.Add(new Label{Text="只启用一块副屏  ·  点 × 后在托盘继续运行",Dock=DockStyle.Fill,ForeColor=muted,TextAlign=ContentAlignment.MiddleLeft},0,3);
+        var footer=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=1,RowCount=2,Margin=Padding.Empty,Padding=Padding.Empty};
+        footer.RowStyles.Add(new RowStyle(SizeType.Percent,50));footer.RowStyles.Add(new RowStyle(SizeType.Percent,50));
+        footer.Controls.Add(new Label{Text="只启用一块副屏  ·  点 × 后在托盘继续运行",Dock=DockStyle.Fill,ForeColor=muted,TextAlign=ContentAlignment.MiddleLeft,Margin=Padding.Empty},0,0);
+        var authorRow=new FlowLayoutPanel{Dock=DockStyle.Fill,FlowDirection=FlowDirection.LeftToRight,WrapContents=false,Margin=Padding.Empty,Padding=Padding.Empty};
+        authorRow.Controls.Add(new Label{Text="作者：张林杰（Jey / @linjierd）",AutoSize=true,ForeColor=muted,Margin=new Padding(0,2,12,0)});
+        var github=new LinkLabel{Text="GitHub",AutoSize=true,LinkColor=accent,ActiveLinkColor=accent,VisitedLinkColor=accent,Margin=new Padding(0,2,12,0)};
+        var blog=new LinkLabel{Text="博客：linjie.space",AutoSize=true,LinkColor=accent,ActiveLinkColor=accent,VisitedLinkColor=accent,Margin=new Padding(0,2,0,0)};
+        github.LinkClicked+=(_,_)=>OpenAuthorLink("https://github.com/linjierd");blog.LinkClicked+=(_,_)=>OpenAuthorLink("https://linjie.space/");
+        authorRow.Controls.Add(github);authorRow.Controls.Add(blog);footer.Controls.Add(authorRow,0,1);root.Controls.Add(footer,0,3);
+    }
+    void OpenAuthorLink(string address)
+    {
+        try{Process.Start(new ProcessStartInfo(address){UseShellExecute=true});}
+        catch(Exception ex) when(ex is InvalidOperationException or System.ComponentModel.Win32Exception or System.Security.SecurityException)
+        {Log("无法打开链接："+ex.Message);SetStatus("无法打开链接，请手动访问 "+address);}
     }
     void ShowConnectionMode()
     {

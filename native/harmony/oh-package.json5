@@ -2,6 +2,7 @@
   "name": "tablink-harmony",
   "version": "0.8.0",
   "description": "TabLink native HarmonyOS receiver source project",
+  "author": "Jey",
   "modelVersion": "5.0.0",
   "dependencies": {},
   "devDependencies": {}

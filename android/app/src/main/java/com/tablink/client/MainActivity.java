@@ -15,6 +15,7 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.RectF;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.Build;
 import android.os.Handler;
@@ -523,6 +524,12 @@ public final class MainActivity extends Activity {
         });
         options.addView(opacity, new LinearLayout.LayoutParams(-1, dp(48)));
         options.addView(text("0% 完全不透明；100% 隐藏文字。隐藏后仍可用返回手势进入设置。", 12, Color.LTGRAY));
+        TextView aboutTitle = text(getString(R.string.about_title), 15, Color.WHITE);
+        aboutTitle.setPadding(0, dp(18), 0, dp(4));
+        options.addView(aboutTitle);
+        addAboutLink(options, R.string.about_author, R.string.about_github_url);
+        addAboutLink(options, R.string.about_github, R.string.about_github_url);
+        addAboutLink(options, R.string.about_blog, R.string.about_blog_url);
         ScrollView scroll = new ScrollView(this);
         scroll.addView(options);
         settingsDialog = new AlertDialog.Builder(this).setTitle("TabLink · 设置").setView(scroll)
@@ -546,6 +553,35 @@ public final class MainActivity extends Activity {
 
     private static String transparencyLabel(int value) {
         return "文字透明度 " + value + "%（不透明度 " + (100 - value) + "%）";
+    }
+
+    private void addAboutLink(LinearLayout parent, int labelResource, int urlResource) {
+        TextView link = text(getString(labelResource), 13, ACCENT);
+        link.setGravity(Gravity.CENTER_VERTICAL);
+        link.setPaintFlags(link.getPaintFlags() | Paint.UNDERLINE_TEXT_FLAG);
+        link.setClickable(true);
+        link.setFocusable(true);
+        link.setContentDescription(getString(labelResource) + "，在浏览器中打开");
+        link.setOnClickListener(v -> openTrustedExternalUrl(getString(urlResource)));
+        parent.addView(link, new LinearLayout.LayoutParams(-1, dp(44)));
+    }
+
+    private void openTrustedExternalUrl(String value) {
+        Uri uri = Uri.parse(value);
+        String host = uri.getHost();
+        boolean trustedHost = "github.com".equalsIgnoreCase(host) || "linjie.space".equalsIgnoreCase(host);
+        if (!"https".equalsIgnoreCase(uri.getScheme()) || !trustedHost
+                || uri.getUserInfo() != null || uri.getPort() != -1) {
+            if (settingsStatus != null) settingsStatus.setText("链接无效，无法打开");
+            return;
+        }
+        Intent browser = new Intent(Intent.ACTION_VIEW, uri);
+        browser.addCategory(Intent.CATEGORY_BROWSABLE);
+        try {
+            startActivity(browser);
+        } catch (ActivityNotFoundException noBrowser) {
+            if (settingsStatus != null) settingsStatus.setText("未找到可打开此链接的浏览器");
+        }
     }
 
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }

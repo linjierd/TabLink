@@ -8,6 +8,13 @@
     <AssemblyName>TabLink.Updater</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <Version>1.0.0</Version>
+    <Authors>张林杰（Jey / @linjierd）</Authors>
+    <Company>张林杰（Jey / @linjierd）</Company>
+    <Product>TabLink</Product>
+    <Copyright>Copyright © 2026 张林杰（Jey / @linjierd） and TabLink contributors</Copyright>
+    <PackageProjectUrl>https://linjie.space/</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/linjierd/TabLink</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../TabLink.Windows/StableSemanticVersion.cs" Link="UpdateSecurity/StableSemanticVersion.cs" />

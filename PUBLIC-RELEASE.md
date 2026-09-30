@@ -3,6 +3,10 @@
 The globally downloadable GitHub binary is a preview build with a narrower
 redistribution scope than a normal local source build.
 
+TabLink is created and maintained by **张林杰 (Jey)** (GitHub
+[@linjierd](https://github.com/linjierd)); the author's blog is
+[Linjie / 开发笔记](https://linjie.space/).
+
 - It includes the self-contained Windows x64 0.8.1 application, updater,
   signed Virtual Display Driver, patched FFmpeg executable plus complete
   corresponding source, and the Android 0.8.1 preview APK.
