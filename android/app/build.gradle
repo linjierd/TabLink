@@ -1,0 +1,47 @@
+plugins {
+    id 'com.android.application'
+}
+
+def stableManifestUrl = providers.gradleProperty('tablinkUpdateManifestUrl').orElse('').get()
+if (!stableManifestUrl.isEmpty() && !stableManifestUrl.startsWith('https://')) {
+    throw new GradleException('tablinkUpdateManifestUrl must use HTTPS')
+}
+def quotedBuildString = { String value -> '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"' }
+
+android {
+    namespace 'com.tablink.client'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.tablink.client'
+        minSdk 23
+        targetSdk 35
+        versionCode 11
+        versionName '0.8.0'
+        buildConfigField 'String', 'UPDATE_MANIFEST_URL', quotedBuildString(stableManifestUrl)
+        buildConfigField 'String', 'UPDATE_PUBLIC_KEY_SPKI', '\"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEXlJPucXJJzRwjf1p/46Uuebom2dMFvSSiN4wdwxVVtbb9bdaIGnru39akKRRd7BaTlUaEk2Thmb/MpqNPYNu4A==\"'
+    }
+    signingConfigs {
+        debug {
+            storeFile rootProject.file('build/signing/debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    buildFeatures {
+        buildConfig true
+    }
+    lint {
+        abortOnError true
+        checkReleaseBuilds true
+    }
+}
+
+dependencies {
+    implementation 'com.google.zxing:core:3.5.3'
+}

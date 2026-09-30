@@ -1,0 +1,20 @@
+[
+  {
+    "url": "https://github.com/skeeto/w64devkit/releases/download/v2.0.0/w64devkit-x64-2.0.0.exe",
+    "name": "w64devkit-x64-2.0.0.exe",
+    "size": 36581551,
+    "sha256": "cea23fc56a5e61457492113a8377c8ab0c42ed82303fcc454ccd1963a46f8ce1"
+  },
+  {
+    "url": "https://ffmpeg.org/releases/ffmpeg-7.0.2.tar.xz",
+    "name": "ffmpeg-7.0.2.tar.xz",
+    "size": 10795332,
+    "sha256": "8646515b638a3ad303e23af6a3587734447cb8fc0a0c064ecdb8e95c4fd8b389"
+  },
+  {
+    "url": "https://github.com/FFmpeg/nv-codec-headers/archive/refs/tags/n12.2.72.0.tar.gz",
+    "name": "nv-codec-headers-n12.2.72.0.tar.gz",
+    "size": 80935,
+    "sha256": "dbeaec433d93b850714760282f1d0992b1254fc3b5a6cb7d76fc1340a1e47563"
+  }
+]

@@ -1,0 +1,80 @@
+using System.Text.Json;
+using System.Globalization;
+
+namespace TabLink.DriverSetup;
+
+internal static class Program
+{
+    [STAThread]
+    private static int Main(string[] args)
+    {
+        var quiet = args.LastOrDefault() == "--quiet";
+        if (quiet) args = args[..^1];
+        // There is deliberately no auto-install entry point, service, download, or
+        // certificate-store change. Every operation requires an explicit argument.
+        var profile = args.Length == 4 && args[0] == "--configure-display";
+        var single = args.Length == 4 && args[0] is "--prepare-single-display" or "--prepare-single-display-held";
+        var removeSingle = args.Length == 1 && args[0] is "--remove-session-display" or "--remove-session-display-held";
+        var pool = args.Length == 2 && args[0] == "--configure-pool";
+        var tablet = args.Length == 3 && args[0] == "--prepare-tablet-only";
+        var control = args.Length == 1 && args[0] is "--install" or "--uninstall" or "--collect-idle-pool";
+        if (!profile && !single && !removeSingle && !pool && !tablet && !control)
+        {
+            if (!quiet) MessageBox.Show("请从 TabLink 启动此程序。可用操作：--install、--prepare-tablet-only <child-id> <parent-id>、--prepare-single-display 宽度 高度 刷新率、--remove-session-display，以及显式单屏维护命令。", "TabLink 驱动管理", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return 2;
+        }
+
+        InstallResult result;
+        try
+        {
+            // The helper process, rather than its UI parent, owns this separate
+            // crash-released operation lock. A watchdog cleanup waits here if
+            // the owner process died while an earlier helper was still running.
+            result = DriverOperationLock.Run(() => args[0] switch
+            {
+                "--install" => DriverInstaller.Install(),
+                "--prepare-tablet-only" => TabletPreparer.Prepare(args[1], args[2]),
+                "--prepare-single-display" => DriverInstaller.PrepareSingleDisplay(ParseNumber(args[1]), ParseNumber(args[2]), ParseNumber(args[3])),
+                "--prepare-single-display-held" => DriverInstaller.PrepareSingleDisplayWithCallerLease(ParseNumber(args[1]), ParseNumber(args[2]), ParseNumber(args[3])),
+                "--remove-session-display" => DriverInstaller.RemoveSessionDisplay(),
+                "--remove-session-display-held" => DriverInstaller.RemoveSessionDisplayWithCallerLease(),
+                "--configure-display" => DriverInstaller.ConfigureDisplay(ParseNumber(args[1]), ParseNumber(args[2]), ParseNumber(args[3])),
+                "--configure-pool" => DriverInstaller.ConfigurePool(ParseNumber(args[1])),
+                "--collect-idle-pool" => DriverInstaller.CollectOwnedIdlePool(),
+                _ => DriverInstaller.Control(args[0])
+            });
+        }
+        catch (Exception ex)
+        {
+            result = new(false, "failed", ex.Message, null, false, DateTimeOffset.UtcNow);
+        }
+
+        try
+        {
+            var folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TabLink");
+            Directory.CreateDirectory(folder);
+            var path = Path.Combine(folder, args[0] switch { "--prepare-tablet-only" => "tablet-prepare-result.json", "--prepare-single-display" or "--prepare-single-display-held" => "single-display-prepare-result.json", "--remove-session-display" or "--remove-session-display-held" => "single-display-remove-result.json", "--configure-display" => "display-configure-result.json", "--configure-pool" => "display-pool-result.json", "--collect-idle-pool" => "display-pool-collect-result.json", _ => "driver-install-result.json" });
+            var temporary = path + ".tmp";
+            File.WriteAllText(temporary, JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
+            File.Move(temporary, path, true);
+        }
+        catch (Exception ex)
+        {
+            if (!quiet) MessageBox.Show(result.Message + "\n\n无法保存安装结果：" + ex.Message, "TabLink 驱动安装", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return 1;
+        }
+
+        if (!quiet) MessageBox.Show(result.Message, "TabLink 驱动安装", MessageBoxButtons.OK,
+            result.Success ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+        return result.Success ? 0 : 1;
+    }
+
+    private static int ParseNumber(string value)
+    {
+        if (value.Length > 5 || !int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var number))
+            throw new ArgumentException("宽度、高度和刷新率必须为无符号十进制整数。");
+        return number;
+    }
+}
+
+internal sealed record InstallResult(bool Success, string State, string Message, string? InstanceId, bool RebootRequired, DateTimeOffset Timestamp);

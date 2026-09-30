@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+    <application
+        android:allowBackup="false"
+        android:icon="@drawable/ic_tablink"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme"
+        android:usesCleartextTraffic="false">
+        <activity android:name=".QrScannerActivity" android:exported="false"
+            android:configChanges="orientation|screenSize" />
+        <provider
+            android:name=".DisplayCapabilitiesProvider"
+            android:authorities="com.tablink.client.display"
+            android:exported="true"
+            android:grantUriPermissions="false" />
+        <provider
+            android:name=".UpdateApkProvider"
+            android:authorities="com.tablink.client.updates"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+        <receiver
+            android:name=".UpdateInstallReceiver"
+            android:exported="false" />
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:exported="true"
+            android:enableOnBackInvokedCallback="true"
+            android:launchMode="singleTask"
+            android:resizeableActivity="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="tablink" android:host="connect" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

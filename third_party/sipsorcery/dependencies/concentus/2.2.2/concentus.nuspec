@@ -1,0 +1,37 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
+  <metadata>
+    <id>Concentus</id>
+    <version>2.2.2</version>
+    <title>Concentus</title>
+    <authors>Logan Stromberg</authors>
+    <license type="file">LICENSE</license>
+    <licenseUrl>https://aka.ms/deprecateLicenseUrl</licenseUrl>
+    <icon>icon.png</icon>
+    <projectUrl>https://github.com/lostromb/concentus</projectUrl>
+    <description>This package is a portable C# implementation of the Opus audio compression codec (see https://opus-codec.org/ for more details). This package contains the Opus encoder, decoder, multistream codecs, repacketizer, as well as a port of the libspeexdsp resampler. It does NOT contain code to parse .ogg or .opus container files or to manage RTP packet streams. For better performance depending on your platform, see also the Concentus.Native package.</description>
+    <releaseNotes>Native binaries are no longer distributed by default; if you want to automatically allow native code acceleration, install the Concentus.Native package as well.</releaseNotes>
+    <copyright>© Xiph.Org Foundation, Skype Limited, CSIRO, Microsoft Corp.</copyright>
+    <tags>Concentus Opus Audio Codec Resampler Resampling DSP Compression Encoder Decoder</tags>
+    <repository type="git" url="https://github.com/lostromb/concentus" commit="6c2328dc19044601e33a9c11628b8d60e1f3011c" />
+    <dependencies>
+      <group targetFramework=".NETFramework4.5.2">
+        <dependency id="System.Memory" version="4.5.4" exclude="Build,Analyzers" />
+        <dependency id="System.Numerics.Vectors" version="4.5.0" exclude="Build,Analyzers" />
+      </group>
+      <group targetFramework=".NETStandard1.1">
+        <dependency id="NETStandard.Library" version="1.6.1" exclude="Build,Analyzers" />
+        <dependency id="System.Memory" version="4.5.4" exclude="Build,Analyzers" />
+        <dependency id="System.Numerics.Vectors" version="4.5.0" exclude="Build,Analyzers" />
+      </group>
+      <group targetFramework="net8.0">
+        <dependency id="System.Memory" version="4.5.4" exclude="Build,Analyzers" />
+        <dependency id="System.Numerics.Vectors" version="4.5.0" exclude="Build,Analyzers" />
+      </group>
+      <group targetFramework=".NETStandard2.0">
+        <dependency id="System.Memory" version="4.5.4" exclude="Build,Analyzers" />
+        <dependency id="System.Numerics.Vectors" version="4.5.0" exclude="Build,Analyzers" />
+      </group>
+    </dependencies>
+  </metadata>
+</package>

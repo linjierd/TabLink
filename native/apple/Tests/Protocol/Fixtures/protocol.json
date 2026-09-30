@@ -1,0 +1,12 @@
+{
+  "description": "Synthetic structural fixtures only; SPS/PPS are not a hardware decoder conformance clip. Tokens are dummy values.",
+  "allowedPorts": [27184, 27186, 27187, 27188, 27189, 27190, 27191, 27192],
+  "rejectedPorts": [0, 1, 27183, 27185, 27193, 65535, 65536],
+  "videoConfiguration": {"codec": "video/avc", "width": 640, "height": 480, "fps": 60, "csd0": "AAAAAWdkAB8=", "csd1": "AAABaO4DgA=="},
+  "accessUnitHex": "00000000000003e80000000165880000014199",
+  "avccHex": "000000026588000000024199",
+  "ptsMicroseconds": 1000,
+  "validHeaders": ["2100800000", "0100000001", "0200000001", "2000000001"],
+  "invalidHeaders": ["2100000000", "2100800001", "ff00000001", "2100"],
+  "invalidAnnexBHex": ["00000001", "00000165000001", "00000180", "010203", "00000100"]
+}

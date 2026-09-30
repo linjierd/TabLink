@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AssemblyName>TabLink.DriverSetup</AssemblyName>
+    <PlatformTarget>x64</PlatformTarget>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../TabLink.Windows/VirtualDisplayManager.cs" Link="DisplaySafety/VirtualDisplayManager.cs" />
+    <Compile Include="../TabLink.Windows/DisplayLease.cs" Link="DisplaySafety/DisplayLease.cs" />
+    <Compile Include="../TabLink.Windows/DisplayRelocation.cs" Link="DisplaySafety/DisplayRelocation.cs" />
+    <Compile Include="../TabLink.Windows/ProfileMode.cs" Link="DisplaySafety/ProfileMode.cs" />
+    <Content Include="../../third_party/VirtualDisplayDriver/driver/*" Link="drivers/VirtualDisplayDriver/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="../../third_party/VirtualDisplayDriver/LICENSE.txt" Link="drivers/VirtualDisplayDriver/LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="../../third_party/VirtualDisplayDriver/NOTICE.md" Link="drivers/VirtualDisplayDriver/NOTICE.md" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

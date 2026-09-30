@@ -1,0 +1,5 @@
+{
+  "enabled": true,
+  "manifestUrl": "https://linjie.space/download/api/download?path=TabLink%2Fstable%2Fmanifest.json",
+  "checkIntervalMinutes": 360
+}

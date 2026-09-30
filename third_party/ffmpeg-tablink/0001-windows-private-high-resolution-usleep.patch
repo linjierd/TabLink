@@ -1,0 +1,42 @@
+--- a/libavutil/time.c
++++ b/libavutil/time.c
+@@ -83,7 +83,38 @@
+ 
+ int av_usleep(unsigned usec)
+ {
+-#if HAVE_NANOSLEEP
++#if HAVE_WINDOWS_H && HAVE_SLEEP
++    /* TabLink: use a private high-resolution waitable timer. Unlike
++     * timeBeginPeriod, this does not request a process/system timer period.
++     * Create per call so thread exit/cancellation cannot leak a TLS handle.
++     * Windows versions without high-resolution timers keep the old fallback. */
++    HANDLE timer;
++    LARGE_INTEGER due;
++    DWORD wait_result;
++
++    if (!usec) {
++        Sleep(0);
++        return 0;
++    }
++
++    /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, supported since Windows 10 1803.
++     * Use the documented flag value with older MinGW Windows SDK headers. */
++    timer = CreateWaitableTimerExW(NULL, NULL, 0x00000002,
++                                 TIMER_MODIFY_STATE | SYNCHRONIZE);
++    if (timer) {
++        due.QuadPart = -(int64_t)usec * 10;
++        if (SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE)) {
++            wait_result = WaitForSingleObject(timer, INFINITE);
++            CloseHandle(timer);
++            if (wait_result == WAIT_OBJECT_0)
++                return 0;
++        } else {
++            CloseHandle(timer);
++        }
++    }
++    Sleep(usec / 1000);
++    return 0;
++#elif HAVE_NANOSLEEP
+     struct timespec ts = { usec / 1000000, usec % 1000000 * 1000 };
+     while (nanosleep(&ts, &ts) < 0 && errno == EINTR);
+     return 0;

@@ -1,0 +1,63 @@
+**/bin/
+**/obj/
+**/build/
+**/.gradle/
+android/.tools/
+android/.sdk/
+android/local.properties
+android/artifacts/
+android/app/libs/*.jar
+android/app/libs/*.sha1
+dist/
+artifacts/
+verification/
+diagnostics/
+.tools/
+*.user
+*.suo
+*.keystore
+
+# IDE, test and coverage state
+.vs/
+.idea/
+.vscode/
+TestResults/
+coverage/
+coverage.*
+*.trx
+*.tmp
+*.log
+
+# Secrets and local signing material
+.env
+.env.*
+*.pfx
+*.p12
+*.pem
+*.key
+*.jks
+
+# Downloaded third-party distributions and local toolchains. Keep the small
+# notices, provenance, patches and reproducible build scripts next to them.
+third_party/ffmpeg/
+third_party/adb/bin/
+third_party/adb/.cache/
+third_party/ffmpeg-tablink/bin/
+third_party/ffmpeg-tablink/build/
+third_party/ffmpeg-tablink/downloads/
+third_party/ffmpeg-tablink/source/
+third_party/ffmpeg-tablink/toolchain/
+third_party/ffmpeg-tablink/motion-*/
+third_party/ffmpeg-tablink/source-bundle.tar.gz
+third_party/ffmpeg-tablink/*.h264
+third_party/ffmpeg-tablink/*.log
+third_party/ffmpeg-tablink/*-results.json
+third_party/ffmpeg-tablink/*-results.csv
+third_party/sipsorcery/**/*.nupkg
+third_party/VirtualDisplayDriver/*.zip
+tools/ffmpeg/bin/
+
+# Machine-specific deployment and one-time recovery scripts.
+tools/Deploy-NetworkRelease.ps1
+tools/Deploy-TabLink080.ps1
+tools/Prepare-ThisTablet.ps1

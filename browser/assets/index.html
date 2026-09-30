@@ -1,0 +1,7 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="dark"><title>TabLink · 浏览器副屏</title><link rel="stylesheet" href="/style.css"><script src="/client.js" defer></script></head>
+<body><main id="setup"><div class="brand">TabLink <span>浏览器副屏</span></div><h1>给这台设备，<br>一个独立桌面。</h1><p class="intro">通过本地网络连接电脑。画面和触控采用加密传输。</p>
+<div class="card"><label for="quality">清晰度</label><select id="quality"><option value="720">720p · 流畅优先</option><option value="1080">1080p · 更多空间</option></select><label for="orientation">方向</label><select id="orientation"><option value="landscape">横屏</option><option value="portrait">竖屏</option></select><label for="fps">刷新率</label><select id="fps"><option value="30">30 帧 / 秒</option><option value="60">60 帧 / 秒</option></select><button id="start">连接副屏</button><p id="status" role="status">请使用电脑端生成的配对二维码。</p></div>
+<p class="note">首次使用需安装并信任此电脑导出的 TabLink CA 证书。仅信任你自己的电脑；二维码五分钟内有效，每个二维码仅供一台设备连接。</p><p class="note">请保持页面在前台。iPhone / iPad 的全屏行为取决于浏览器和系统版本；如系统不支持全屏，画面会保留在页面内。</p></main>
+<section id="viewer" hidden><video id="screen" playsinline autoplay muted></video><div id="paused" hidden>等待电脑恢复普通桌面…</div><div id="toolbar"><span id="liveStatus">连接中</span><button id="fullscreen">全屏</button><button id="disconnect">断开</button></div></section>
+</body></html>

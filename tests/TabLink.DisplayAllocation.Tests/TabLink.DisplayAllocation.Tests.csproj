@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/TabLink.Core/TabLink.Core.csproj" />
+    <Compile Include="../../src/TabLink.Windows/VirtualDisplayManager.cs" Link="VirtualDisplayManager.cs" />
+    <Compile Include="../../src/TabLink.Windows/DisplayLease.cs" Link="DisplayLease.cs" />
+    <Compile Include="../../src/TabLink.Windows/DisplayRelocation.cs" Link="DisplayRelocation.cs" />
+    <Compile Include="../../src/TabLink.Windows/ProfileMode.cs" Link="ProfileMode.cs" />
+    <Compile Include="../../src/TabLink.Windows/DisplaySessionAllocator.cs" Link="DisplaySessionAllocator.cs" />
+  </ItemGroup>
+</Project>

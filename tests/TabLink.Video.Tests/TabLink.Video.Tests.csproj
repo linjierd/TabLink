@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0-windows</TargetFramework><UseWindowsForms>true</UseWindowsForms><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/TabLink.Windows/NetworkFirewall.cs" Link="NetworkFirewall.cs" />
+    <Compile Include="../../src/TabLink.Windows/NetworkInterfaceCatalog.cs" Link="NetworkInterfaceCatalog.cs" />
+    <Compile Include="../../src/TabLink.Windows/AnnexBParser.cs" Link="AnnexBParser.cs" />
+    <Compile Include="../../src/TabLink.Windows/H264Encoder.cs" Link="H264Encoder.cs" />
+    <Compile Include="../../src/TabLink.Windows/DxgiCaptureTarget.cs" Link="DxgiCaptureTarget.cs" />
+    <Compile Include="../../src/TabLink.Windows/VirtualDisplayManager.cs" Link="VirtualDisplayManager.cs" />
+    <Compile Include="../../src/TabLink.Windows/DisplayLease.cs" Link="DisplayLease.cs" />
+    <Compile Include="../../src/TabLink.Windows/DisplayRelocation.cs" Link="DisplayRelocation.cs" />
+    <Compile Include="../../src/TabLink.Windows/ProfileMode.cs" Link="ProfileMode.cs" />
+    <Compile Include="../../src/TabLink.Windows/InputDesktopAvailability.cs" Link="InputDesktopAvailability.cs" />
+    <Compile Include="../../src/TabLink.Windows/CaptureRecovery.cs" Link="CaptureRecovery.cs" />
+    <Compile Include="../../src/TabLink.Windows/FrameServer.cs" Link="FrameServer.cs" />
+    <Compile Include="../../src/TabLink.Windows/NetworkSessionOptions.cs" Link="NetworkSessionOptions.cs" />
+    <Compile Include="../../src/TabLink.Windows/VideoPipeline.cs" Link="VideoPipeline.cs" />
+    <Compile Include="../../src/TabLink.Windows/SelfTests.cs" Link="SelfTests.cs" />
+    <ProjectReference Include="../../src/TabLink.Core/TabLink.Core.csproj" />
+  </ItemGroup>
+</Project>

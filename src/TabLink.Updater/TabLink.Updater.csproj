@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PlatformTarget>x64</PlatformTarget>
+    <AssemblyName>TabLink.Updater</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../TabLink.Windows/StableSemanticVersion.cs" Link="UpdateSecurity/StableSemanticVersion.cs" />
+    <Compile Include="../TabLink.Windows/UpdateVersionPolicy.cs" Link="UpdateSecurity/UpdateVersionPolicy.cs" />
+    <Compile Include="../TabLink.Windows/UpdateManifest.cs" Link="UpdateSecurity/UpdateManifest.cs" />
+    <Compile Include="../TabLink.Windows/UpdateTrust.cs" Link="UpdateSecurity/UpdateTrust.cs" />
+    <Compile Include="../TabLink.Windows/ProtectedUpdaterStager.cs" Link="UpdateSecurity/ProtectedUpdaterStager.cs" />
+    <Compile Include="../TabLink.Windows/WindowsUpdatePathPolicy.cs" Link="UpdateSecurity/WindowsUpdatePathPolicy.cs" />
+    <Compile Include="../TabLink.Windows/UpdateSignalSecurity.cs" Link="UpdateSecurity/UpdateSignalSecurity.cs" />
+  </ItemGroup>
+</Project>

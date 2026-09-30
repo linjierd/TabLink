@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "sdkRevision": "37.0.0",
+  "adbVersion": "1.0.41",
+  "adbBuild": "37.0.0-14910828",
+  "archive": {
+    "url": "https://dl.google.com/android/repository/platform-tools_r37.0.0-win.zip",
+    "sha256": "4FE305812DB074CEA32903A489D061EB4454CBC90A49E8FEA677F4B7AF764918",
+    "length": 8092164
+  },
+  "officialReleaseNotes": "https://developer.android.com/tools/releases/platform-tools",
+  "sdkLicenseTerms": "https://developer.android.com/studio/terms",
+  "binaryModification": "none",
+  "validation": "Pinned official archive component hashes; valid Google LLC Authenticode signatures; adb version only.",
+  "licensingScope": "Preserve complete upstream NOTICE and review applicable component obligations before public redistribution; not blanket SDK redistribution permission.",
+  "signatures": [
+    {
+      "file": "adb.exe",
+      "status": "Valid",
+      "signer": "CN=Google LLC, O=Google LLC, L=Mountain View, S=California, C=US, SERIALNUMBER=3582691, OID.2.5.4.15=Private Organization, OID.1.3.6.1.4.1.311.60.2.1.2=Delaware, OID.1.3.6.1.4.1.311.60.2.1.3=US",
+      "certificateThumbprint": "607A3EDAA64933E94422FC8F0C80388E0590986C"
+    },
+    {
+      "file": "AdbWinApi.dll",
+      "status": "Valid",
+      "signer": "CN=Google LLC, O=Google LLC, L=Mountain View, S=California, C=US, SERIALNUMBER=3582691, OID.2.5.4.15=Private Organization, OID.1.3.6.1.4.1.311.60.2.1.2=Delaware, OID.1.3.6.1.4.1.311.60.2.1.3=US",
+      "certificateThumbprint": "607A3EDAA64933E94422FC8F0C80388E0590986C"
+    },
+    {
+      "file": "AdbWinUsbApi.dll",
+      "status": "Valid",
+      "signer": "CN=Google LLC, O=Google LLC, L=Mountain View, S=California, C=US, SERIALNUMBER=3582691, OID.2.5.4.15=Private Organization, OID.1.3.6.1.4.1.311.60.2.1.2=Delaware, OID.1.3.6.1.4.1.311.60.2.1.3=US",
+      "certificateThumbprint": "607A3EDAA64933E94422FC8F0C80388E0590986C"
+    }
+  ],
+  "files": [
+    {
+      "path": "bin/adb.exe",
+      "sha256": "957E46B8615F7AF5B7292A2DDABE98D2E61940C3FB2B0545756507F080613E71",
+      "length": 8485016
+    },
+    {
+      "path": "bin/AdbWinApi.dll",
+      "sha256": "120BEF587119C6CB926B86B9BE90FDFBCE38937588EAE28CD91A94CE63C7B965",
+      "length": 108184
+    },
+    {
+      "path": "bin/AdbWinUsbApi.dll",
+      "sha256": "6CA69A2CA0E31309C087D288F058977D421AD03500E4C3E1DBD981241A069C60",
+      "length": 73368
+    },
+    {
+      "path": "NOTICE.txt",
+      "sha256": "628F43E9C88E2BF5AEE9FC4C1CB672BF3931BA12DD5EF75C8170678395F3CA23",
+      "length": 1154858
+    },
+    {
+      "path": "source.properties",
+      "sha256": "FBD87C8567AFBC6DC78E140097FCDE234F4A61FA7065E85081D43E442CCD3D24",
+      "length": 38
+    }
+  ]
+}
