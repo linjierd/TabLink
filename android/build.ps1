@@ -9,6 +9,19 @@ param(
 $ErrorActionPreference = 'Stop'
 $projectDirectory = $PSScriptRoot
 $expectedPreviewSignerSha256 = 'b0035ffe0539e43ded2f5c40e3b7e4d4edfb5d8f8063459faca911edc7500554'
+$androidGradleFile = Join-Path $projectDirectory 'app\build.gradle'
+$androidGradleText = Get-Content -LiteralPath $androidGradleFile -Raw
+$versionNameMatches = [regex]::Matches(
+    $androidGradleText,
+    '(?m)^\s*versionName\s+[''"](?<value>[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?)[''"]\s*$')
+$versionCodeMatches = [regex]::Matches(
+    $androidGradleText,
+    '(?m)^\s*versionCode\s+(?<value>[1-9][0-9]*)\s*$')
+if ($versionNameMatches.Count -ne 1 -or $versionCodeMatches.Count -ne 1) {
+    throw 'Android versionName and versionCode must each be declared exactly once in app\build.gradle.'
+}
+$androidVersionName = $versionNameMatches[0].Groups['value'].Value
+$androidVersionCode = $versionCodeMatches[0].Groups['value'].Value
 if (-not $JavaHome) {
     $javaCandidates = @(
         'C:\Program Files\Android\openjdk\jdk-21.0.8',
@@ -196,7 +209,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Android build or lint failed.' }
     $artifactDirectory = Join-Path $projectDirectory 'artifacts'
     New-Item -ItemType Directory -Force -Path $artifactDirectory | Out-Null
-    $apk = Join-Path $artifactDirectory $(if ($ReleasePreview) { 'TabLink-android-0.8.8-preview.apk' } else { 'TabLink-android-0.8.8-debug.apk' })
+    $apk = Join-Path $artifactDirectory $(if ($ReleasePreview) { "TabLink-android-$androidVersionName-preview.apk" } else { "TabLink-android-$androidVersionName-debug.apk" })
     $builtApk = if ($ReleasePreview) { 'app\build\outputs\apk\release\app-release.apk' } else { 'app\build\outputs\apk\debug\app-debug.apk' }
     Copy-Item -LiteralPath (Join-Path $projectDirectory $builtApk) -Destination $apk -Force
     $apkSignerJar = Join-Path $AndroidSdk 'build-tools\35.0.0\lib\apksigner.jar'
@@ -213,9 +226,12 @@ try {
         $badging = @(& (Join-Path $AndroidSdk 'build-tools\35.0.0\aapt.exe') dump badging $apk 2>&1)
         if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect the preview APK identity.' }
         $packageLine = $badging | Where-Object { $_ -like 'package:*' } | Select-Object -First 1
+        $expectedVersionCodePattern = "versionCode='" + [regex]::Escape($androidVersionCode) + "'"
+        $expectedVersionNamePattern = "versionName='" + [regex]::Escape($androidVersionName) + "'"
         if ($packageLine -notmatch "name='com\.tablink\.client'" -or
-            $packageLine -notmatch "versionCode='20'" -or $packageLine -notmatch "versionName='0\.8\.8'") {
-            throw 'Preview APK package name or version does not match the 0.8.8 release contract.'
+            $packageLine -notmatch $expectedVersionCodePattern -or
+            $packageLine -notmatch $expectedVersionNamePattern) {
+            throw "Preview APK package name or version does not match the $androidVersionName release contract."
         }
     }
     Get-FileHash -Algorithm SHA256 -LiteralPath $apk | Format-List Algorithm, Hash, Path
