@@ -13,7 +13,7 @@ internal sealed partial class MainForm
         trayMenu.Items.Insert(2, trayUpdate);
         trayUpdate.Click += async (_, _) =>
         {
-            if (closing) return;
+            if (closing || exitStarting || updateExitStarted) return;
             RestoreFromTray();
             SetStatus("正在结束连接，随后安装正式版更新…");
             await ExitAsync(requireReadyUpdater: true);
@@ -38,7 +38,7 @@ internal sealed partial class MainForm
         if (update is not null && announcedUpdateRelease != update.ReleaseId)
         {
             announcedUpdateRelease = update.ReleaseId;
-            var message = HasAnySessions
+            var message = HasAnySessions||HasPendingNetworkStart||connectionStarts.IsStarting
                 ? "版本 " + update.Version + " 已安全下载。当前副屏保持连接；最后一台设备停止后自动安装。"
                 : "版本 " + update.Version + " 已安全下载。电脑空闲时将自动重启并安装。";
             tray.ShowBalloonTip(5000, "TabLink 正式版更新已准备完成", message, ToolTipIcon.Info);
@@ -48,7 +48,8 @@ internal sealed partial class MainForm
 
     void EvaluateAutomaticUpdateApplication()
     {
-        var disposition = AutomaticUpdateApplyPolicy.Evaluate(updateCoordinator?.Ready is not null, HasAnySessions, busy, stopping, closing || updateExitStarted);
+        var hasConnectionWork=HasAnySessions||HasPendingNetworkStart||connectionStarts.IsStarting;
+        var disposition = AutomaticUpdateApplyPolicy.Evaluate(updateCoordinator?.Ready is not null, hasConnectionWork, busy, stopping, closing || exitStarting || updateExitStarted);
         if (disposition != AutomaticUpdateApplyDisposition.ScheduleWhenIdle)
         {
             var pending = idleUpdateDelay; idleUpdateDelay = null;
@@ -68,7 +69,8 @@ internal sealed partial class MainForm
         finally { if (!ReferenceEquals(idleUpdateDelay, delay)) delay.Dispose(); }
         if (!ReferenceEquals(idleUpdateDelay, delay)) return;
         idleUpdateDelay = null; delay.Dispose();
-        if (AutomaticUpdateApplyPolicy.Evaluate(updateCoordinator?.Ready is not null, HasAnySessions, busy, stopping, closing || updateExitStarted) != AutomaticUpdateApplyDisposition.ScheduleWhenIdle) return;
+        var hasConnectionWork=HasAnySessions||HasPendingNetworkStart||connectionStarts.IsStarting;
+        if (AutomaticUpdateApplyPolicy.Evaluate(updateCoordinator?.Ready is not null, hasConnectionWork, busy, stopping, closing || exitStarting || updateExitStarted) != AutomaticUpdateApplyDisposition.ScheduleWhenIdle) return;
         updateExitStarted = true;
         SetStatus("正在安装已验证的正式版更新…");
         Log("电脑当前没有副屏会话，开始自动安装已下载的正式版更新。");

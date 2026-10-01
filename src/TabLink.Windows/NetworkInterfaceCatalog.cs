@@ -8,17 +8,6 @@ using TabLink.Core;
 
 namespace TabLink.Windows;
 
-public enum NetworkInterfaceKind { WiFi, Usb, Ethernet }
-
-public sealed record NetworkInterfaceChoice(IPAddress LocalAddress, string InterfaceAlias, int PrefixLength,
-    NetworkInterfaceKind Kind, string? UsbSerial, string InterfaceId, int InterfaceIndex)
-{
-    public const int Port = 27184;
-    public IPEndPoint Endpoint => new(LocalAddress, Port);
-    public string DisplayText => $"{Kind switch { NetworkInterfaceKind.WiFi => "Wi-Fi", NetworkInterfaceKind.Usb => "USB 网络", _ => "有线网络" }} · {InterfaceAlias} · {LocalAddress}" + (UsbSerial is null ? "" : $" · {UsbSerial}");
-    public override string ToString() => DisplayText;
-}
-
 /// <summary>Read-only local network inventory. Never sends USB requests or changes network configuration.</summary>
 public static partial class NetworkInterfaceCatalog
 {

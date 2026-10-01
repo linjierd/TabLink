@@ -49,9 +49,9 @@ internal sealed partial class MainForm
         };
         startBrowser.Click+=async(_,_)=>await GuardAsync(StartBrowserAsync);
         refreshBrowserNetworks.Click+=async(_,_)=>await GuardAsync(RefreshNetworksAsync);
-        browserNetworks.SelectedIndexChanged+=(_,_)=>UpdateBrowserButtons(!busy&&!closing&&!stopping);
+        browserNetworks.SelectedIndexChanged+=(_,_)=>UpdateBrowserButtons(!busy&&!closing&&!exitStarting&&!updateExitStarted&&!stopping&&!connectionStarts.IsStarting);
         newBrowserPair.Click+=(_,_)=>{try{CreateBrowserPairing();}catch(Exception ex){ShowError(ex);}};
-        stopBrowser.Click+=async(_,_)=>await GuardAsync(StopBrowserAsync);
+        stopBrowser.Click+=async(_,_)=>{SuppressTrustedNetworkAutoStart();await GuardAsync(StopBrowserAsync);};
         stopBrowserDevice.Click+=async(_,_)=>await GuardAsync(async()=>{if(browserSessions.SelectedItem is BrowserSessionRow row&&browserHost is {} host)await host.StopSessionAsync(row.Status.Id);});
         copyBrowserUri.Click+=(_,_)=>{if(browserUri is not null)try{Clipboard.SetText(browserUri);}catch(Exception ex){ShowError(ex);}};
         exportCa.Click+=(_,_)=>
@@ -63,24 +63,37 @@ internal sealed partial class MainForm
         return page;
     }
 
-    Task StartBrowserAsync()=>browserStartTask=StartBrowserCoreAsync();
-    async Task StartBrowserCoreAsync()
+    Task StartBrowserAsync()
     {
+        SuppressTrustedNetworkAutoStart();
+        return browserStartTask=RunConnectionStartAsync(ConnectionStartKind.Browser,StartBrowserCoreAsync);
+    }
+    async Task StartBrowserCoreAsync(ConnectionStartLease startLease)
+    {
+        startLease.ThrowIfNotCurrent();
         if(!BrowserRtcSession.IsSupported)throw new NotSupportedException("此公开发行包未包含浏览器 WebRTC 接收组件；请使用 Android 原生客户端。");
         if(browserHost is not null)return;
         if(HasAnySessions)throw new InvalidOperationException("TabLink 只允许一个副屏连接。请先停止当前原生连接。");
         var selected=browserNetworks.SelectedItem as NetworkInterfaceChoice??throw new IOException("请先选择可用的 Wi-Fi 或 USB 网络共享线路。");
         var available=await Task.Run(()=>NetworkInterfaceCatalog.GetChoices(settings),lifetime.Token);
-        var choice=available.SingleOrDefault(x=>SameInterface(x,selected))??throw new IOException("所选线路已变化或被排除。");
+        startLease.ThrowIfNotCurrent();
+        var choice=available.SingleOrDefault(x=>SameNetworkBinding(x,selected))??throw new IOException("所选线路已变化或被排除。");
         await EnsureOwnedDisplayCleanupBeforeNewConnectionAsync();
+        startLease.ThrowIfNotCurrent();
         _=VideoPipeline.FindFfmpeg();
         browserChoice=choice;var allowTouch=touch.Checked;
         try
         {
             BeginConnectionHealth(ConnectionHealthPath.Browser,$"选择浏览器线路 {choice.InterfaceAlias} · {choice.LocalAddress}");
             browserRules.Add(await NetworkFirewall.OpenAsync(choice,lifetime.Token,27185));
-            foreach(var port in BrowserHost.MediaPorts)browserRules.Add(await NetworkFirewall.OpenAsync(choice,lifetime.Token,port,"UDP"));
+            startLease.ThrowIfNotCurrent();
+            foreach(var port in BrowserHost.MediaPorts)
+            {
+                browserRules.Add(await NetworkFirewall.OpenAsync(choice,lifetime.Token,port,"UDP"));
+                startLease.ThrowIfNotCurrent();
+            }
             lifetime.Token.ThrowIfCancellationRequested();
+            startLease.ThrowIfNotCurrent();
             browserHost=new BrowserHost(choice.LocalAddress,(id,p,ct)=>PrepareBrowserAsync(id,p,allowTouch,ct),1);
             browserHost.Diagnostic+=(id,message)=>Log($"浏览器 {id.ToString()[..8]}：{message}");
             browserHost.SessionChanged+=state=>
@@ -98,6 +111,7 @@ internal sealed partial class MainForm
                 UpdateBrowserConnectionHealth(state);
             };
             await browserHost.StartAsync(lifetime.Token);
+            startLease.ThrowIfNotCurrent();
             MarkHealthRouteReady($"{choice.InterfaceAlias} · {choice.LocalAddress}:27185 · 本地 HTTPS/WebRTC 已启动");
             MarkHealthAuthenticationStarted("等待浏览器使用当前单次二维码完成认证与屏幕参数上报");
             CreateBrowserPairing();SetStatus("浏览器接入已开启，等待设备扫码");metrics.Text=$"{choice.InterfaceAlias} · 本地 HTTPS + WebRTC · 单设备";
@@ -222,7 +236,7 @@ internal sealed partial class MainForm
         var offer=host.CreatePairing();browserUri=offer.Uri;
         browserQr.Image?.Dispose();browserQr.Image=MakeQr(offer.Uri);browserQr.Visible=true;
         browserHint.Text=$"1. 首次使用：导出并在设备信任本机证书。\n2. 扫码，在页面点击开始连接。\n\n二维码单次使用，到期 {offer.ExpiresUtc.LocalDateTime:HH:mm:ss}。\n需要重新配对时，请生成新的二维码。\n\n证书 SHA-256 指纹：\n{host.CaFingerprint}";
-        UpdateBrowserButtons(!busy&&!closing);
+        UpdateBrowserButtons(!busy&&!closing&&!exitStarting&&!updateExitStarted&&!connectionStarts.IsStarting);
     }
 
     void InvalidateBrowserPairing()
@@ -236,13 +250,13 @@ internal sealed partial class MainForm
         if(browserUri is null&&!browserQr.Visible)return;
         browserUri=null;var image=browserQr.Image;browserQr.Image=null;browserQr.Visible=false;image?.Dispose();
         browserHint.Text="本次二维码已使用。设备断开后，请点击“重新生成配对二维码”获取新的单次链接。";
-        UpdateBrowserButtons(!busy&&!closing&&!stopping);
+        UpdateBrowserButtons(!busy&&!closing&&!exitStarting&&!updateExitStarted&&!stopping&&!connectionStarts.IsStarting);
     }
 
     async Task MonitorBrowserAsync(IReadOnlyList<NetworkInterfaceChoice>? choices,InputDesktopStatus desktop)
     {
         var host=browserHost;if(host is null)return;
-        if(choices is not null&&browserChoice is {} selected&&!choices.Any(x=>SameInterface(x,selected)))
+        if(choices is not null&&browserChoice is {} selected&&!choices.Any(x=>SameNetworkBinding(x,selected)))
         {Log("浏览器线路已断开或被排除，回收浏览器副屏。");await StopBrowserAsync();return;}
         foreach(var item in browserDisplays.ToArray())
         {
@@ -276,7 +290,7 @@ internal sealed partial class MainForm
         foreach(var row in browserSessions.Items.OfType<BrowserSessionRow>())if(row.Status.Id==previous){browserSessions.SelectedItem=row;break;}
         if(browserSessions.SelectedIndex<0&&browserSessions.Items.Count>0)browserSessions.SelectedIndex=0;
         browserSessions.EndUpdate();
-        UpdateBrowserButtons(!busy&&!closing&&!stopping);
+        UpdateBrowserButtons(!busy&&!closing&&!exitStarting&&!updateExitStarted&&!stopping&&!connectionStarts.IsStarting);
     }
 
     async Task StopBrowserAsync()
@@ -291,7 +305,7 @@ internal sealed partial class MainForm
             browserHint.Text=browserCleanupReservations.IsEmpty?"浏览器接入已关闭，副屏已回收。":"浏览器接入已关闭，副屏精确回收待重试。";
             if(!connectionHealth.Snapshot().Steps.Any(step=>step.State==ConnectionHealthState.Attention))StopConnectionHealth("浏览器接入已关闭并回收本次副屏");
             if(!HasAnySessions){ClearEncoderSelectionIfIdle();if(connectionMode.SelectedIndex==1){status.Text="浏览器接入尚未开启";metrics.Text="本地 HTTPS + WebRTC · 单设备";}}
-            UpdateBrowserButtons(!busy&&!closing);
+            UpdateBrowserButtons(!busy&&!closing&&!exitStarting&&!updateExitStarted&&!connectionStarts.IsStarting);
             UpdateButtons();
         }
     }

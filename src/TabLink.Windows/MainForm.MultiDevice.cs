@@ -18,7 +18,7 @@ internal sealed partial class MainForm
     bool monitoringAdditional;
     Task? additionalStartTask;
     DateTime lastAdditionalNetworkUtc;
-    bool HasAdditionalSessions=>additionalSessions.Any(x=>!x.IsStopped)||browserHost is not null;
+    bool HasAdditionalSessions=>additionalSessions.Any(x=>!x.IsStopped||x.HasPendingCleanup)||browserHost is not null;
     bool HasAnySessions=>server is not null||HasAdditionalSessions;
     bool HasPendingOwnedDisplayCleanup=>pendingPrimaryDisplayCleanup is not null||
         additionalSessions.Any(session=>session.HasPendingDisplayCleanup)||
@@ -38,33 +38,40 @@ internal sealed partial class MainForm
         var pair=new FlowLayoutPanel{Dock=DockStyle.Fill,WrapContents=false};pair.Controls.Add(deviceQr);pair.Controls.Add(deviceHint);layout.Controls.Add(pair,0,3);
         page.Controls.Add(layout);
         addSession.Click+=async(_,_)=>await GuardAsync(AddNativeSessionAsync);
-        stopSession.Click+=async(_,_)=>await GuardAsync(async()=>
+        stopSession.Click+=async(_,_)=>{SuppressTrustedNetworkAutoStart();await GuardAsync(async()=>
         {
             if(sessionList.SelectedItem is not NativeSessionRow row)return;
             await row.Session.DisposeAsync();
             if(!HasAnySessions)ClearEncoderSelectionIfIdle();
             StopConnectionHealth("原生客户端连接已停止并回收本次副屏");
             RefreshSessionList();
-        });
+        });};
         retrySession.Click+=(_,_)=>{if(sessionList.SelectedItem is NativeSessionRow row)row.Session.Reconnect();};
-        stopAll.Click+=async(_,_)=>await GuardAsync(StopAllAsync);
+        stopAll.Click+=async(_,_)=>{SuppressTrustedNetworkAutoStart();await GuardAsync(StopAllAsync);};
         sessionList.SelectedIndexChanged+=(_,_)=>ShowSessionPairing();
         return page;
     }
 
-    Task AddNativeSessionAsync()=>additionalStartTask=AddNativeSessionCoreAsync();
-    async Task AddNativeSessionCoreAsync()
+    Task AddNativeSessionAsync()
     {
+        SuppressTrustedNetworkAutoStart();
+        return additionalStartTask=RunConnectionStartAsync(ConnectionStartKind.AdditionalNative,AddNativeSessionCoreAsync);
+    }
+    async Task AddNativeSessionCoreAsync(ConnectionStartLease startLease)
+    {
+        startLease.ThrowIfNotCurrent();
         if(HasAnySessions)throw new InvalidOperationException("TabLink 只允许一个副屏连接。请先停止当前设备。");
         var selected=networks.SelectedItem as NetworkInterfaceChoice??throw new IOException("请先在 Wi-Fi / USB 免调试页选择可用线路。");
         var fresh=await Task.Run(()=>NetworkInterfaceCatalog.GetChoices(settings),lifetime.Token);
-        var choice=fresh.SingleOrDefault(x=>SameInterface(x,selected))??throw new IOException("所选线路已经变化或被排除，请刷新线路。");
+        startLease.ThrowIfNotCurrent();
+        var choice=fresh.SingleOrDefault(x=>SameNetworkBinding(x,selected))??throw new IOException("所选线路已经变化或被排除，请刷新线路。");
         var used=additionalSessions.Where(x=>!x.IsStopped).Select(x=>x.Port).ToHashSet();
         // The original connection page retains its own fixed listener port.
         used.Add(27184);
         var port=NativeNetworkSession.Ports.FirstOrDefault(x=>!used.Contains(x));
         if(port==0)throw new IOException("其他原生配对端口已用完，请使用首页主连接或停止一个设备。");
         await EnsureOwnedDisplayCleanupBeforeNewConnectionAsync();
+        startLease.ThrowIfNotCurrent();
         _=VideoPipeline.FindFfmpeg();
         var encoderGeneration=BeginEncoderSelectionConnection();
         NativeNetworkSession? session=null;
@@ -85,16 +92,33 @@ internal sealed partial class MainForm
                 MarkHealthPipelineStarting("正在启动原生客户端的视频流水线");
             };
             session.DisplayPreparationFailed+=ex=>MarkConnectionHealthAttention(SafeError(ex));
+            startLease.ThrowIfNotCurrent();
             additionalSessions.Add(session);
             await session.StartAsync(lifetime.Token);
+            startLease.ThrowIfNotCurrent();
             MarkHealthRouteReady($"{choice.InterfaceAlias} · {choice.LocalAddress}:{port} · TLS 监听已启动");
             MarkHealthAuthenticationStarted("等待原生客户端扫描当前二维码并完成 TLS 与令牌认证");
         }
         catch(Exception ex)
         {
             InvalidateEncoderSelection(encoderGeneration);
-            if(session is not null)additionalSessions.Remove(session);
+            Exception? cleanupFailure=null;
+            if(session is not null)
+            {
+                try{await session.DisposeAsync();additionalSessions.Remove(session);}
+                catch(Exception cleanup)
+                {
+                    cleanupFailure=cleanup;session.MarkCleanupPending();
+                    if(!additionalSessions.Contains(session))additionalSessions.Add(session);
+                }
+            }
             MarkConnectionHealthAttention(SafeError(ex));
+            if(cleanupFailure is not null)
+            {
+                var combined=new AggregateException("原生连接启动失败，并且本次资源尚未完全回收。",ex,cleanupFailure);
+                Log("原生连接资源清理需要重试："+SafeError(cleanupFailure));
+                throw combined;
+            }
             throw;
         }
         RefreshSessionList(session.Id);
@@ -123,7 +147,7 @@ internal sealed partial class MainForm
         var selected=select??(sessionList.SelectedItem as NativeSessionRow)?.Session.Id;
         sessionList.BeginUpdate();sessionList.Items.Clear();
         if(server is not null)sessionList.Items.Add("主连接：请在 Wi-Fi / USB 或 USB 调试页管理");
-        foreach(var session in additionalSessions.Where(x=>!x.IsStopped))sessionList.Items.Add(new NativeSessionRow(session));
+        foreach(var session in additionalSessions.Where(x=>!x.IsStopped||x.HasPendingCleanup))sessionList.Items.Add(new NativeSessionRow(session));
         foreach(var row in sessionList.Items.OfType<NativeSessionRow>())if(row.Session.Id==selected){sessionList.SelectedItem=row;break;}
         if(sessionList.SelectedIndex<0&&sessionList.Items.Count>0)sessionList.SelectedIndex=0;
         sessionList.EndUpdate();ShowSessionPairing();
@@ -135,7 +159,7 @@ internal sealed partial class MainForm
         var uri=session?.PairingUri;
         if(deviceQrUri!=uri){deviceQr.Image?.Dispose();deviceQr.Image=uri is null?null:MakeQr(uri);deviceQrUri=uri;}
         deviceHint.Text=session is null?"选择设备查看专属二维码。\n浏览器连接在“浏览器”页管理。":$"{session.Network.InterfaceAlias} · {session.Network.LocalAddress}:{session.Port}\n\n{session.State}\n\n在另一台设备的 TabLink 原生客户端扫码。每个二维码只用于一台设备。\n停止当前设备后才能连接另一台设备。";
-        stopSession.Enabled=retrySession.Enabled=session is not null&&!busy&&!closing;
+        stopSession.Enabled=retrySession.Enabled=session is not null&&!busy&&!closing&&!exitStarting&&!updateExitStarted&&!stopping&&!connectionStarts.IsStarting;
     }
     static Bitmap MakeQr(string value)
     {
@@ -184,8 +208,7 @@ internal sealed partial class MainForm
         await StopAsync();
         foreach(var session in additionalSessions.ToArray())try
         {
-            if(session.HasPendingDisplayCleanup)await session.RetryDisplayCleanupAsync();
-            else if(!session.IsStopped)await session.DisposeAsync();
+            if(!session.IsStopped||session.HasPendingCleanup)await session.DisposeAsync();
         }
         catch(Exception ex)
         {
@@ -216,9 +239,9 @@ internal sealed partial class MainForm
 
     void UpdateAdditionalButtons()
     {
-        var ready=!busy&&!closing&&!stopping&&settingsValid;
+        var ready=!busy&&!closing&&!exitStarting&&!updateExitStarted&&!stopping&&!connectionStarts.IsStarting&&settingsValid;
         addSession.Enabled=ready&&!HasAnySessions&&networks.SelectedItem is NetworkInterfaceChoice;
-        stopAll.Enabled=ready&&HasAnySessions;
+        stopAll.Enabled=!busy&&!closing&&!exitStarting&&!updateExitStarted&&!stopping&&(HasAnySessions||HasPendingNetworkStart);
         if(server is null&&browserHost is not null)
         {
             var active=browserDisplays.Count;

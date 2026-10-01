@@ -272,9 +272,9 @@ internal sealed partial class MainForm
     {
         var step=healthStages.SelectedItems.Count==1?healthStages.SelectedItems[0].Tag as ConnectionHealthStep:null;
         var canRepair=step is {State:ConnectionHealthState.Attention,Recovery:not ConnectionHealthRecovery.None};
-        repairSuggested.Enabled=!busy&&!stopping&&!closing&&canRepair;
+        repairSuggested.Enabled=!busy&&!stopping&&!closing&&!exitStarting&&!updateExitStarted&&canRepair;
         repairSuggested.Text=canRepair?"修复："+HealthRecoveryText(step!.Recovery):"修复所选问题";
-        repairMode.Enabled=!busy&&!stopping&&!closing&&requestedModes.SelectedItem is RequestedMode;
+        repairMode.Enabled=!busy&&!stopping&&!closing&&!exitStarting&&!updateExitStarted&&requestedModes.SelectedItem is RequestedMode;
         repairMode.Text=HasAnySessions?"停止当前连接并配置模式":"配置选中显示模式";
     }
 

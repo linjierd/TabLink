@@ -21,13 +21,22 @@ internal sealed partial class MainForm
     VirtualDisplayInfo? networkDisplay;
     Task? networkPreparation;
     Task? networkStartTask;
+    NetworkRouteStartIntent? networkStartIntent;
+    NetworkRouteStartIntent? pendingTrustedRecoveryStart;
     bool preparingNetwork;
+    bool networkRegistrationRequested;
+    DateTime networkRegistrationDeadlineUtc;
     string? pairingUri;
     DateTime lastNetworkCheckUtc;
     DateTime nextTrustedAutoStartUtc;
     bool trustedAutoStartSuppressed;
+    readonly TrustedNetworkRouteMonitor trustedNetworkRoutes=new();
+    TrustedNetworkRouteGeneration trustedNetworkRouteGeneration;
     readonly bool diagnosticPairing;
     static string DiagnosticPairingPath=>Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"TabLink","diagnostic-network-pairing.txt");
+    sealed record NetworkRouteStartIntent(NetworkInterfaceChoice Route,bool AutoTrusted,bool IsRecovery,
+        TrustedNetworkRegistrationWindow? RegistrationWindow=null);
+    bool HasPendingNetworkStart=>pendingTrustedRecoveryStart is not null||networkStartTask is {IsCompleted:false};
 
     Control BuildNetworkPanel()
     {
@@ -49,7 +58,7 @@ internal sealed partial class MainForm
         page.SizeChanged+=(_,_)=>{var width=Math.Max(300,page.ClientSize.Width-page.Padding.Horizontal-30);help.MaximumSize=notes.MaximumSize=new Size(width,0);};
         refreshNetworks.Click+=async(_,_)=>await GuardAsync(RefreshNetworksAsync);
         startNetwork.Click+=async(_,_)=>await GuardAsync(StartNetworkAsync);
-        stopNetwork.Click+=async(_,_)=>await GuardAsync(StopNetworkByUserAsync);
+        stopNetwork.Click+=async(_,_)=>{SuppressTrustedNetworkAutoStart();await GuardAsync(StopAsync);};
         manageTrustedDevices.Click+=(_,_)=>ShowTrustedDevices();
         copyPairing.Click+=(_,_)=>{if(pairingUri is not null)try{Clipboard.SetText(pairingUri);}catch(Exception ex){ShowError(ex);}};
         openApk.Click+=(_,_)=>
@@ -90,43 +99,120 @@ internal sealed partial class MainForm
             if(capture is not null||!listening.CanRefreshRegistration)
                 throw new InvalidOperationException("设备正在认证、重连或传输，暂时不能生成新的配对二维码。");
             PublishNetworkPairing(listening,refresh:true);
+            networkRegistrationRequested=true;
             SetStatus("新的配对二维码将在 5 分钟后失效；已登记设备仍可自动重连");
             return Task.CompletedTask;
         }
-        return networkStartTask=StartNetworkCoreAsync(autoTrusted:false);
+        pendingTrustedRecoveryStart=null;
+        var selected=networks.SelectedItem as NetworkInterfaceChoice??
+            throw new InvalidOperationException("请先连接 Wi-Fi，或在平板开启 USB 网络共享，然后刷新线路。");
+        return StartNetworkRouteAsync(selected,autoTrusted:false);
     }
 
-    async Task StopNetworkByUserAsync()
+    void SuppressTrustedNetworkAutoStart()
     {
         trustedAutoStartSuppressed=true;
-        await StopAsync();
+        pendingTrustedRecoveryStart=null;
+        networkRegistrationRequested=false;
+        networkRegistrationDeadlineUtc=default;
+        var generation=trustedNetworkRouteGeneration;
+        trustedNetworkRouteGeneration=default;
+        trustedNetworkRoutes.Invalidate(generation);
     }
 
     async Task TryAutoStartTrustedNetworkAsync()
     {
-        if(trustedAutoStartSuppressed||closing||stopping||busy||HasAnySessions||nativeTrust is not {Count:>0}||
+        if(trustedAutoStartSuppressed||closing||exitStarting||updateExitStarted||stopping||busy||connectionStarts.IsStarting||HasAnySessions||
             DateTime.UtcNow<nextTrustedAutoStartUtc)return;
         nextTrustedAutoStartUtc=DateTime.UtcNow.AddSeconds(10);
+        var pending=pendingTrustedRecoveryStart;
+        if(pending is not null)
+        {
+            try{await StartNetworkRouteAsync(pending);}
+            catch(Exception ex)
+            {
+                if(trustedAutoStartSuppressed)return;
+                if(ReferenceEquals(pendingTrustedRecoveryStart,pending))
+                    Log("已确认网络线路尚未恢复，将只重试该线路："+SafeError(ex));
+                else Log("网络线路恢复已停止，需要时请重新点击“开始配对”："+SafeError(ex));
+            }
+            return;
+        }
+        if(nativeTrust is not {Count:>0})return;
         try
         {
             await RefreshNetworksAsync();
-            if(networks.SelectedItem is NetworkInterfaceChoice)
-                networkStartTask=StartNetworkCoreAsync(autoTrusted:true);
-            if(networkStartTask is not null)await networkStartTask;
+            if(networks.SelectedItem is NetworkInterfaceChoice selected)
+                await StartNetworkRouteAsync(selected,autoTrusted:true);
         }
         catch(Exception ex){Log("可信设备自动监听尚未就绪："+SafeError(ex));}
     }
 
-    async Task StartNetworkCoreAsync(bool autoTrusted)
+    Task StartNetworkRouteAsync(NetworkInterfaceChoice requestedRoute,bool autoTrusted)
+        =>StartNetworkRouteAsync(new NetworkRouteStartIntent(requestedRoute,autoTrusted,IsRecovery:false));
+
+    Task StartNetworkRouteAsync(NetworkRouteStartIntent requested)
     {
-        if(server is not null)return;
+        if(networkStartTask is {IsCompleted:false} current)
+        {
+            if(networkStartIntent is {} active&&active.AutoTrusted==requested.AutoTrusted&&
+                active.IsRecovery==requested.IsRecovery&&SameNetworkBinding(active.Route,requested.Route)&&
+                (!requested.IsRecovery||ReferenceEquals(active,requested)))return current;
+            throw new InvalidOperationException("另一条网络线路正在启动；请等待本次启动结束后再重试所选线路。");
+        }
+        networkStartIntent=requested;
+        return networkStartTask=RunNetworkStartAsync(requested);
+    }
+
+    async Task RunNetworkStartAsync(NetworkRouteStartIntent requested)
+    {
+        try
+        {
+            await RunConnectionStartAsync(ConnectionStartKind.NativeNetwork,
+                lease=>StartNetworkCoreAsync(requested,lease));
+            if(ReferenceEquals(pendingTrustedRecoveryStart,requested))pendingTrustedRecoveryStart=null;
+        }
+        finally
+        {
+            if(ReferenceEquals(networkStartIntent,requested))networkStartIntent=null;
+        }
+    }
+
+    void EnsureNetworkStartAuthorized(NetworkRouteStartIntent requested,ConnectionStartLease startLease)
+    {
+        startLease.ThrowIfNotCurrent();
+        if(closing||stopping||trustedAutoStartSuppressed||
+            requested.IsRecovery&&!ReferenceEquals(pendingTrustedRecoveryStart,requested))
+            throw new OperationCanceledException("TabLink 已取消这次网络监听启动。");
+    }
+
+    async Task StartNetworkCoreAsync(NetworkRouteStartIntent requested,ConnectionStartLease startLease)
+    {
+        EnsureNetworkStartAuthorized(requested,startLease);
+        if(server is not null)throw new InvalidOperationException("已有副屏连接或网络监听，不能切换到另一条线路。");
         if(HasAdditionalSessions)throw new InvalidOperationException("TabLink 只允许一个副屏连接。请先停止当前原生或浏览器连接。");
-        var selected=networks.SelectedItem as NetworkInterfaceChoice??throw new InvalidOperationException("请先连接 Wi-Fi，或在平板开启 USB 网络共享，然后刷新线路。");
         var trust=nativeTrust??throw new IOException("长期可信配对存储不可用："+(nativeTrustError??"请检查受保护的 ProgramData 存储。"));
+        DateTime? RegistrationDeadlineNow()
+        {
+            if(!requested.IsRecovery)return null;
+            return requested.RegistrationWindow?.Remaining(DateTime.UtcNow) is not null
+                ?requested.RegistrationWindow.DeadlineUtc
+                :null;
+        }
+        TrustedNetworkRegistrationStartMode RegistrationModeNow()=>TrustedNetworkRegistrationPolicy.Evaluate(
+            requested.AutoTrusted,requested.IsRecovery,RegistrationDeadlineNow(),trust.Count,DateTime.UtcNow);
+        var registrationMode=RegistrationModeNow();
+        if(registrationMode==TrustedNetworkRegistrationStartMode.RequireExplicitPairing)
+        {
+            if(ReferenceEquals(pendingTrustedRecoveryStart,requested))pendingTrustedRecoveryStart=null;
+            throw new IOException("当前没有可重连的可信设备；请在电脑端重新点击“开始配对”。");
+        }
         var fresh=await Task.Run(()=>NetworkInterfaceCatalog.GetChoices(settings),lifetime.Token);
         lifetime.Token.ThrowIfCancellationRequested();
-        var choice=fresh.SingleOrDefault(x=>SameInterface(x,selected))??throw new IOException("所选线路已变化或已被排除，请刷新后重选。");
+        EnsureNetworkStartAuthorized(requested,startLease);
+        var choice=fresh.SingleOrDefault(x=>SameNetworkBinding(x,requested.Route))??throw new IOException("所选线路已变化或已被排除，请刷新后重选。");
         await EnsureOwnedDisplayCleanupBeforeNewConnectionAsync();
+        EnsureNetworkStartAuthorized(requested,startLease);
         _=VideoPipeline.FindFfmpeg();
         var encoderGeneration=BeginEncoderSelectionConnection();
         primaryEncoderGeneration=encoderGeneration;
@@ -136,35 +222,82 @@ internal sealed partial class MainForm
             SetStatus("正在为选中的线路准备加密配对…");
             networkChoice=choice;
             networkFirewall=await NetworkFirewall.OpenAsync(choice,lifetime.Token);
+            EnsureNetworkStartAuthorized(requested,startLease);
             discoveryFirewall=await NetworkFirewall.OpenAsync(choice,lifetime.Token,NativeDiscoveryService.Port,"UDP",
                 acceptLocalBroadcast:true);
+            EnsureNetworkStartAuthorized(requested,startLease);
             networkDiscovery=new NativeDiscoveryService(choice,trust.HostId);
             lifetime.Token.ThrowIfCancellationRequested();
+            EnsureNetworkStartAuthorized(requested,startLease);
+            registrationMode=RegistrationModeNow();
+            if(registrationMode==TrustedNetworkRegistrationStartMode.RequireExplicitPairing)
+            {
+                if(ReferenceEquals(pendingTrustedRecoveryStart,requested))pendingTrustedRecoveryStart=null;
+                throw new IOException("配对登记窗口已经结束；请在电脑端重新点击“开始配对”。");
+            }
+            var publishRegistration=registrationMode==TrustedNetworkRegistrationStartMode.PublishRegistration;
+            var registrationLifetime=publishRegistration&&requested.IsRecovery
+                ?requested.RegistrationWindow?.Remaining(DateTime.UtcNow)
+                :null;
+            if(publishRegistration&&requested.IsRecovery&&registrationLifetime is null)
+                throw new IOException("配对登记窗口已经结束；请在电脑端重新点击“开始配对”。");
+            Func<TimeSpan?>? registrationRemainingLimit=null;
+            if(publishRegistration&&requested.RegistrationWindow is {} activeRegistrationWindow)
+                registrationRemainingLimit=()=>activeRegistrationWindow.Remaining(DateTime.UtcNow);
             FrameServer? created=null;
             var options=new NetworkSessionOptions(choice.LocalAddress,NetworkSessionOptions.DefaultPort,
                 trust.CreateServerCertificate(),trust);
             try
             {
                 created=new FrameServer(options,(profile,ct)=>PrepareNetworkOnUiAsync(created!,profile,ct),
-                    ct=>NetworkVideo(encoderGeneration,ct),touch.Checked?message=>capture?.Input(message):null,()=>capture?.ReleaseInput());
+                    ct=>NetworkVideo(encoderGeneration,ct),touch.Checked?message=>capture?.Input(message):null,
+                    ()=>capture?.ReleaseInput(),registrationLifetime:registrationLifetime,
+                    registrationRemainingLimit:registrationRemainingLimit);
             }
             catch{options.Dispose();throw;}
-            server=created;
+            try
+            {
+                EnsureNetworkStartAuthorized(requested,startLease);
+                if(publishRegistration&&!created.RegistrationAvailable)
+                {
+                    if(trust.Count==0)
+                        throw new IOException("配对登记窗口已经结束；请在电脑端重新点击“开始配对”。");
+                    publishRegistration=false;
+                }
+                server=created;
+            }
+            catch(Exception startError)
+            {
+                try{await created.DisposeAsync();}
+                catch(Exception cleanupError)
+                {throw new AggregateException("网络监听尚未发布，但其本地资源未能完整回收。",startError,cleanupError);}
+                throw;
+            }
             created.Status+=SetStatus;
             created.DisplayProfileChanged+=p=>{if(!IsDisposed)BeginInvoke(async()=>await AdaptDisplayAsync(created,p));};
             created.Start();
+            trustedNetworkRouteGeneration=trustedNetworkRoutes.Start(choice);
             MarkHealthRouteReady($"{choice.InterfaceAlias} · {choice.LocalAddress}:27184 · TLS 监听已启动");
-            MarkHealthAuthenticationStarted(trust.Count>0?"等待已信任设备签名认证，或扫描二维码登记新设备":"等待客户端扫描二维码并完成一次性注册");
+            MarkHealthAuthenticationStarted(publishRegistration
+                ?(trust.Count>0?"等待已信任设备签名认证，或扫描二维码登记新设备":"等待客户端扫描二维码并完成一次性注册")
+                :"等待已信任设备完成签名认证");
             sessionStartedUtc=DateTime.UtcNow;lastNetworkCheckUtc=DateTime.MinValue;
-            if(autoTrusted)
+            if(!publishRegistration)
             {
+                networkRegistrationRequested=false;
+                networkRegistrationDeadlineUtc=default;
                 ClearPairing();
                 pairingHint.Text="正在等待已登记设备完成签名重连。\n\n如需登记另一台设备，请点击“生成新配对二维码”；二维码仅在生成后的 5 分钟内有效。";
             }
-            else PublishNetworkPairing(created,refresh:false);
-            SetStatus(autoTrusted?"正在等待已信任平板自动重连，尚未启用副屏":"等待平板扫码或已信任设备自动重连，尚未启用副屏");
+            else
+            {
+                PublishNetworkPairing(created,refresh:false,requested.RegistrationWindow?.DeadlineUtc);
+                networkRegistrationRequested=true;
+            }
+            SetStatus(publishRegistration?"等待平板扫码或已信任设备自动重连，尚未启用副屏":"正在等待已信任平板自动重连，尚未启用副屏");
             metrics.Text=$"{choice.InterfaceAlias} · {choice.LocalAddress} · 持久主机身份 + TLS · 无需 USB 调试";
         }
+        catch(OperationCanceledException){await StopAsync();throw;}
         catch(Exception ex){MarkConnectionHealthAttention(SafeError(ex));await StopAsync();throw;}
     }
 
@@ -258,16 +391,45 @@ internal sealed partial class MainForm
             encoderOptions:CurrentEncoderOptions(),encoderSelected:snapshot=>ReportEncoderSelection(encoderGeneration,snapshot));
     }
 
-    async Task<bool> IsNetworkAvailableAsync()
+    async Task<TrustedNetworkRouteProbeResult?> ProbeTrustedNetworkRouteAsync(
+        FrameServer observedServer,NetworkInterfaceChoice observedNetwork)
     {
-        var selected=networkChoice;if(selected is null)return false;
-        if(DateTime.UtcNow-lastNetworkCheckUtc<TimeSpan.FromSeconds(6))return true;
-        var available=await Task.Run(()=>NetworkInterfaceCatalog.GetChoices(settings),lifetime.Token);
-        if(ReferenceEquals(selected,networkChoice))lastNetworkCheckUtc=DateTime.UtcNow;
-        return available.Any(x=>SameInterface(x,selected));
+        var now=DateTime.UtcNow;
+        if(now-lastNetworkCheckUtc<TimeSpan.FromSeconds(6))return null;
+        var generation=trustedNetworkRouteGeneration;
+        if(generation.IsEmpty||!ReferenceEquals(observedServer,server)||!ReferenceEquals(observedNetwork,networkChoice))
+            return null;
+        var probe=trustedNetworkRoutes.BeginProbe(generation);
+        if(probe is null)return null;
+        try
+        {
+            var available=await Task.Run(()=>NetworkInterfaceCatalog.GetChoices(settings),lifetime.Token);
+            now=DateTime.UtcNow;
+            if(ReferenceEquals(observedServer,server)&&ReferenceEquals(observedNetwork,networkChoice)&&
+                trustedNetworkRouteGeneration==generation)lastNetworkCheckUtc=now;
+            return trustedNetworkRoutes.CompleteSuccessfulProbe(probe.Value,now,available,
+                ReferenceEquals(observedServer,server)&&observedServer.HasRecentPresentation);
+        }
+        catch(OperationCanceledException) when(lifetime.IsCancellationRequested){throw;}
+        catch(Exception ex)
+        {
+            if(ReferenceEquals(observedServer,server)&&ReferenceEquals(observedNetwork,networkChoice)&&
+                trustedNetworkRouteGeneration==generation)lastNetworkCheckUtc=DateTime.UtcNow;
+            var result=trustedNetworkRoutes.CompleteUnavailableProbe(probe.Value);
+            if(result.State!=TrustedNetworkRouteProbeState.Stale)
+                Log("网络线路清单暂时不可用，保留当前连接并稍后重试："+SafeError(ex));
+            return result;
+        }
     }
 
-    static bool SameInterface(NetworkInterfaceChoice a,NetworkInterfaceChoice b)=>a.InterfaceId==b.InterfaceId&&a.LocalAddress.Equals(b.LocalAddress)&&a.UsbSerial==b.UsbSerial&&a.PrefixLength==b.PrefixLength;
+    static bool SameInterface(NetworkInterfaceChoice a,NetworkInterfaceChoice b)=>
+        a.Kind==b.Kind&&
+        string.Equals(a.InterfaceId,b.InterfaceId,StringComparison.OrdinalIgnoreCase)&&
+        a.LocalAddress.Equals(b.LocalAddress)&&
+        string.Equals(a.UsbSerial,b.UsbSerial,StringComparison.OrdinalIgnoreCase)&&
+        a.PrefixLength==b.PrefixLength;
+
+    static bool SameNetworkBinding(NetworkInterfaceChoice a,NetworkInterfaceChoice b)=>a.HasSameBinding(b);
 
     void ClearPairing()
     {
@@ -276,10 +438,15 @@ internal sealed partial class MainForm
         pairingHint.Text="选择线路后点击“开始配对”。首次扫码登记可信设备；以后可自动发现并重连。";
     }
 
-    void PublishNetworkPairing(FrameServer source,bool refresh)
+    void PublishNetworkPairing(FrameServer source,bool refresh,DateTime? absoluteDeadlineUtc=null)
     {
+        if(absoluteDeadlineUtc is {} specified&&specified.Kind!=DateTimeKind.Utc)
+            throw new ArgumentException("配对截止时间必须使用 UTC。",nameof(absoluteDeadlineUtc));
+        if(absoluteDeadlineUtc is {} expired&&expired<=DateTime.UtcNow)
+            throw new IOException("配对登记窗口已经结束，请重新点击“开始配对”。");
         pairingUri=refresh?source.RefreshRegistrationUri():source.NetworkConnectionUri;
         if(pairingUri is null)throw new IOException("无法创建短期配对链接。");
+        networkRegistrationDeadlineUtc=absoluteDeadlineUtc??DateTime.UtcNow+FrameServer.RegistrationLifetime;
         // Explicit integration-test mode only. This short-lived credential
         // stays in the user's profile, outside distributable diagnostics.
         if(diagnosticPairing)File.WriteAllText(DiagnosticPairingPath,pairingUri);
@@ -294,20 +461,22 @@ internal sealed partial class MainForm
 
     void ExpireNetworkPairingUi()
     {
+        networkRegistrationRequested=false;
+        networkRegistrationDeadlineUtc=default;
         ClearPairing();
         pairingHint.Text="配对二维码已使用或已超过 5 分钟。已登记设备仍可自动重连；如需添加设备，请点击“生成新配对二维码”。";
         UpdateButtons();
     }
     void UpdateNetworkButtons(bool idle)
     {
-        refreshNetworks.Enabled=networks.Enabled=!busy&&!stopping&&!closing&&settingsValid;
-        var canRefreshRegistration=!busy&&!stopping&&!closing&&capture is null&&server is {} listening&&
+        refreshNetworks.Enabled=networks.Enabled=!busy&&!stopping&&!closing&&!exitStarting&&!updateExitStarted&&!connectionStarts.IsStarting&&settingsValid;
+        var canRefreshRegistration=!busy&&!stopping&&!closing&&!exitStarting&&!updateExitStarted&&!connectionStarts.IsStarting&&capture is null&&server is {} listening&&
             listening.CanRefreshRegistration&&networkChoice is not null;
         startNetwork.Enabled=idle&&networks.SelectedItem is NetworkInterfaceChoice||canRefreshRegistration;
         startNetwork.Text=canRefreshRegistration?(pairingUri is null?"生成新配对二维码":"更换配对二维码"):"开始配对";
-        stopNetwork.Enabled=!busy&&!stopping&&server is not null;
-        copyPairing.Enabled=pairingUri is not null&&!stopping;
-        manageTrustedDevices.Enabled=!busy&&!stopping&&!closing&&nativeTrust is not null;
+        stopNetwork.Enabled=!busy&&!stopping&&!closing&&!exitStarting&&!updateExitStarted&&(server is not null||HasPendingNetworkStart);
+        copyPairing.Enabled=pairingUri is not null&&!stopping&&!closing&&!exitStarting&&!updateExitStarted;
+        manageTrustedDevices.Enabled=!busy&&!stopping&&!closing&&!exitStarting&&!updateExitStarted&&!connectionStarts.IsStarting&&nativeTrust is not null;
         manageTrustedDevices.Text=$"可信设备（{nativeTrust?.Count??0}）";
     }
 

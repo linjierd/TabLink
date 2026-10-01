@@ -17,6 +17,7 @@ internal sealed class NativeNetworkSession : IAsyncDisposable
     internal TabletDisplayProfile? RequestedProfile {get;private set;}
     internal VirtualDisplayInfo? CurrentDisplay=>display?.CurrentDisplay;
     internal bool HasPendingDisplayCleanup=>stopped&&display is not null;
+    internal bool HasPendingCleanup=>server is not null||firewall is not null||display is not null||input is not null||power is not null;
     internal FrameServer? Server=>server;
     internal event Action<TabletDisplayProfile>? DisplayPreparationStarted;
     internal event Action<VirtualDisplayInfo>? DisplayPrepared;
@@ -29,6 +30,7 @@ internal sealed class NativeNetworkSession : IAsyncDisposable
     readonly Action<VideoEncoderRuntimeSnapshot>? encoderSelected;
     readonly CancellationTokenSource lifetime=new();
     readonly SemaphoreSlim preparation=new(1,1);
+    readonly object disposalLock=new();
     readonly SessionPresentationDeadline deadline=new();
     readonly DateTime createdUtc=DateTime.UtcNow;
     FrameServer? server;
@@ -130,8 +132,9 @@ internal sealed class NativeNetworkSession : IAsyncDisposable
             try{display.Guard.RefreshRememberedLayout();}catch(IOException){}
     }
 
-    internal static bool Matches(NetworkInterfaceChoice a,NetworkInterfaceChoice b)=>a.InterfaceId==b.InterfaceId&&a.LocalAddress.Equals(b.LocalAddress)&&a.UsbSerial==b.UsbSerial&&a.PrefixLength==b.PrefixLength;
+    internal static bool Matches(NetworkInterfaceChoice a,NetworkInterfaceChoice b)=>a.HasSameBinding(b);
     internal void Reconnect()=>server?.RequestReconnect();
+    internal void MarkCleanupPending()=>State="连接启动已停止，仍有资源需要重试清理";
     async Task ReleaseDisplayAsync()
     {
         try
@@ -161,10 +164,18 @@ internal sealed class NativeNetworkSession : IAsyncDisposable
         try{await ReleaseDisplayAsync();State="本次拥有的副屏已精确回收";}
         finally{preparation.Release();}
     }
-    public ValueTask DisposeAsync()=>new(disposal??=DisposeCoreAsync());
+    public ValueTask DisposeAsync()
+    {
+        lock(disposalLock)
+        {
+            if(disposal is null||disposal.IsCompleted&&!disposal.IsCompletedSuccessfully)
+                disposal=DisposeCoreAsync();
+            return new ValueTask(disposal);
+        }
+    }
     async Task DisposeCoreAsync()
     {
-        stopped=true;Stopped?.Invoke();lifetime.Cancel();
+        if(!stopped){stopped=true;Stopped?.Invoke();lifetime.Cancel();}
         try{if(server is {} running){await running.DisposeAsync();server=null;}}
         finally
         {

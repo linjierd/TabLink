@@ -11,6 +11,8 @@ using TabLink.Core;
 
 namespace TabLink.Windows;
 
+internal readonly record struct RegistrationLifetimeTransfer(TimeSpan RemainingLifetime);
+
 internal sealed class FrameServer : IAsyncDisposable
 {
     internal const int ProtocolVersion=1;
@@ -38,6 +40,7 @@ internal sealed class FrameServer : IAsyncDisposable
     readonly object statisticsLock = new();
     readonly object registrationLock = new();
     readonly Func<long> monotonicMilliseconds;
+    Func<TimeSpan?>? registrationRemainingLimit;
     readonly FrameSendPerformance sendPerformance = new();
     readonly TaskCompletionSource firstAcceptStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
     Task? run;
@@ -148,11 +151,19 @@ internal sealed class FrameServer : IAsyncDisposable
 
     public FrameServer(NetworkSessionOptions options, Func<TabletDisplayProfile,CancellationToken,Task> prepare,
         Func<CancellationToken,IAsyncEnumerable<VideoPacket>> video, Action<InputMessage>? input, Action releaseInput,
-        Func<InputDesktopStatus>? queryDesktop=null,AdaptiveVideoSession? quality=null,Func<long>? monotonicMilliseconds=null)
+        Func<InputDesktopStatus>? queryDesktop=null,AdaptiveVideoSession? quality=null,Func<long>? monotonicMilliseconds=null,
+        TimeSpan? registrationLifetime=null,Func<TimeSpan?>? registrationRemainingLimit=null)
         : this(video,input,releaseInput,queryDesktop,quality:quality,monotonicMilliseconds:monotonicMilliseconds)
     {
         network=options??throw new ArgumentNullException(nameof(options));
         this.prepare=prepare??throw new ArgumentNullException(nameof(prepare));
+        this.registrationRemainingLimit=registrationRemainingLimit;
+        if(registrationLifetime is {} cap)
+        {
+            if(cap<=TimeSpan.Zero)throw new ArgumentOutOfRangeException(nameof(registrationLifetime));
+            lock(registrationLock)
+                registrationDeadlineMilliseconds=RegistrationDeadline(this.monotonicMilliseconds(),cap);
+        }
         listener=new TcpListener(options.LocalAddress,options.Port);
     }
 
@@ -167,9 +178,31 @@ internal sealed class FrameServer : IAsyncDisposable
             {
                 registrationToken=NewRegistrationToken();
                 registrationTokenConsumed=false;
+                registrationRemainingLimit=null;
                 registrationDeadlineMilliseconds=RegistrationDeadline(monotonicMilliseconds());
                 return network.ConnectionUri(registrationToken);
             }
+        }
+    }
+
+    /// <summary>
+    /// Atomically retires the current one-time registration bearer before a
+    /// listener is moved to another local binding. If a client consumed or the
+    /// clock expired the bearer first, the caller must not publish a replacement
+    /// without another explicit user request.
+    /// </summary>
+    public bool TryRetireRegistration()=>TryRetireRegistration(out _);
+
+    public bool TryRetireRegistration(out RegistrationLifetimeTransfer transfer)
+    {
+        transfer=default;
+        if(network?.TrustedDevices is null)return false;
+        lock(registrationLock)
+        {
+            if(!TryGetRegistrationRemainingLocked(out var remainingMilliseconds))return false;
+            transfer=new RegistrationLifetimeTransfer(TimeSpan.FromMilliseconds(remainingMilliseconds));
+            registrationTokenConsumed=true;
+            return true;
         }
     }
 
@@ -534,15 +567,34 @@ internal sealed class FrameServer : IAsyncDisposable
         }
     }
 
-    bool RegistrationAvailableLocked()=>!registrationTokenConsumed&&
-        monotonicMilliseconds()<registrationDeadlineMilliseconds;
+    bool RegistrationAvailableLocked()=>TryGetRegistrationRemainingLocked(out _);
+
+    bool TryGetRegistrationRemainingLocked(out long remainingMilliseconds)
+    {
+        remainingMilliseconds=0;
+        var now=monotonicMilliseconds();
+        if(registrationTokenConsumed||now>=registrationDeadlineMilliseconds)return false;
+        remainingMilliseconds=registrationDeadlineMilliseconds-now;
+        if(registrationRemainingLimit is not {} limit)return true;
+        TimeSpan? external;
+        try{external=limit();}
+        catch{return false;}
+        if(external is not {} cap)return false;
+        var capMilliseconds=(long)Math.Floor(cap.TotalMilliseconds);
+        if(capMilliseconds<=0)return false;
+        remainingMilliseconds=Math.Min(remainingMilliseconds,capMilliseconds);
+        return remainingMilliseconds>0;
+    }
 
     static string NewRegistrationToken()=>
         Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
 
-    static long RegistrationDeadline(long now)
+    static long RegistrationDeadline(long now)=>RegistrationDeadline(now,RegistrationLifetime);
+
+    static long RegistrationDeadline(long now,TimeSpan requestedLifetime)
     {
-        var lifetime=(long)RegistrationLifetime.TotalMilliseconds;
+        var lifetime=(long)Math.Floor(Math.Min(RegistrationLifetime.TotalMilliseconds,
+            requestedLifetime.TotalMilliseconds));
         return now>long.MaxValue-lifetime?long.MaxValue:now+lifetime;
     }
 

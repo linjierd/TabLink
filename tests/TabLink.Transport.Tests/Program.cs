@@ -610,6 +610,71 @@ Console.WriteLine("PASS persistent listeners consume a legacy QR bearer after it
 }
 Console.WriteLine("PASS persistent registration QR expires at five minutes and explicit refresh rotates it");
 
+// Route migration closes the old listener. Retiring its QR bearer must be
+// atomic with token consumption so migration can carry only a still-valid user
+// registration intent and can never leave both old and replacement tokens live.
+{
+    using var certificate=PersistentCertificate();
+    var hostId=Convert.ToHexString(SHA256.HashData(certificate.RawData)).ToLowerInvariant();
+    var registry=new MemoryTrustedRegistry(hostId);
+    var retirementOptions=new NetworkSessionOptions(IPAddress.Loopback,FreePort(),certificate,registry);
+    var prepares=0;long retirementClock=10_000;
+    await using var retiring=new FrameServer(retirementOptions,(_,_)=>
+    {Interlocked.Increment(ref prepares);return Task.CompletedTask;},Video,null,()=>{},
+        monotonicMilliseconds:()=>Volatile.Read(ref retirementClock));
+    retiring.Start();
+    var retiredToken=retiring.Token;
+    Volatile.Write(ref retirementClock,14_000);
+
+    Check(retiring.TryRetireRegistration(out var transfer)&&
+          transfer.RemainingLifetime==FrameServer.RegistrationLifetime-TimeSpan.FromSeconds(4)&&
+          !retiring.RegistrationAvailable&&
+          retiring.NetworkConnectionUri is null&&!retiring.TryRetireRegistration(),
+        "route migration did not retire exactly one still-valid registration bearer");
+    {
+        var stale=await Connect(retirementOptions,retirementOptions.CertificateFingerprint,ct);
+        using var client=stale.Client;using var stream=stale.Stream;
+        await Hello(stream,retiredToken,ct);await Closed(stream,ct);
+    }
+    Check(prepares==0,"retired route-migration bearer reached display preparation");
+
+    using var replacementCertificate=PersistentCertificate();
+    var replacementHostId=Convert.ToHexString(SHA256.HashData(replacementCertificate.RawData)).ToLowerInvariant();
+    var replacementRegistry=new MemoryTrustedRegistry(replacementHostId);
+    var replacementOptions=new NetworkSessionOptions(IPAddress.Loopback,FreePort(),replacementCertificate,replacementRegistry);
+    long replacementClock=50_000;
+    await using var replacement=new FrameServer(replacementOptions,(_,_)=>Task.CompletedTask,Video,null,()=>{},
+        monotonicMilliseconds:()=>Volatile.Read(ref replacementClock),
+        registrationLifetime:transfer.RemainingLifetime);
+    Check(replacement.RegistrationAvailable&&replacement.NetworkConnectionUri is not null,
+        "replacement listener did not inherit the still-live registration remainder");
+    var transferredMilliseconds=(long)transfer.RemainingLifetime.TotalMilliseconds;
+    Volatile.Write(ref replacementClock,50_000+transferredMilliseconds-1);
+    Check(replacement.RegistrationAvailable,
+        "replacement registration expired before the transferred service deadline");
+    Volatile.Write(ref replacementClock,50_000+transferredMilliseconds);
+    Check(!replacement.RegistrationAvailable&&replacement.NetworkConnectionUri is null,
+        "replacement listener extended the retired server's registration lifetime");
+
+    using var guardedCertificate=PersistentCertificate();
+    var guardedHostId=Convert.ToHexString(SHA256.HashData(guardedCertificate.RawData)).ToLowerInvariant();
+    var guardedRegistry=new MemoryTrustedRegistry(guardedHostId);
+    var guardedOptions=new NetworkSessionOptions(IPAddress.Loopback,FreePort(),guardedCertificate,guardedRegistry);
+    var transferWindowOpen=true;
+    await using var guardedReplacement=new FrameServer(guardedOptions,(_,_)=>Task.CompletedTask,Video,null,()=>{},
+        registrationLifetime:transfer.RemainingLifetime,
+        registrationRemainingLimit:()=>transferWindowOpen?TimeSpan.FromSeconds(1):null);
+    Check(guardedReplacement.RegistrationAvailable,
+        "replacement rejected a transfer window that was still live");
+    transferWindowOpen=false;
+    Check(!guardedReplacement.RegistrationAvailable&&guardedReplacement.NetworkConnectionUri is null,
+        "replacement bearer outlived the shared transfer deadline between snapshot and construction");
+    var explicitRefresh=guardedReplacement.RefreshRegistrationUri();
+    Check(guardedReplacement.RegistrationAvailable&&explicitRefresh.Contains(guardedReplacement.Token,StringComparison.Ordinal),
+        "an explicit user refresh did not replace the migrated deadline with a fresh registration window");
+}
+Console.WriteLine("PASS route migration atomically retires and service-caps its replacement registration bearer");
+
 // A QR token enrolls a P-256 public key exactly once. Every later connection
 // must answer a fresh host-bound challenge before the display profile can reach
 // preparation; replay, revocation and token reuse all fail before that boundary.

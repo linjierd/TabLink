@@ -2,6 +2,7 @@
   <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0-windows</TargetFramework><UseWindowsForms>true</UseWindowsForms><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
   <ItemGroup>
     <Compile Include="../../src/TabLink.Windows/NetworkFirewall.cs" Link="NetworkFirewall.cs" />
+    <Compile Include="../../src/TabLink.Windows/NetworkInterfaceChoice.cs" Link="NetworkInterfaceChoice.cs" />
     <Compile Include="../../src/TabLink.Windows/NetworkInterfaceCatalog.cs" Link="NetworkInterfaceCatalog.cs" />
     <Compile Include="../../src/TabLink.Windows/AnnexBParser.cs" Link="AnnexBParser.cs" />
     <Compile Include="../../src/TabLink.Windows/H264Encoder.cs" Link="H264Encoder.cs" />

@@ -46,12 +46,13 @@ internal sealed partial class MainForm : Form
     bool allowSoftwareFallback;
     VideoEncoderRuntimeSnapshot? encoderRuntime;
     readonly EncoderSelectionGenerationGate encoderSelectionGenerations=new();
+    readonly ConnectionStartCoordinator connectionStarts=new();
     EncoderSelectionGeneration primaryEncoderGeneration;
     bool adaptingDisplay;
     long previousPresented;
     DateTime previousSampleUtc;
     readonly CancellationTokenSource lifetime=new();
-    bool busy,closing,settingsValid=true,monitoring,reverseCreated,stopping;
+    bool busy,closing,exitStarting,settingsValid=true,monitoring,reverseCreated,stopping;
     Task? stopTask;
     readonly ComboBox devices=new(){DropDownStyle=ComboBoxStyle.DropDownList,Dock=DockStyle.Fill};
     readonly ComboBox displays=new(){DropDownStyle=ComboBoxStyle.DropDownList,Dock=DockStyle.Fill};
@@ -109,7 +110,7 @@ internal sealed partial class MainForm : Form
         var exit=new ToolStripMenuItem("退出 TabLink");
         showWindow.Click+=(_,_)=>RestoreFromTray();
         tray.DoubleClick+=(_,_)=>RestoreFromTray();
-        trayStop.Click+=async(_,_)=>await GuardAsync(async()=>{trustedAutoStartSuppressed=true;await StopAllAsync();});
+        trayStop.Click+=async(_,_)=>{SuppressTrustedNetworkAutoStart();await GuardAsync(StopAllAsync);};
         exit.Click+=async(_,_)=>await ExitAsync();
         trayMenu.Items.AddRange([showWindow,trayStop,new ToolStripSeparator(),exit]);
         tray.ContextMenuStrip=trayMenu;
@@ -128,7 +129,7 @@ internal sealed partial class MainForm : Form
         refresh.Click+=async(_,_)=>await GuardAsync(RefreshAsync);
         chooseAdb.Click+=(_,_)=>BrowseAdb();
         connect.Click+=async(_,_)=>await GuardAsync(ConnectAsync);
-        stop.Click+=async(_,_)=>await GuardAsync(StopAsync);
+        stop.Click+=async(_,_)=>{SuppressTrustedNetworkAutoStart();await GuardAsync(StopAsync);};
         installApk.Click+=async(_,_)=>await GuardAsync(InstallApkAsync);
         addRule.Click+=async(_,_)=>await GuardAsync(AddRuleAsync); removeRule.Click+=async(_,_)=>await GuardAsync(RemoveRuleAsync);
         rules.SelectedIndexChanged+=(_,_)=>UpdateButtons();
@@ -155,7 +156,7 @@ internal sealed partial class MainForm : Form
             else if(this.requestedSerial is null&&nativeTrust is {Count:>0}&&!HasAnySessions&&
                 networks.SelectedItem is NetworkInterfaceChoice)
             {
-                await GuardAsync(()=>networkStartTask=StartNetworkCoreAsync(autoTrusted:true));
+                await GuardAsync(()=>StartNetworkRouteAsync((NetworkInterfaceChoice)networks.SelectedItem,autoTrusted:true));
             }
             if(this.requestedSerial is not null)
             {
@@ -192,7 +193,7 @@ internal sealed partial class MainForm : Form
     }
     void RestoreFromTray()
     {
-        if(closing)return;
+        if(closing||exitStarting)return;
         ShowInTaskbar=true;Show();
         if(WindowState==FormWindowState.Minimized)WindowState=FormWindowState.Normal;
         if(!Screen.AllScreens.Any(screen=>screen.WorkingArea.IntersectsWith(Bounds)))CenterToScreen();
@@ -200,18 +201,25 @@ internal sealed partial class MainForm : Form
     }
     async Task ExitAsync(bool requireReadyUpdater = false)
     {
-        if(closing)return;
+        if(closing||exitStarting)return;
+        exitStarting=true;UpdateButtons();
         if(requireReadyUpdater)
         {
-            var launched=updateCoordinator is not null&&updateCoordinator.Ready is not null&&await updateCoordinator.TryLaunchReadyUpdaterAsync();
+            var launched=false;
+            try{launched=updateCoordinator is not null&&updateCoordinator.Ready is not null&&await updateCoordinator.TryLaunchReadyUpdaterAsync();}
+            catch(Exception ex){Log("自动更新启动失败："+SafeError(ex));}
             if(!launched)
             {
+                exitStarting=false;
                 updateExitStarted=false;
                 SetStatus("自动更新未能安全启动，TabLink 保持运行");
+                UpdateButtons();
                 return;
             }
         }
-        closing=true;monitor.Stop();activationTimer.Stop();lifetime.Cancel();UpdateButtons();
+        closing=true;exitStarting=false;monitor.Stop();activationTimer.Stop();
+        connectionStarts.InvalidateActive();lifetime.Cancel();UpdateButtons();
+        await connectionStarts.WaitForIdleAsync();
         if(networkStartTask is {} opening)try{await opening;}catch(Exception ex){Log("网络启动已结束："+SafeError(ex));}
         if(additionalStartTask is {} extraOpening)try{await extraOpening;}catch(Exception ex){Log("设备启动已结束："+SafeError(ex));}
         if(browserStartTask is {} browserOpening)try{await browserOpening;}catch(Exception ex){Log("浏览器启动已结束："+SafeError(ex));}
@@ -512,8 +520,14 @@ internal sealed partial class MainForm : Form
         SetStatus("正在将 TabLink 客户端安装到选中的平板…");
         await adb.InstallApkAsync(target,apk,lifetime.Token);SetStatus("安卓客户端已安装，可以连接副屏。");
     }
-    async Task ConnectAsync()
+    Task ConnectAsync()
     {
+        SuppressTrustedNetworkAutoStart();
+        return RunConnectionStartAsync(ConnectionStartKind.AdbCompatibility,ConnectCoreAsync);
+    }
+    async Task ConnectCoreAsync(ConnectionStartLease startLease)
+    {
+        startLease.ThrowIfNotCurrent();
         if(server is not null)return;if(HasAdditionalSessions)throw new InvalidOperationException("TabLink 只允许一个副屏连接。请先停止当前原生或浏览器连接。");if(adb is null)throw new InvalidOperationException("请先选择 adb.exe");
         if(Process.GetProcessesByName("ExtensoDeskServer").Length>0)throw new InvalidOperationException("ExtensoDesk 后台仍在运行。请先退出它的 USB 服务，避免两个程序同时连接平板。");
         var device=SelectedDevice();
@@ -521,11 +535,14 @@ internal sealed partial class MainForm : Form
         if(usbSessionSetup.InFlight||usbRecoveryTask is {IsCompleted:false}||usbRecoveryCancellation is not null)
             throw new InvalidOperationException("上一条 USB 恢复任务尚未完全结束。");
         await EnsureOwnedDisplayCleanupBeforeNewConnectionAsync();
+        startLease.ThrowIfNotCurrent();
         BeginConnectionHealth(ConnectionHealthPath.AdbCompatibility,"手动选择了一台已列出的 USB 设备");
         // Establish tablet authorization before bringing back a previously
         // detached virtual screen. A missing tablet must not leave a phantom.
         approved=await adb.ApproveAsync(device.Device,lifetime.Token);
+        startLease.ThrowIfNotCurrent();
         await RetryPendingUsbCleanupAsync("before-usb-connect",force:true);
+        startLease.ThrowIfNotCurrent();
         var encoderGeneration=BeginEncoderSelectionConnection();
         primaryEncoderGeneration=encoderGeneration;
         try
@@ -539,14 +556,17 @@ internal sealed partial class MainForm : Form
             MarkHealthAuthenticationStarted("正在从明确选中的客户端读取屏幕参数");
             SetStatus("正在从 APK 读取平板屏幕参数…");
             tabletProfile=await adb.ReadDisplayProfileAsync(approved,lifetime.Token);
+            startLease.ThrowIfNotCurrent();
             MarkHealthDisplayProfile(tabletProfile);
             Diagnostics.Save("tablet-display-profile.json",()=>tabletProfile,Log);
             Log($"平板报告：{tabletProfile.Width} × {tabletProfile.Height}，当前 {tabletProfile.RefreshRate:F1} Hz，支持最高 {tabletProfile.RequestedRefreshRate} Hz，方向 {tabletProfile.Rotation}。");
             _=VideoPipeline.FindFfmpeg();
             MarkHealthDisplayPreparing("正在按设备报告的模式准备唯一虚拟副屏");
             var current=await PrepareDisplayAsync(tabletProfile);
+            startLease.ThrowIfNotCurrent();
             MarkHealthDisplayReady(current);
             await Task.Delay(200,lifetime.Token);
+            startLease.ThrowIfNotCurrent();
             activePower=new ActiveDisplayPower();
             var captureIdentity=(displayGuard??throw new IOException("副屏保护组件未启动")).Lease;
             capture=new DesktopCapture(current,identity:captureIdentity);
@@ -554,6 +574,7 @@ internal sealed partial class MainForm : Form
             var profile=tabletProfile;
             var quality=new AdaptiveVideoSession(profile,selectedQuality,VideoTransportKind.Usb);
             videoQuality=quality;
+            startLease.ThrowIfNotCurrent();
             server=new FrameServer(ct=>VideoPipeline.StreamAsync(current,profile,ct,Log,captureIdentity,quality:quality,
                     encoderOptions:CurrentEncoderOptions(),encoderSelected:snapshot=>ReportEncoderSelection(encoderGeneration,snapshot)),
                 touch.Checked?capture.Input:null,capture.ReleaseInput,quality:quality);
@@ -603,13 +624,16 @@ internal sealed partial class MainForm : Form
                     reverseAttached=true;
                     return selected;
                 },ct);
+                startLease.ThrowIfNotCurrent();
                 // Stop may have arrived while the bounded --no-rebind command
                 // was in flight. Ownership is now published, so skip a late
                 // Android launch and let Stop perform the exact cleanup.
                 if(ct.IsCancellationRequested)return;
                 SetStatus("USB 通道已建立，等待平板接收画面…");
                 await setupAdb.LaunchAsync(setupTarget,setupServer.Token,endpoint,ct);
+                startLease.ThrowIfNotCurrent();
             },setupCancellation.Token);
+            startLease.ThrowIfNotCurrent();
             UpdateButtons();
         }
         catch(Exception ex){MarkConnectionHealthAttention(SafeError(ex));await StopAsync();throw;}
@@ -726,6 +750,9 @@ internal sealed partial class MainForm : Form
     }
     async Task StopCoreAsync()
     {
+        var stoppedRouteGeneration=trustedNetworkRouteGeneration;
+        trustedNetworkRouteGeneration=default;
+        trustedNetworkRoutes.Invalidate(stoppedRouteGeneration);
         stopping=true;UpdateButtons();
         var recoveryCancellation=usbRecoveryCancellation;usbRecoveryCancellation=null;
         recoveryCancellation?.Cancel();
@@ -754,7 +781,8 @@ internal sealed partial class MainForm : Form
         displayGuard=null;
         primaryReservation=null;primaryTargetKey=null;
         activePower=null;
-        networkFirewall=null;discoveryFirewall=null;networkDiscovery=null;networkChoice=null;networkDisplay=null;tabletProfile=null;videoQuality=null;ClearPairing();
+        networkFirewall=null;discoveryFirewall=null;networkDiscovery=null;networkChoice=null;networkDisplay=null;tabletProfile=null;videoQuality=null;
+        networkRegistrationRequested=false;networkRegistrationDeadlineUtc=default;ClearPairing();
         welcome?.Close();welcome=null;
         if(running is null&&ownedCapture is null&&ownedApproval is null&&ownedGuard is null&&ownedFirewall is null&&ownedDiscoveryFirewall is null&&ownedDiscovery is null&&
             !ownedReverse&&ownedEndpoint is null&&ownedReceipt is null)
@@ -865,19 +893,35 @@ internal sealed partial class MainForm : Form
     }
     async Task MonitorAsync()
     {
-        await MonitorAdditionalAsync();
-        if(server is null&&!HasAdditionalSessions)
-        {
-            await RetryPendingUsbCleanupAsync("background-retry");
-            await TryAutoStartTrustedNetworkAsync();
-        }
-        if(server is {} healthServer)RefreshPrimaryConnectionHealth(healthServer);
-        if(server is {} registrationServer&&pairingUri is not null&&!registrationServer.RegistrationAvailable)
-            ExpireNetworkPairingUi();
-        if(monitoring||stopping||preparingNetwork||server is null)return;monitoring=true;
-        var observedApproval=approved;var observedServer=server;
+        if(monitoring)return;
+        monitoring=true;
+        FrameServer? observedServer=null;
+        ApprovedUsbDevice? observedApproval=null;
         try
         {
+            await MonitorAdditionalAsync();
+            if(server is null&&!HasAdditionalSessions)
+            {
+                await RetryPendingUsbCleanupAsync("background-retry");
+                await TryAutoStartTrustedNetworkAsync();
+            }
+            if(server is {} healthServer)RefreshPrimaryConnectionHealth(healthServer);
+            if(server is {} registrationServer&&pairingUri is not null&&
+                (!registrationServer.RegistrationAvailable||networkRegistrationDeadlineUtc<=DateTime.UtcNow))
+            {
+                registrationServer.TryRetireRegistration();
+                ExpireNetworkPairingUi();
+            }
+            if(server is {} unpairedNetworkServer&&approved is null&&networkChoice is not null&&capture is null&&
+                nativeTrust is {Count:0}&&pairingUri is null&&!networkRegistrationRequested&&
+                unpairedNetworkServer.CanRefreshRegistration)
+            {
+                Log("配对登记窗口已经结束，且当前没有可信设备；停止未授权的网络监听。");
+                await StopAsync();
+                return;
+            }
+            if(stopping||preparingNetwork||server is null)return;
+            observedApproval=approved;observedServer=server;
             if(observedApproval is not null)
             {
                 var inventory=await UsbInventory.ReadAsync(lifetime.Token);
@@ -888,13 +932,34 @@ internal sealed partial class MainForm : Form
             else if(networkChoice is not null)
             {
                 var observedNetwork=networkChoice;
-                var available=await IsNetworkAvailableAsync();
+                var routeProbe=await ProbeTrustedNetworkRouteAsync(observedServer,observedNetwork);
                 if(!ReferenceEquals(server,observedServer)||!ReferenceEquals(networkChoice,observedNetwork))return;
-                if(!available)
+                if(routeProbe is {State:TrustedNetworkRouteProbeState.RecoveryReady,Recovery:{} recovery})
                 {
-                    Log("选中的网络线路已断开或地址变化，正在迁移可信设备监听。");
+                    if(closing||trustedAutoStartSuppressed||!trustedNetworkRoutes.TryClaimRecovery(recovery))return;
+                    var registrationDeadline=networkRegistrationDeadlineUtc;
+                    TrustedNetworkRegistrationWindow? registrationWindow=null;
+                    if(networkRegistrationRequested&&registrationDeadline>DateTime.UtcNow&&
+                        observedServer.TryRetireRegistration(out var transfer))
+                        registrationWindow=TrustedNetworkRegistrationWindow.TryCreate(
+                            transfer.RemainingLifetime,registrationDeadline,DateTime.UtcNow);
+                    var carryRegistration=registrationWindow is not null;
+                    if(networkRegistrationRequested&&!carryRegistration)ExpireNetworkPairingUi();
+                    var recoveryStart=new NetworkRouteStartIntent(recovery.Replacement,
+                        AutoTrusted:!carryRegistration,IsRecovery:true,
+                        RegistrationWindow:registrationWindow);
+                    pendingTrustedRecoveryStart=recoveryStart;
+                    Log($"网络线路已持续变化，正在从 {recovery.Original.LocalAddress} 迁移到已确认的 {recovery.Replacement.LocalAddress}。");
                     await StopAsync();
-                    await TryAutoStartTrustedNetworkAsync();
+                    if(closing||trustedAutoStartSuppressed||HasAnySessions||
+                        !ReferenceEquals(pendingTrustedRecoveryStart,recoveryStart))return;
+                    try{await StartNetworkRouteAsync(recoveryStart);}
+                    catch(Exception ex)
+                    {
+                        if(trustedAutoStartSuppressed||!ReferenceEquals(pendingTrustedRecoveryStart,recoveryStart))return;
+                        nextTrustedAutoStartUtc=DateTime.UtcNow.AddSeconds(10);
+                        Log("可信网络线路迁移尚未完成；稍后只重试同一条已确认线路："+SafeError(ex));
+                    }
                     return;
                 }
                 if(capture is null)
@@ -1033,7 +1098,14 @@ internal sealed partial class MainForm : Form
                 RefreshPrimaryConnectionHealth(server);
             }
         }
-        catch(OperationCanceledException){}catch(Exception ex){if(ReferenceEquals(server,observedServer)&&ReferenceEquals(approved,observedApproval)){Log("连接监测失败："+SafeError(ex));await StopAsync();}}finally{monitoring=false;}
+        catch(OperationCanceledException){}
+        catch(Exception ex)
+        {
+            if(observedServer is not null&&ReferenceEquals(server,observedServer)&&ReferenceEquals(approved,observedApproval))
+            {Log("连接监测失败："+SafeError(ex));await StopAsync();}
+            else Log("后台监测暂时失败："+SafeError(ex));
+        }
+        finally{monitoring=false;}
     }
 
     async Task RetryPendingUsbCleanupAsync(string reason,bool force=false)
@@ -1157,8 +1229,26 @@ internal sealed partial class MainForm : Form
     }
     async Task GuardAsync(Func<Task> action,bool adbOperation=false)
     {
-        if(busy||stopping)return;busy=true;UpdateButtons();
+        if(busy||stopping||closing||exitStarting||updateExitStarted||connectionStarts.IsStarting)return;busy=true;UpdateButtons();
         try{await action();}catch(OperationCanceledException)when(lifetime.IsCancellationRequested){}catch(Exception ex){ShowError(ex,adbOperation);}finally{busy=false;if(!IsDisposed)UpdateButtons();}
+    }
+
+    async Task RunConnectionStartAsync(ConnectionStartKind kind,Func<ConnectionStartLease,Task> action)
+    {
+        if(closing||exitStarting||updateExitStarted)
+            throw new OperationCanceledException("TabLink 正在退出或应用更新，已取消新的连接启动。");
+        var lease=connectionStarts.Acquire(kind);
+        try
+        {
+            if(!IsDisposed)UpdateButtons();
+            lease.ThrowIfNotCurrent();
+            await action(lease);
+        }
+        finally
+        {
+            lease.Dispose();
+            if(!IsDisposed)UpdateButtons();
+        }
     }
     static string SafeError(Exception ex,bool adbOperation=false)=>SafeErrorSummary.ForUser(ex,adbOperation);
     void ShowError(Exception ex,bool adbOperation=false)
@@ -1172,15 +1262,17 @@ internal sealed partial class MainForm : Form
     }
     void UpdateButtons()
     {
-        var idle=!busy&&!stopping&&!closing&&!HasAnySessions&&settingsValid;
-        connectionMode.Enabled=!busy&&!stopping&&!closing&&!HasAnySessions;
-        qualityMode.Enabled=!busy&&!stopping&&!closing&&connectionMode.SelectedIndex!=1&&browserHost is null&&
+        var ready=!busy&&!stopping&&!closing&&!exitStarting&&!updateExitStarted&&!connectionStarts.IsStarting;
+        var idle=ready&&!HasAnySessions&&settingsValid;
+        connectionMode.Enabled=ready&&!HasAnySessions;
+        qualityMode.Enabled=ready&&connectionMode.SelectedIndex!=1&&browserHost is null&&
             !additionalSessions.Any(session=>!session.IsStopped);
-        encoderMode.Enabled=softwareFallback.Enabled=!busy&&!stopping&&!closing&&!HasAnySessions;
+        encoderMode.Enabled=softwareFallback.Enabled=ready&&!HasAnySessions;
         refresh.Enabled=idle;chooseAdb.Enabled=idle;connect.Enabled=idle&&adb is not null;installApk.Enabled=idle&&adb is not null;
-        devices.Enabled=idle;displays.Enabled=idle;touch.Enabled=idle;stop.Enabled=!busy&&!stopping&&server is not null;
-        trayStop.Enabled=!closing&&HasAnySessions;
-        var canEditRules=!busy&&!stopping&&!closing&&settingsValid;
+        devices.Enabled=idle;displays.Enabled=idle;touch.Enabled=idle;
+        stop.Enabled=!busy&&!stopping&&!closing&&!exitStarting&&!updateExitStarted&&(server is not null||HasPendingNetworkStart);
+        trayStop.Enabled=!busy&&!stopping&&!closing&&!exitStarting&&!updateExitStarted&&(HasAnySessions||HasPendingNetworkStart);
+        var canEditRules=ready&&settingsValid;
         repairAdb.Enabled=canEditRules;
         addRule.Enabled=canEditRules;removeRule.Enabled=canEditRules&&rules.SelectedItem is RuleChoice;serial.Enabled=canEditRules;vid.Enabled=canEditRules;pid.Enabled=canEditRules;label.Enabled=canEditRules;
         UpdateNetworkButtons(idle);
