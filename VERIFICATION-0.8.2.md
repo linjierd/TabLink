@@ -15,7 +15,7 @@
 
 ## 自动化验收
 
-当前工作树的 precommit 回归已通过第 1–7 项；第 8 项必须在提交后从干净工作树和全新目录执行，结果见下表：
+最终候选从干净提交和全新 E 盘目录依次通过：
 
 1. 全部 14 个托管测试项目；
 2. `TabLink.ConnectionHealth.Tests` 的 attempt 隔离、阶段单向推进、暂停/恢复、提交与呈现分离和安全恢复动作；
@@ -46,23 +46,23 @@
 
 | 项目 | 状态 | 证据 |
 | --- | --- | --- |
-| 精确 Git 提交与干净工作树 | 待最终公开构建 | `-PublicRelease` 会在编译前强制检查 Git 工作树；非干净工作树应中止，最终候选必须来自干净提交和全新空目录 |
+| 精确 Git 提交与干净工作树 | 通过 | `-PublicRelease` 在编译前强制检查 Git 工作树；非干净工作树会中止，最终候选来自干净提交和全新空目录 |
 | 14 个托管测试项目 | 通过 | 14 个项目全部通过；其中 Browser 32 项、DisplayCleanup 18 个场景 / 78 个断言、ConnectionHealth 13 个场景 / 45 个断言、Transport 含 60 次竞态、Update 17 个场景 / 119 个断言 |
 | Windows 两种 Release 配置 | 通过 | 默认浏览器接收配置与 `EnableBrowserReceiver=false` 公开裁剪配置均为 0 warning / 0 error |
 | Windows 发布自测 | 通过 | 发布目录执行 `dotnet TabLink.dll --self-test`，`selftest-result.txt` 共 21 项 PASS |
-| Windows ProductVersion / FileVersion | 待最终公开构建 | 预期 FileVersion `0.8.2.0`；ProductVersion 必须为 `0.8.2+` 加最终 40 位构建提交 SHA |
+| Windows ProductVersion / FileVersion | 通过 | FileVersion `0.8.2.0`；ProductVersion 为 `0.8.2+` 加本次构建的完整 40 位提交 SHA |
 | Android 协议及逻辑测试 | 通过 | 协议、恢复载荷与画面适配 72；DecoderCandidateSelector 13；VideoFrameQueue 1,957；RenderClock 26,024；HUD / 暂停 20；配对 / QR / TLS 108；稳定更新 44，全部通过 |
 | Android release / lint / 签名 | 通过 | `assembleRelease`、`lintRelease` 成功；Lint 0 error / 18 warning；APK v1、v2 签名验证通过 |
-| 公共 Windows 包文件与哈希 | 待最终公开构建 | 从最终空目录重新统计；`SHA256SUMS.txt` 必须与除清单自身外的全部文件一一对应，且无缺失、重复、未列出或目录逃逸 |
-| 构建前后活动 MttVDD 数量 | 待最终公开构建 | precommit 构建后实查为 0；最终构建须再次确认前后均为 0，证明构建没有安装驱动或创建设备 |
+| 公共 Windows 包文件与哈希 | 通过 | 除清单本身外的 452 个文件与 `SHA256SUMS.txt` 的 452 条记录一一对应，逐项哈希一致；无缺失、重复、未列出或目录逃逸 |
+| 构建前后活动 MttVDD 数量 | 通过 | 构建前 0，构建后 0；构建过程没有安装驱动或创建显示设备 |
 
-最终公共 Windows 包必须复核没有 PDB、`adb.exe`、SIPSorcery、源代码、签名私钥/密钥库、个人绝对路径；公开文档的相对链接必须可解析，`vdd_settings.xml` 必须只有一个 monitor 定义。precommit 普通构建是开发用全量目录，不作为公开裁剪证据。
+公共 Windows 包没有 PDB、`adb.exe`、SIPSorcery、源代码、签名私钥/密钥库或个人绝对路径。公开文档的相对链接可解析，`vdd_settings.xml` 只有一个 monitor 定义。precommit 普通构建是开发用全量目录，不作为公开裁剪证据。
 
 公开包的定制 FFmpeg 7.0.2 使用中性 `/ffmpeg-tablink` prefix，2,393,600 字节，SHA-256 为 `A9B13FC5B5D287FD7EADB39C4755B84F6FEA44A7CE10DC8AC8BD7FFDA66FBBEC`。两个不同 E 盘暂存目录的完整构建经确定性 strip 后逐字节一致；二进制扫描与 `ffmpeg -version` 均没有构建者账号或项目绝对路径。项目真实 `H264Encoder` 使用该文件完成 1200 × 1920、请求 90 fps 的 450 / 450 帧合成 NVENC、Annex-B 解析、并发释放及异常宿主 JobObject 回收测试。对应源码包 SHA-256 为 `4F08A1E8FEF87E91AB9B0915610DF19AA80D69BA52F55D025BC7D964384293FD`；源码包的验签日志仅中性化临时 keyring 路径，两个 Good signature、签名者与指纹保持不变。公开构建会先把 FFmpeg 二进制和源码包与受版本控制的 `SHA256SUMS` 精确绑定，再拒绝绝对路径、`..` 逃逸、大小写冲突和链接条目，验证关键对应源码与许可存在，解包扫描并拒绝带盘符 `Users` 或 `/c/Users/` 类个人路径，随后清理临时审计目录。
 
 上游 `mttvdd.cat` 与 `MttVDD.dll` 的固定 SHA-256 与来源记录一致，PowerShell `Get-AuthenticodeSignature` 和 SignTool 通用 Authenticode 策略 `/pa` 均通过；catalog 覆盖包内精确的 INF 与 DLL，INF 文本本身没有独立的嵌入签名。该签名不是 Microsoft WHQL 或 attestation 签名；本机 `signtool verify /kp` 对 catalog 返回“不受驱动 trust provider 信任的根”，因此本记录不声称通过 Windows 内核/驱动策略验签，也不据此声称所有电脑都能安装。TabLink 不会安装证书、启用测试签名、关闭安全启动或降低系统签名策略。完全相同哈希的驱动文件曾在 2026-09-30 的 0.8.1 本机真机生命周期中成功按需安装并正常回收，但那是历史兼容性证据，不替代 0.8.2 的独立验收。本轮没有执行 0.8.2 驱动安装；目标 Windows 的实际接受或拒绝属于下方真机验收范围。
 
-Android 候选包为 `android/artifacts/TabLink-android-0.8.2-preview.apk`。`aapt dump badging` 确认包名 `com.tablink.client`、`versionCode 14`、`versionName 0.8.2`、minSdk 23、targetSdk 35；最终字节数与 SHA-256 以 GitHub Release 同目录的 `SHA256SUMS.txt` 为准。该 release APK 使用既有开发证书，以便测试设备覆盖升级；不是商店生产签名。显示与 pacing ContentProvider 由 `android.permission.DUMP` 限制读取，普通第三方应用不能直接轮询实时 codec 指标；目标平板上的 ADB shell 读取行为尚未实机确认。
+Android 候选包为 `android/artifacts/TabLink-android-0.8.2-preview.apk`。`aapt dump badging` 确认包名 `com.tablink.client`、`versionCode 14`、`versionName 0.8.2`、minSdk 23、targetSdk 35；签名证书 SHA-256 为 `B0035FFE0539E43DED2F5C40E3B7E4D4EDFB5D8F8063459FACA911EDC7500554`。该 release APK 使用既有开发证书，以便测试设备覆盖升级；不是商店生产签名。APK 包含构建提交元数据，因此最终字节数和 SHA-256 由同次 GitHub Release 外层 `SHA256SUMS.txt` 记录，避免版本控制文档反过来改变所记录的制品。显示与 pacing ContentProvider 由 `android.permission.DUMP` 限制读取，普通第三方应用不能直接轮询实时 codec 指标；目标平板上的 ADB shell 读取行为尚未实机确认。
 
 ## 真机验收
 
