@@ -33,10 +33,146 @@ else {
 $apkPath = Join-Path $projectRoot $(if ($PublicRelease) { 'android\artifacts\TabLink-android-0.8.2-preview.apk' } else { 'android\artifacts\TabLink-android-0.8.2-debug.apk' })
 $ffmpegRoot = Join-Path $projectRoot 'third_party\ffmpeg-tablink'
 $ffmpegBinary = Join-Path $ffmpegRoot 'bin\ffmpeg.exe'
+$ffmpegSourceBundle = Join-Path $ffmpegRoot 'source-bundle.tar.gz'
+$ffmpegChecksums = Join-Path $ffmpegRoot 'SHA256SUMS'
 if (-not (Test-Path -LiteralPath $ffmpegBinary)) { throw 'Build the verified TabLink FFmpeg component first.' }
 if (-not (Test-Path -LiteralPath (Join-Path $ffmpegRoot 'README.md'))) { throw 'FFmpeg source notice missing.' }
-if (-not (Test-Path -LiteralPath (Join-Path $ffmpegRoot 'source-bundle.tar.gz'))) { throw 'FFmpeg corresponding source bundle missing.' }
+if (-not (Test-Path -LiteralPath $ffmpegSourceBundle)) { throw 'FFmpeg corresponding source bundle missing.' }
+
+function Assert-FfmpegArtifactsMatchChecksums {
+    param(
+        [Parameter(Mandatory = $true)][string]$ChecksumPath,
+        [Parameter(Mandatory = $true)][string]$BinaryPath,
+        [Parameter(Mandatory = $true)][string]$SourceBundlePath
+    )
+
+    if (-not (Test-Path -LiteralPath $ChecksumPath -PathType Leaf)) {
+        throw 'FFmpeg SHA256SUMS is missing.'
+    }
+
+    $artifactPaths = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $artifactPaths.Add('bin\ffmpeg.exe', $BinaryPath)
+    $artifactPaths.Add('source-bundle.tar.gz', $SourceBundlePath)
+    $declaredHashes = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $checksumLines = @(Get-Content -LiteralPath $ChecksumPath)
+    if ($checksumLines.Count -ne $artifactPaths.Count) {
+        throw 'FFmpeg SHA256SUMS must contain exactly the binary and corresponding source bundle entries.'
+    }
+
+    foreach ($line in $checksumLines) {
+        $checksumMatch = [regex]::Match($line, '^(?<Hash>[0-9A-Fa-f]{64})  (?<Path>[^\r\n]+)$')
+        if (-not $checksumMatch.Success) {
+            throw "FFmpeg SHA256SUMS contains a malformed line: $line"
+        }
+        $entryPath = $checksumMatch.Groups['Path'].Value
+        if (-not $artifactPaths.ContainsKey($entryPath)) {
+            throw "FFmpeg SHA256SUMS contains an unexpected entry: $entryPath"
+        }
+        if ($declaredHashes.ContainsKey($entryPath)) {
+            throw "FFmpeg SHA256SUMS contains a duplicate entry: $entryPath"
+        }
+        $declaredHashes.Add($entryPath, $checksumMatch.Groups['Hash'].Value)
+    }
+
+    foreach ($entryPath in $artifactPaths.Keys) {
+        if (-not $declaredHashes.ContainsKey($entryPath)) {
+            throw "FFmpeg SHA256SUMS is missing the required entry: $entryPath"
+        }
+        $actualHash = (Get-FileHash -LiteralPath $artifactPaths[$entryPath] -Algorithm SHA256).Hash
+        if (-not [string]::Equals($actualHash, $declaredHashes[$entryPath], [StringComparison]::OrdinalIgnoreCase)) {
+            throw "FFmpeg artifact does not match SHA256SUMS: $entryPath"
+        }
+    }
+}
+
+function Assert-FfmpegSourceBundleSafe {
+    param([Parameter(Mandatory = $true)][string]$BundlePath)
+
+    $auditRoot = Join-Path $projectRoot ('.ffmpeg-source-audit-' + [Guid]::NewGuid().ToString('N'))
+    try {
+        $entries = @(& tar -tzf $BundlePath 2>&1 | ForEach-Object { $_.ToString() })
+        if ($LASTEXITCODE -ne 0) { throw 'Unable to list the FFmpeg source bundle.' }
+        if ($entries.Count -eq 0) { throw 'FFmpeg source bundle is empty.' }
+
+        $normalizedEntries = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        foreach ($entry in $entries) {
+            $normalizedEntry = $entry -replace '\\', '/'
+            $entryParts = @($normalizedEntry -split '/')
+            if ($normalizedEntry -match '^(?:/|[A-Za-z]:/)' -or $entryParts -contains '..') {
+                throw "FFmpeg source bundle contains an unsafe path: $entry"
+            }
+            $candidatePath = [IO.Path]::GetFullPath((Join-Path $auditRoot $normalizedEntry))
+            $auditPrefix = $auditRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+            if ($candidatePath -ne $auditRoot -and -not $candidatePath.StartsWith($auditPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "FFmpeg source bundle path escapes the audit directory: $entry"
+            }
+            if (-not $normalizedEntries.Add($normalizedEntry)) {
+                throw "FFmpeg source bundle contains a duplicate entry: $entry"
+            }
+        }
+
+        $requiredEntries = @(
+            'ffmpeg-tablink/source/ffmpeg-7.0.2/',
+            'ffmpeg-tablink/source/ffmpeg-7.0.2/configure',
+            'ffmpeg-tablink/source/ffmpeg-7.0.2/COPYING.LGPLv2.1',
+            'ffmpeg-tablink/source/nv-codec-headers-n12.2.72.0/',
+            'ffmpeg-tablink/source/nv-codec-headers-n12.2.72.0/include/ffnvcodec/nvEncodeAPI.h',
+            'ffmpeg-tablink/0001-windows-private-high-resolution-usleep.patch',
+            'ffmpeg-tablink/README.md',
+            'ffmpeg-tablink/build.ps1',
+            'ffmpeg-tablink/build.sh',
+            'ffmpeg-tablink/prepare-toolchain.ps1',
+            'ffmpeg-tablink/downloads-manifest.json',
+            'ffmpeg-tablink/bin/COPYING.LGPLv2.1',
+            'ffmpeg-tablink/bin/COPYING.MinGW-w64-runtime.txt',
+            'ffmpeg-tablink/bin/COPYING.NVIDIA.txt',
+            'ffmpeg-tablink/signature-verification.log',
+            'ffmpeg-tablink/production-parser-test.log',
+            'ffmpeg-tablink/NATIVE-MOTION-VALIDATION.md',
+            'ffmpeg-tablink/VALIDATION.md'
+        )
+        foreach ($requiredEntry in $requiredEntries) {
+            if (-not $normalizedEntries.Contains($requiredEntry)) {
+                throw "FFmpeg source bundle is missing a required corresponding-source entry: $requiredEntry"
+            }
+        }
+
+        $entryDetails = @(& tar -tvzf $BundlePath 2>&1 | ForEach-Object { $_.ToString() })
+        if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect FFmpeg source bundle entry types.' }
+        if ($null -ne ($entryDetails | Where-Object { $_ -notmatch '^[-d]' } | Select-Object -First 1)) {
+            throw 'FFmpeg source bundle contains a link or unsupported entry type.'
+        }
+
+        New-Item -ItemType Directory -Path $auditRoot | Out-Null
+        & tar -xzf $BundlePath -C $auditRoot
+        if ($LASTEXITCODE -ne 0) { throw 'Unable to extract the FFmpeg source bundle for privacy audit.' }
+
+        $personalPathPattern = '(?i)(?:[A-Z]:[\\/]+Users[\\/]|/[A-Z]/Users/)'
+        foreach ($file in Get-ChildItem -LiteralPath $auditRoot -File -Recurse -Force) {
+            $relativePath = [IO.Path]::GetRelativePath($auditRoot, $file.FullName)
+            if ($relativePath -match $personalPathPattern) {
+                throw "FFmpeg source bundle contains a personal path in an entry name: $relativePath"
+            }
+            $contentBytes = [IO.File]::ReadAllBytes($file.FullName)
+            $contentViews = @(
+                [Text.Encoding]::ASCII.GetString($contentBytes),
+                [Text.Encoding]::Unicode.GetString($contentBytes),
+                [Text.Encoding]::BigEndianUnicode.GetString($contentBytes)
+            )
+            if ($null -ne ($contentViews | Where-Object { $_ -match $personalPathPattern } | Select-Object -First 1)) {
+                throw "FFmpeg source bundle contains a personal Users path in: $relativePath"
+            }
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $auditRoot) {
+            Remove-Item -LiteralPath $auditRoot -Recurse -Force
+        }
+    }
+}
+
 if ($PublicRelease) {
+    Assert-FfmpegArtifactsMatchChecksums -ChecksumPath $ffmpegChecksums -BinaryPath $ffmpegBinary -SourceBundlePath $ffmpegSourceBundle
     $ffmpegBytes = [IO.File]::ReadAllBytes($ffmpegBinary)
     $ffmpegAscii = [Text.Encoding]::ASCII.GetString($ffmpegBytes)
     $ffmpegUtf16 = [Text.Encoding]::Unicode.GetString($ffmpegBytes)
@@ -147,6 +283,9 @@ $ffmpegOutput = Join-Path $publishRoot 'tools\ffmpeg'
 New-Item -ItemType Directory -Path $ffmpegOutput -Force | Out-Null
 Copy-Item -LiteralPath $ffmpegBinary -Destination $ffmpegOutput
 Get-ChildItem -LiteralPath (Join-Path $ffmpegRoot 'bin') -Filter 'COPYING*' -File | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $ffmpegOutput }
+if ($PublicRelease) {
+    Assert-FfmpegSourceBundleSafe -BundlePath $ffmpegSourceBundle
+}
 foreach ($name in @('README.md','source-bundle.tar.gz','0001-windows-private-high-resolution-usleep.patch','downloads-manifest.json')) {
     Copy-Item -LiteralPath (Join-Path $ffmpegRoot $name) -Destination $ffmpegOutput
 }

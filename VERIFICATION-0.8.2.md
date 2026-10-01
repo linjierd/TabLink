@@ -55,7 +55,7 @@
 
 公共 Windows 包没有 PDB、`adb.exe`、SIPSorcery、源代码、签名私钥/密钥库、个人绝对路径。公开文档的 10 个相对链接都可解析。`vdd_settings.xml` 只有一个 monitor 定义。
 
-公开包的定制 FFmpeg 7.0.2 使用中性 `/ffmpeg-tablink` prefix，2,393,600 字节，SHA-256 为 `A9B13FC5B5D287FD7EADB39C4755B84F6FEA44A7CE10DC8AC8BD7FFDA66FBBEC`。两个不同 E 盘暂存目录的完整构建经确定性 strip 后逐字节一致；二进制扫描与 `ffmpeg -version` 均没有构建者账号或项目绝对路径。项目真实 `H264Encoder` 使用该文件完成 1200 × 1920、请求 90 fps 的 450 / 450 帧合成 NVENC、Annex-B 解析、并发释放及异常宿主 JobObject 回收测试。对应源码包 SHA-256 为 `86920297C5A9407BCE2DCB7386FAE18BDC2693E6F47C6C9132E69E3A1E8D2B27`；公开构建会在复制前再次扫描并拒绝带盘符 `Users` 路径的 FFmpeg。
+公开包的定制 FFmpeg 7.0.2 使用中性 `/ffmpeg-tablink` prefix，2,393,600 字节，SHA-256 为 `A9B13FC5B5D287FD7EADB39C4755B84F6FEA44A7CE10DC8AC8BD7FFDA66FBBEC`。两个不同 E 盘暂存目录的完整构建经确定性 strip 后逐字节一致；二进制扫描与 `ffmpeg -version` 均没有构建者账号或项目绝对路径。项目真实 `H264Encoder` 使用该文件完成 1200 × 1920、请求 90 fps 的 450 / 450 帧合成 NVENC、Annex-B 解析、并发释放及异常宿主 JobObject 回收测试。对应源码包 SHA-256 为 `4F08A1E8FEF87E91AB9B0915610DF19AA80D69BA52F55D025BC7D964384293FD`；源码包的验签日志仅中性化临时 keyring 路径，两个 Good signature、签名者与指纹保持不变。公开构建会先把 FFmpeg 二进制和源码包与受版本控制的 `SHA256SUMS` 精确绑定，再拒绝绝对路径、`..` 逃逸、大小写冲突和链接条目，验证关键对应源码与许可存在，解包扫描并拒绝带盘符 `Users` 或 `/c/Users/` 类个人路径，随后清理临时审计目录。
 
 上游 `mttvdd.cat` 与 `MttVDD.dll` 的固定 SHA-256 与来源记录一致，PowerShell `Get-AuthenticodeSignature` 和 SignTool 通用 Authenticode 策略 `/pa` 均通过；catalog 覆盖包内精确的 INF 与 DLL，INF 文本本身没有独立的嵌入签名。该签名不是 Microsoft WHQL 或 attestation 签名；本机 `signtool verify /kp` 对 catalog 返回“不受驱动 trust provider 信任的根”，因此本记录不声称通过 Windows 内核/驱动策略验签，也不据此声称所有电脑都能安装。TabLink 不会安装证书、启用测试签名、关闭安全启动或降低系统签名策略。完全相同哈希的驱动文件曾在 2026-09-30 的 0.8.1 本机真机生命周期中成功按需安装并正常回收，但那是历史兼容性证据，不替代 0.8.2 的独立验收。本轮没有执行 0.8.2 驱动安装；目标 Windows 的实际接受或拒绝属于下方真机验收范围。
 
