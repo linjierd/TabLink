@@ -19,6 +19,9 @@ internal static class Program
         await TestAsync("conflicting and malformed mappings retire ownership without mutation", ConflictAndMalformedMappingsFailClosedAsync);
         await TestAsync("Android user changes and malformed user output stop before route inspection", AndroidUserMismatchStopsBeforeRouteInspectionAsync);
         await TestAsync("Android user change during native reconnect wait blocks the client launch", AndroidUserChangeBeforeLaunchStopsWithoutIssuingLaunchAsync);
+        await TestAsync("provider publication failure preserves exact route cleanup ownership", ProviderFailurePreservesOwnedRouteAsync);
+        await TestAsync("Android user switch after publication blocks marker activation", AndroidUserSwitchAfterPublicationBlocksActivationAsync);
+        await TestAsync("cancellation after publication preserves exact route cleanup ownership", CancellationAfterPublicationPreservesOwnedRouteAsync);
         await TestAsync("empty and offline inventories are retryable", AbsentAndOfflineDevicesAreRetryableAsync);
         await TestAsync("recovery detail redacts fake ADB stderr, path and serial markers", SensitiveAdbFailuresAreRedactedAsync);
         await TestAsync("identity and exclusion changes fail closed", IdentityAndExclusionChangesFailClosedAsync);
@@ -105,7 +108,7 @@ internal static class Program
         Check(context.Runner.LaunchCount == 1, "one Android launch is issued");
 
         var targeted = context.Runner.TargetCalls;
-        Check(targeted.Count == 5, "missing mapping path has exactly five targeted commands");
+        Check(targeted.Count == 7, "missing mapping path has the complete seven-command recovery transaction");
         Check(targeted[0].SequenceEqual(Target("shell", "am", "get-current-user")),
             "bound Android user is checked before route inspection");
         Check(targeted[1].SequenceEqual(Target("reverse", "--list")), "inspection precedes all mutation");
@@ -113,9 +116,99 @@ internal static class Program
             "mapping is created with exact --no-rebind endpoints");
         Check(targeted[3].SequenceEqual(Target("shell", "am", "get-current-user")),
             "bound Android user is checked again immediately before launch");
-        Check(targeted[4].SequenceEqual(Target("shell", "am", "start", "--user", "0", "-n", "com.tablink.client/.MainActivity",
-            "--es", "token", OriginalToken, "--ei", "port", "54321")),
-            "client launch uses the original session token and fixed per-session endpoint");
+        Check(IsProtectedPublication(targeted[4], context.Runner.PublishedActivation),
+            "protected provider publication uses the original token, endpoint and a random marker");
+        Check(targeted[5].SequenceEqual(Target("shell", "am", "get-current-user")),
+            "bound Android user is rechecked after provider publication");
+        Check(IsMarkerActivation(targeted[6], context.Runner.PublishedActivation),
+            "exported MainActivity receives only the one-shot marker, never the token or port");
+    }
+
+    static async Task ProviderFailurePreservesOwnedRouteAsync()
+    {
+        const string privateMarker = "PRIVATE_PROVIDER_FAILURE";
+        var context = CreateContext(mapping: "");
+        context.Runner.ProviderPublicationError =
+            "Error while accessing provider:\njava.lang.SecurityException: " + privateMarker;
+        var connected = false;
+        var owned = true;
+        var retired = 0;
+        var published = 0;
+        var runner = new UsbSessionRecoveryAttemptRunner(context.Client, context.AndroidUser, Endpoint, OriginalToken,
+            () => true, () => connected, () => owned,
+            () => { retired++; owned = false; },
+            () => { published++; owned = true; }, NoDelay);
+
+        var result = await runner.RunAsync(TimeSpan.FromSeconds(10), () => true, CancellationToken.None);
+
+        Check(result.Status == UsbRecoveryExecutionStatus.TerminalFailure,
+            "provider response failure is terminal for the incompatible client session");
+        Check(result.RouteStatus == AdbReversePortStatus.Created && !result.ClientLaunchCompleted,
+            "provider response failure retains the created route and does not claim activation success");
+        Check(retired == 1 && published == 1 && owned,
+            "provider response failure preserves the newly published exact cleanup receipt");
+        Check(context.Runner.ReverseCreateCount == 1 && context.Runner.PublicationCount == 1
+                && context.Runner.LaunchCount == 0,
+            "provider response failure occurs after exact route creation and before marker activation");
+        Check(!result.Detail.Contains(privateMarker, StringComparison.Ordinal),
+            "provider response failure does not expose raw Android output");
+        Check(context.Runner.TargetCalls.Count == 5
+                && IsProtectedPublication(context.Runner.TargetCalls[4], context.Runner.PublishedActivation),
+            "provider failure stops immediately after the protected publication command");
+    }
+
+    static async Task AndroidUserSwitchAfterPublicationBlocksActivationAsync()
+    {
+        var context = CreateContext(mapping: "UsbFfs tcp:54321 tcp:27183\n");
+        context.Runner.ChangeAndroidUserAfterPublication = true;
+        var ownershipCallbacks = 0;
+        var runner = new UsbSessionRecoveryAttemptRunner(context.Client, context.AndroidUser, Endpoint, OriginalToken,
+            () => true, () => false, () => true,
+            () => ownershipCallbacks++, () => ownershipCallbacks++, NoDelay);
+
+        var result = await runner.RunAsync(TimeSpan.FromSeconds(10), () => true, CancellationToken.None);
+
+        Check(result.Status == UsbRecoveryExecutionStatus.TerminalFailure,
+            "Android user switch after publication fails closed");
+        Check(result.RouteStatus == AdbReversePortStatus.Existing && !result.ClientLaunchCompleted,
+            "user switch retains the existing route but never reports a client launch");
+        Check(context.Runner.PublicationCount == 1 && context.Runner.LaunchCount == 0,
+            "one protected value is published but its marker is never activated for another user");
+        Check(ownershipCallbacks == 0,
+            "user switch does not retire the valid exact cleanup receipt");
+        var targeted = context.Runner.TargetCalls;
+        Check(targeted.Count == 5 && IsProtectedPublication(targeted[3], context.Runner.PublishedActivation)
+                && targeted[4].SequenceEqual(Target("shell", "am", "get-current-user")),
+            "the second bound-user check is the last command after publication");
+    }
+
+    static async Task CancellationAfterPublicationPreservesOwnedRouteAsync()
+    {
+        var context = CreateContext(mapping: "UsbFfs tcp:54321 tcp:27183\n");
+        context.Runner.BlockUserCheckAfterPublication = true;
+        var ownershipCallbacks = 0;
+        using var stop = new CancellationTokenSource();
+        var runner = new UsbSessionRecoveryAttemptRunner(context.Client, context.AndroidUser, Endpoint, OriginalToken,
+            () => true, () => false, () => true,
+            () => ownershipCallbacks++, () => ownershipCallbacks++, NoDelay);
+
+        var attempt = runner.RunAsync(TimeSpan.FromSeconds(10), () => true, stop.Token);
+        await context.Runner.PostPublicationUserCheckEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        stop.Cancel();
+        var result = await attempt.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Check(result.Status == UsbRecoveryExecutionStatus.Cancelled,
+            "external stop cancels a handoff between protected publication and activation");
+        Check(result.RouteStatus == AdbReversePortStatus.Existing && !result.ClientLaunchCompleted,
+            "cancelled handoff retains the exact route and never reports activation");
+        Check(context.Runner.PublicationCount == 1 && context.Runner.LaunchCount == 0,
+            "cancelled handoff publishes one short-lived value without activating its marker");
+        Check(ownershipCallbacks == 0,
+            "cancelled handoff preserves the valid exact cleanup receipt for Stop");
+        var targeted = context.Runner.TargetCalls;
+        Check(targeted.Count == 5 && IsProtectedPublication(targeted[3], context.Runner.PublishedActivation)
+                && targeted[4].SequenceEqual(Target("shell", "am", "get-current-user")),
+            "cancellation interrupts the post-publication user check before marker activation");
     }
 
     static async Task ExistingOwnedMappingDoesNotRebindAsync()
@@ -488,6 +581,27 @@ internal static class Program
 
     static string[] Target(params string[] command) => ["-s", OriginalSerial, .. command];
 
+    static bool IsProtectedPublication(string[] call, string? activation)
+    {
+        if (!IsActivationMarker(activation)) return false;
+        return call.SequenceEqual(Target("shell", "content", "insert",
+            "--uri", "content://com.tablink.client.adb/session",
+            "--user", "0",
+            "--bind", "activation:s:" + activation,
+            "--bind", "token:s:" + OriginalToken,
+            "--bind", "port:i:54321"));
+    }
+
+    static bool IsMarkerActivation(string[] call, string? activation) =>
+        IsActivationMarker(activation) &&
+        call.SequenceEqual(Target("shell", "am", "start", "--user", "0",
+            "-n", "com.tablink.client/.MainActivity",
+            "-a", "com.tablink.client.APPLY_ADB_SESSION",
+            "--es", "adbActivation", activation!));
+
+    static bool IsActivationMarker(string? value) => value is { Length: 32 } &&
+        value.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
+
     static bool ForbiddenArgument(string argument) =>
         argument.Equals("kill-server", StringComparison.OrdinalIgnoreCase) ||
         argument.Equals("start-server", StringComparison.OrdinalIgnoreCase) ||
@@ -523,7 +637,9 @@ internal static class Program
         readonly object sync = new();
         readonly List<string[]> calls = [];
         int reverseCreateCount;
+        int publicationCount;
         int launchCount;
+        string? publishedActivation;
 
         public string ReverseListOutput { get; init; } = "";
         public int ReverseListExitCode { get; init; }
@@ -531,6 +647,9 @@ internal static class Program
         public string DeviceState { get; set; } = "device";
         public string? DevicesStandardOutput { get; set; }
         public string CurrentAndroidUserOutput { get; set; } = "0\n";
+        public string ProviderPublicationError { get; set; } = "";
+        public bool ChangeAndroidUserAfterPublication { get; set; }
+        public bool BlockUserCheckAfterPublication { get; set; }
         public bool BlockInspection { get; set; }
         public bool BlockReverse { get; set; }
         public TaskCompletionSource<bool> InspectionEntered { get; } =
@@ -539,8 +658,12 @@ internal static class Program
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource<bool> ReleaseReverse { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<bool> PostPublicationUserCheckEntered { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int ReverseCreateCount => Volatile.Read(ref reverseCreateCount);
+        public int PublicationCount => Volatile.Read(ref publicationCount);
         public int LaunchCount => Volatile.Read(ref launchCount);
+        public string? PublishedActivation { get { lock (sync) return publishedActivation; } }
         public IReadOnlyList<string[]> Calls { get { lock (sync) return calls.Select(x => x.ToArray()).ToArray(); } }
         public IReadOnlyList<string[]> TargetCalls => Calls.Where(x => !x.SequenceEqual(new[] { "devices", "-l" })).ToArray();
         public void ResetCalls() { lock (sync) calls.Clear(); }
@@ -567,7 +690,14 @@ internal static class Program
                 return new AdbCommandResult(ReverseListExitCode, ReverseListOutput, ReverseListError);
             }
             if (call.SequenceEqual(Target("shell", "am", "get-current-user")))
+            {
+                if (BlockUserCheckAfterPublication && PublicationCount > 0)
+                {
+                    PostPublicationUserCheckEntered.TrySetResult(true);
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                }
                 return new AdbCommandResult(0, CurrentAndroidUserOutput, "");
+            }
             if (call.SequenceEqual(Target("reverse", "--no-rebind", "tcp:54321", "tcp:27183")))
             {
                 ReverseEntered.TrySetResult(true);
@@ -576,8 +706,27 @@ internal static class Program
                 Interlocked.Increment(ref reverseCreateCount);
                 return new AdbCommandResult(0, "", "");
             }
-            if (call.SequenceEqual(Target("shell", "am", "start", "--user", "0", "-n", "com.tablink.client/.MainActivity",
-                "--es", "token", OriginalToken, "--ei", "port", "54321")))
+            if (call.Length == 15 &&
+                call[0] == "-s" && call[1] == expectedSerial &&
+                call[2] == "shell" && call[3] == "content" && call[4] == "insert" &&
+                call[5] == "--uri" && call[6] == "content://com.tablink.client.adb/session" &&
+                call[7] == "--user" && call[8] == "0" &&
+                call[9] == "--bind" && call[10].StartsWith("activation:s:", StringComparison.Ordinal) &&
+                call[11] == "--bind" && call[12] == "token:s:" + OriginalToken &&
+                call[13] == "--bind" && call[14] == "port:i:54321")
+            {
+                var activation = call[10]["activation:s:".Length..];
+                if (!IsActivationMarker(activation))
+                    throw new InvalidOperationException("Protected publication used an invalid activation marker.");
+                lock (sync) publishedActivation = activation;
+                Interlocked.Increment(ref publicationCount);
+                if (ProviderPublicationError.Length != 0)
+                    return new AdbCommandResult(0, "", ProviderPublicationError);
+                if (ChangeAndroidUserAfterPublication)
+                    CurrentAndroidUserOutput = "13\n";
+                return new AdbCommandResult(0, "", "");
+            }
+            if (IsMarkerActivation(call, PublishedActivation))
             {
                 Interlocked.Increment(ref launchCount);
                 return new AdbCommandResult(0, "Starting: Intent", "");

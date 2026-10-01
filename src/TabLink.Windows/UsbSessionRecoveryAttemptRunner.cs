@@ -176,7 +176,17 @@ internal sealed class UsbSessionRecoveryAttemptRunner
 
             if (tryReserveClientLaunch())
             {
-                await adb.LaunchAsync(targetUser, token, endpoint, ct);
+                try { await adb.LaunchAsync(targetUser, token, endpoint, ct); }
+                catch (AdbResponseException ex)
+                {
+                    // The reverse route is still exactly owned by this session.
+                    // A protected-provider response failure or malformed user
+                    // response must stop the session, while preserving that
+                    // ownership so Stop can remove the exact mapping.
+                    return Terminal(route, false,
+                        "Android 客户端未接受受保护的 USB 会话配置；将停止会话并精确回收通道："
+                        + SafeErrorSummary.ForUser(ex, adbOperation: true));
+                }
                 launched = true;
                 if (await WaitForConnectionAsync(LaunchReconnectWindow, ct))
                     return Connected(route, true, "已用原会话令牌启动客户端并恢复连接。");
