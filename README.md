@@ -104,7 +104,7 @@ Windows 的管理员授权、锁屏等操作可能使普通桌面暂时无法采
 
 电脑端 `TabLink.exe` 从 0.5.1 起声明需要管理员权限：从普通桌面启动时，由 Windows 请求 UAC 授权，授权成功后程序及其副屏守护进程在管理员权限下运行。0.8.2 不在程序启动、打开配对页或等待扫码时安装虚拟显示设备；只有接收设备通过认证并提交有效屏幕参数、连接准备真正占用副屏时才执行检查与按需安装。
 
-驱动使用 [VirtualDrivers / Virtual-Display-Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver) 固定版本 25.7.23，附带原始签名二进制、MIT 许可、SHA-256 和来源记录。安装前检查哈希与 Windows 签名，无需启用测试签名、关闭安全启动或安装额外证书。驱动配置固定为一个输出；旧配置即使曾设置多个输出，也必须先收敛到一个再安装设备，避免连接瞬间重新生成多块虚拟屏。
+驱动使用 [VirtualDrivers / Virtual-Display-Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver) 固定版本 25.7.23，附带原始签名二进制、MIT 许可、SHA-256 和来源记录。TabLink 安装前检查固定哈希与 Windows 通用 Authenticode 信任，不会主动启用测试签名、关闭安全启动、安装证书或降低签名策略。该上游签名不是 Microsoft WHQL 认证，实际安装仍受接收电脑的 Windows 驱动信任策略约束；拒绝时健康中心会保留错误，不会更改系统签名设置。驱动配置固定为一个输出；旧配置即使曾设置多个输出，也必须先收敛到一个再安装设备，避免连接瞬间重新生成多块虚拟屏。
 
 全局显示租约上限同样固定为一个。USB 调试、Wi-Fi / USB 网络和浏览器接入共用该上限；已有副屏连接或正在准备连接时，第二个请求会在调用驱动管理组件之前被拒绝。要切换平板或手机，先停止当前连接，再连接下一台设备。
 
@@ -210,5 +210,5 @@ dotnet run --project tests/TabLink.Core.Tests -c Release
 
 - 显示驱动：[VirtualDrivers / Virtual-Display-Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver)，固定 25.7.23，MIT。许可、签名和哈希记录位于 `third_party/VirtualDisplayDriver/`，交付副本位于 `drivers/VirtualDisplayDriver/`。
 - 视频组件：专用于 TabLink 的 **FFmpeg 7.0.2-tablink-hires1**，从 [FFmpeg 官方 n7.0.2 源码](https://github.com/FFmpeg/FFmpeg/tree/e3a61e91030696348b56361bdf80ea358aef4a19) 构建，采用 LGPL 2.1 或更新版本。修改仅为 Windows 等待函数使用进程私有的高精度等待计时器，修复 90 fps 捕获在普通 `Sleep` 下常降至约 64 fps 的问题；不修改系统计时器、注册表或显卡驱动，不需要管理员权限。
-- 已验证发行构建所用 `ffmpeg.exe` SHA-256：`AEF1CC45435077017947E4E361A3D949552774F931772BDF406F4A8F852D90EF`。编码接口固定为 NVENC API 12.2，兼容验证机器上的 NVIDIA 驱动。公开仓库在 `third_party/ffmpeg-tablink/` 保留补丁、来源哈希和可复现构建脚本，不提交生成的二进制、下载源码或工具链；发布二进制时须另外附上完整对应源码 `source-bundle.tar.gz` 和 LGPL 许可。此组件作为单独进程运行，没有替换系统 FFmpeg。
+- 已验证发行构建所用 `ffmpeg.exe` SHA-256：`A9B13FC5B5D287FD7EADB39C4755B84F6FEA44A7CE10DC8AC8BD7FFDA66FBBEC`。构建使用中性的 `/ffmpeg-tablink` prefix，`ffmpeg -version` 和二进制均不含构建者账号或项目绝对路径；公开发布脚本会对此做 fail-closed 检查。编码接口固定为 NVENC API 12.2，兼容验证机器上的 NVIDIA 驱动。公开仓库在 `third_party/ffmpeg-tablink/` 保留补丁、来源哈希和可复现构建脚本，不提交生成的二进制、下载源码或工具链；发布二进制时须另外附上完整对应源码 `source-bundle.tar.gz` 和 LGPL 许可。此组件作为单独进程运行，没有替换系统 FFmpeg。
 - USB 工具：使用本机 Android 官方 SDK Platform-Tools 的 ADB。

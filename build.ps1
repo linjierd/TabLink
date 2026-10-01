@@ -32,9 +32,21 @@ else {
 }
 $apkPath = Join-Path $projectRoot $(if ($PublicRelease) { 'android\artifacts\TabLink-android-0.8.2-preview.apk' } else { 'android\artifacts\TabLink-android-0.8.2-debug.apk' })
 $ffmpegRoot = Join-Path $projectRoot 'third_party\ffmpeg-tablink'
-if (-not (Test-Path -LiteralPath (Join-Path $ffmpegRoot 'bin\ffmpeg.exe'))) { throw 'Build the verified TabLink FFmpeg component first.' }
+$ffmpegBinary = Join-Path $ffmpegRoot 'bin\ffmpeg.exe'
+if (-not (Test-Path -LiteralPath $ffmpegBinary)) { throw 'Build the verified TabLink FFmpeg component first.' }
 if (-not (Test-Path -LiteralPath (Join-Path $ffmpegRoot 'README.md'))) { throw 'FFmpeg source notice missing.' }
 if (-not (Test-Path -LiteralPath (Join-Path $ffmpegRoot 'source-bundle.tar.gz'))) { throw 'FFmpeg corresponding source bundle missing.' }
+if ($PublicRelease) {
+    $ffmpegBytes = [IO.File]::ReadAllBytes($ffmpegBinary)
+    $ffmpegAscii = [Text.Encoding]::ASCII.GetString($ffmpegBytes)
+    $ffmpegUtf16 = [Text.Encoding]::Unicode.GetString($ffmpegBytes)
+    $ffmpegVersion = @(& $ffmpegBinary -version 2>&1 | ForEach-Object { $_.ToString() }) -join "`n"
+    if ($LASTEXITCODE -ne 0) { throw 'Bundled FFmpeg failed its version probe.' }
+    $userPathPattern = '(?i)[A-Z]:[\\/]+Users[\\/]'
+    if ($ffmpegAscii -match $userPathPattern -or $ffmpegUtf16 -match $userPathPattern -or $ffmpegVersion -match $userPathPattern) {
+        throw 'Bundled FFmpeg exposes a builder-specific Users path; rebuild it with the neutral prefix before publishing.'
+    }
+}
 New-Item -ItemType Directory -Path $publishRoot -Force | Out-Null
 if (-not $PublicRelease) {
     & (Join-Path $projectRoot 'tools\Prepare-BundledAdb.ps1') -VerifyOnly
@@ -133,7 +145,7 @@ if (-not $PublicRelease) {
 }
 $ffmpegOutput = Join-Path $publishRoot 'tools\ffmpeg'
 New-Item -ItemType Directory -Path $ffmpegOutput -Force | Out-Null
-Copy-Item -LiteralPath (Join-Path $ffmpegRoot 'bin\ffmpeg.exe') -Destination $ffmpegOutput
+Copy-Item -LiteralPath $ffmpegBinary -Destination $ffmpegOutput
 Get-ChildItem -LiteralPath (Join-Path $ffmpegRoot 'bin') -Filter 'COPYING*' -File | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $ffmpegOutput }
 foreach ($name in @('README.md','source-bundle.tar.gz','0001-windows-private-high-resolution-usleep.patch','downloads-manifest.json')) {
     Copy-Item -LiteralPath (Join-Path $ffmpegRoot $name) -Destination $ffmpegOutput

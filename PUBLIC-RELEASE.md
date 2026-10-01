@@ -19,8 +19,14 @@ TabLink is created and maintained by **张林杰 (Jey)** (GitHub
   available.
 - TabLink's Windows executables are not Authenticode code-signed. Windows will
   therefore identify the publisher as unknown when requesting the required
-  administrator permission. The bundled virtual display driver is separately
-  signed and verified before installation.
+  administrator permission. The bundled third-party UMDF virtual-display
+  package keeps its upstream INF, catalog and DLL unchanged. The catalog and
+  DLL pass the release machine's generic Authenticode `/pa` policy, and the
+  catalog covers the exact INF and DLL. This is not a Microsoft WHQL or
+  attestation signature; the release machine's `/kp` kernel-policy check did
+  not accept the SignPath/GlobalSign chain. Installation remains subject to
+  each Windows machine's driver trust policy. TabLink does not install
+  certificates, enable test signing, disable Secure Boot or weaken that policy.
 - The APK is a non-debuggable release build signed with the project's existing
   development key so earlier TabLink test installations can upgrade in place.
   It is for this preview and is not an app-store production signature.
