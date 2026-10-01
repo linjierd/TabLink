@@ -15,22 +15,48 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-/** Hardware AVC decoder with bounded pending input and render-confirmed telemetry. */
+/** Ranked AVC decoder failover with bounded pending input and render-confirmed telemetry. */
 public final class VideoDecoder implements AutoCloseable {
     private static final AtomicLong DIAGNOSTIC_IDS = new AtomicLong();
+    private static final DecoderCandidateSelector.FailureHistory DECODER_FAILURES =
+            new DecoderCandidateSelector.FailureHistory();
     private static volatile long currentDiagnosticId;
     private static volatile String pacingDiagnostics = "{\"active\":false,\"enabled\":false}";
     public interface Listener {
         void onSubmitted(long ptsUs, long submittedNanos, int width, int height, String decoder);
         void onPresented(long ptsUs, long renderNanos, int width, int height, double fps, String decoder, long dropped);
         void onSizeChanged(int width, int height);
+        /** Called only after a codec has configured and started successfully, including the first choice. */
+        default void onDecoderSelected(String selectedDecoder, String tier, boolean fallback,
+                String failedDecoder, String reason) { }
         void onError(String message);
+    }
+
+    private static final class CodecCandidate {
+        final MediaCodecInfo info;
+        final DecoderCandidateSelector.Candidate score;
+
+        CodecCandidate(MediaCodecInfo info, DecoderCandidateSelector.Candidate score) {
+            this.info = info;
+            this.score = score;
+        }
+    }
+
+    private static final class CodecStartException extends IOException {
+        final String stage;
+        CodecStartException(String stage, Exception cause) {
+            super("codec-" + stage, cause);
+            this.stage = stage;
+        }
     }
 
     public static final class Configuration {
@@ -79,11 +105,19 @@ public final class VideoDecoder implements AutoCloseable {
     private final ArrayDeque<Integer> inputSlots = new ArrayDeque<>();
     private final AtomicBoolean pumpPosted = new AtomicBoolean();
     private final CountDownLatch released = new CountDownLatch(1);
-    private final FrameRateMeter rate = new FrameRateMeter();
+    private FrameRateMeter rate = new FrameRateMeter();
     private volatile boolean closed;
     private boolean startScheduled;
     private MediaCodec codec;
+    private Surface decoderSurface;
+    private List<CodecCandidate> candidates = Collections.emptyList();
+    private int nextCandidate;
+    private CodecCandidate activeCandidate;
+    private boolean fallbackScheduled;
+    private long codecGeneration;
     private String decoderName = "";
+    private String lastDecoderFailure = "";
+    private long decoderFallbacks;
     private int outputWidth, outputHeight;
     private long lastRenderedPts = -1;
     private final long diagnosticId = DIAGNOSTIC_IDS.incrementAndGet();
@@ -154,78 +188,258 @@ public final class VideoDecoder implements AutoCloseable {
         if (closed) return;
         try {
             if (!surface.isValid()) throw new IOException("Video surface is unavailable");
-            MediaCodecInfo selected = null;
-            for (MediaCodecInfo info : new MediaCodecList(MediaCodecList.REGULAR_CODECS).getCodecInfos()) {
-                if (info.isEncoder() || !isHardware(info)) continue;
-                for (String type : info.getSupportedTypes()) {
-                    if (!"video/avc".equalsIgnoreCase(type)) continue;
-                    MediaCodecInfo.VideoCapabilities video = info.getCapabilitiesForType(type).getVideoCapabilities();
-                    if (video != null && video.isSizeSupported(configuration.width, configuration.height)) {
-                        selected = info;
-                        break;
+            decoderSurface = surface;
+            candidates = discoverCandidates();
+            startNextCandidate(null);
+        } catch (IOException | RuntimeException problem) { fail(problem); }
+    }
+
+    private List<CodecCandidate> discoverCandidates() throws IOException {
+        ArrayList<CodecCandidate> discovered = new ArrayList<>();
+        int order = 0;
+        for (MediaCodecInfo info : new MediaCodecList(MediaCodecList.REGULAR_CODECS).getCodecInfos()) {
+            if (info.isEncoder() || (Build.VERSION.SDK_INT >= 29 && info.isAlias())) continue;
+            String avcType = null;
+            for (String type : info.getSupportedTypes()) {
+                if ("video/avc".equalsIgnoreCase(type)) { avcType = type; break; }
+            }
+            if (avcType == null) continue;
+            try {
+                MediaCodecInfo.CodecCapabilities capabilities = info.getCapabilitiesForType(avcType);
+                MediaCodecInfo.VideoCapabilities video = capabilities.getVideoCapabilities();
+                boolean sizeSupported = video != null && video.isSizeSupported(
+                        configuration.width, configuration.height);
+                boolean frameRateSupported = sizeSupported && video.areSizeAndRateSupported(
+                        configuration.width, configuration.height, configuration.fps);
+                boolean pointsDeclared = false, pointCovers = false;
+                if (sizeSupported && Build.VERSION.SDK_INT >= 29) {
+                    List<MediaCodecInfo.VideoCapabilities.PerformancePoint> points =
+                            video.getSupportedPerformancePoints();
+                    pointsDeclared = points != null && !points.isEmpty();
+                    if (pointsDeclared) {
+                        MediaCodecInfo.VideoCapabilities.PerformancePoint requested =
+                                new MediaCodecInfo.VideoCapabilities.PerformancePoint(
+                                        configuration.width, configuration.height,
+                                        Math.max(1, (int) Math.ceil(configuration.fps)));
+                        for (MediaCodecInfo.VideoCapabilities.PerformancePoint point : points) {
+                            if (point != null && point.covers(requested)) { pointCovers = true; break; }
+                        }
                     }
                 }
-                if (selected != null) break;
+                boolean lowLatency = Build.VERSION.SDK_INT >= 30 && capabilities.isFeatureSupported(
+                        MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency);
+                DecoderCandidateSelector.Candidate score = new DecoderCandidateSelector.Candidate(
+                        diagnosticDecoderName(info.getName()), isHardware(info), isSoftware(info), sizeSupported,
+                        frameRateSupported, pointsDeclared, pointCovers, lowLatency,
+                        DECODER_FAILURES.count(info.getName()), order++);
+                discovered.add(new CodecCandidate(info, score));
+            } catch (IllegalArgumentException | IllegalStateException ignored) {
+                // A malformed capability record is not allowed to hide other decoders.
             }
-            if (selected == null) throw new IOException("No hardware H.264 decoder supports this resolution");
-            decoderName = selected.getName();
-            codec = MediaCodec.createByCodecName(decoderName);
-            codec.setCallback(new MediaCodec.Callback() {
-                @Override public void onInputBufferAvailable(MediaCodec source, int index) {
-                    if (closed || source != codec) return;
-                    inputSlots.add(index);
-                    pumpInputs();
-                }
-                @Override public void onOutputBufferAvailable(MediaCodec source, int index, MediaCodec.BufferInfo info) {
-                    if (closed || source != codec) return;
-                    try {
-                        if ((info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0)
-                            source.releaseOutputBuffer(index, false);
-                        else {
-                            RenderClock.Decision decision = renderClock.plan(info.presentationTimeUs,
-                                    latestInputPtsUs, System.nanoTime());
-                            if (decision.render) source.releaseOutputBuffer(index, decision.renderNanos);
-                            else source.releaseOutputBuffer(index, false);
-                            publishPacingDiagnostics(false);
-                        }
-                    } catch (IllegalStateException problem) { fail(problem); }
-                }
-                @Override public void onOutputFormatChanged(MediaCodec source, MediaFormat format) {
-                    if (closed || source != codec) return;
-                    int width = format.getInteger(MediaFormat.KEY_WIDTH), height = format.getInteger(MediaFormat.KEY_HEIGHT);
+        }
+        ArrayList<DecoderCandidateSelector.Candidate> scores = new ArrayList<>();
+        for (CodecCandidate candidate : discovered) scores.add(candidate.score);
+        List<DecoderCandidateSelector.Candidate> ranked = DecoderCandidateSelector.rank(scores);
+        ArrayList<CodecCandidate> result = new ArrayList<>();
+        for (DecoderCandidateSelector.Candidate score : ranked) {
+            for (CodecCandidate candidate : discovered) {
+                if (candidate.score == score) { result.add(candidate); break; }
+            }
+        }
+        if (result.isEmpty()) throw new IOException("No H.264 decoder supports this resolution");
+        return Collections.unmodifiableList(result);
+    }
+
+    private void startNextCandidate(Exception trigger) {
+        if (closed) return;
+        fallbackScheduled = false;
+        String failedDecoder = "";
+        StringBuilder failures = new StringBuilder();
+        boolean fallback = trigger != null;
+        if (trigger != null) {
+            failedDecoder = decoderName;
+            appendFailure(failures, failedDecoder, failureStage(trigger));
+            if (activeCandidate != null) DECODER_FAILURES.record(activeCandidate.info.getName());
+            prepareFallback();
+            releaseCodec();
+        }
+        if (decoderSurface == null || !decoderSurface.isValid()) {
+            fail(new IOException("surface-unavailable"));
+            return;
+        }
+        while (!closed && nextCandidate < candidates.size()) {
+            CodecCandidate candidate = candidates.get(nextCandidate++);
+            try {
+                startCodec(candidate);
+            } catch (IOException | RuntimeException problem) {
+                DECODER_FAILURES.record(candidate.info.getName());
+                if (failedDecoder.isEmpty()) failedDecoder = candidate.score.name;
+                appendFailure(failures, candidate.score.name, failureStage(problem));
+                if (!fallback) { fallback = true; prepareFallback(); }
+                releaseCodec();
+                continue;
+            }
+            if (closed) {
+                releaseCodec();
+                return;
+            }
+            if (fallback) decoderFallbacks++;
+            lastDecoderFailure = fallback ? failures.toString() : "";
+            try {
+                listener.onDecoderSelected(decoderName, decoderTier(activeCandidate), fallback, failedDecoder,
+                        fallback ? lastDecoderFailure : "initial");
+            } catch (RuntimeException ignored) { }
+            publishPacingDiagnostics(true);
+            return;
+        }
+        String detail = failures.length() == 0 ? "no eligible candidates" : failures.toString();
+        lastDecoderFailure = detail;
+        fail(new IOException("All H.264 decoders failed: " + detail));
+    }
+
+    private void startCodec(CodecCandidate candidate) throws IOException {
+        Surface surface = decoderSurface;
+        if (surface == null || !surface.isValid()) throw new IOException("Video surface is unavailable");
+        MediaCodec created;
+        try { created = MediaCodec.createByCodecName(candidate.info.getName()); }
+        catch (IOException | RuntimeException problem) { throw new CodecStartException("create", problem); }
+        codec = created;
+        final long generation = ++codecGeneration;
+        try { created.setCallback(new MediaCodec.Callback() {
+            @Override public void onInputBufferAvailable(MediaCodec source, int index) {
+                if (closed || fallbackScheduled || source != codec || generation != codecGeneration) return;
+                inputSlots.add(index);
+                pumpInputs();
+            }
+            @Override public void onOutputBufferAvailable(MediaCodec source, int index, MediaCodec.BufferInfo info) {
+                if (closed || fallbackScheduled || source != codec || generation != codecGeneration) return;
+                try {
+                    if ((info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0)
+                        source.releaseOutputBuffer(index, false);
+                    else {
+                        RenderClock.Decision decision = renderClock.plan(info.presentationTimeUs,
+                                latestInputPtsUs, System.nanoTime());
+                        if (decision.render) source.releaseOutputBuffer(index, decision.renderNanos);
+                        else source.releaseOutputBuffer(index, false);
+                        publishPacingDiagnostics(false);
+                    }
+                } catch (IllegalStateException problem) { scheduleFallback(source, generation, problem); }
+            }
+            @Override public void onOutputFormatChanged(MediaCodec source, MediaFormat format) {
+                if (closed || fallbackScheduled || source != codec || generation != codecGeneration) return;
+                try {
+                    int width = format.getInteger(MediaFormat.KEY_WIDTH);
+                    int height = format.getInteger(MediaFormat.KEY_HEIGHT);
                     if (format.containsKey("crop-right") && format.containsKey("crop-left"))
                         width = format.getInteger("crop-right") - format.getInteger("crop-left") + 1;
                     if (format.containsKey("crop-bottom") && format.containsKey("crop-top"))
                         height = format.getInteger("crop-bottom") - format.getInteger("crop-top") + 1;
                     outputWidth = width; outputHeight = height;
-                    listener.onSizeChanged(width, height);
-                }
-                @Override public void onError(MediaCodec source, MediaCodec.CodecException error) { fail(error); }
-            }, handler);
-            codec.setOnFrameRenderedListener((source, ptsUs, nanoTime) -> {
-                if (closed || source != codec || ptsUs < 0 || ptsUs == Long.MAX_VALUE || ptsUs <= lastRenderedPts) return;
-                lastRenderedPts = ptsUs;
-                renderCallbacks++;
-                actualCallbackFps = rate.presented(nanoTime);
+                    try { listener.onSizeChanged(width, height); }
+                    catch (RuntimeException ignored) { }
+                } catch (RuntimeException problem) { scheduleFallback(source, generation, problem); }
+            }
+            @Override public void onError(MediaCodec source, MediaCodec.CodecException error) {
+                scheduleFallback(source, generation, error);
+            }
+        }, handler); }
+        catch (RuntimeException problem) { throw new CodecStartException("callback", problem); }
+        try { created.setOnFrameRenderedListener((source, ptsUs, nanoTime) -> {
+            if (closed || fallbackScheduled || source != codec || generation != codecGeneration
+                    || ptsUs < 0 || ptsUs == Long.MAX_VALUE || ptsUs <= lastRenderedPts) return;
+            lastRenderedPts = ptsUs;
+            renderCallbacks++;
+            actualCallbackFps = rate.presented(nanoTime);
+            try {
                 listener.onPresented(ptsUs, nanoTime, outputWidth, outputHeight, actualCallbackFps, decoderName,
                         pending.droppedFrames() + renderClock.droppedFrames());
-                publishPacingDiagnostics(false);
-            }, handler);
-            MediaFormat format = MediaFormat.createVideoFormat("video/avc", configuration.width, configuration.height);
-            format.setByteBuffer("csd-0", ByteBuffer.wrap(configuration.sps));
-            format.setByteBuffer("csd-1", ByteBuffer.wrap(configuration.pps));
-            format.setFloat(MediaFormat.KEY_FRAME_RATE, configuration.fps);
-            format.setFloat(MediaFormat.KEY_OPERATING_RATE, configuration.fps);
-            format.setInteger(MediaFormat.KEY_PRIORITY, 0);
-            format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE,
-                    (int) Math.min(WireProtocol.MAX_PAYLOAD, (long) configuration.width * configuration.height * 3 / 2));
-            if (Build.VERSION.SDK_INT >= 30 && selected.getCapabilitiesForType("video/avc")
-                    .isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency))
-                format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
-            codec.configure(format, surface, null, 0);
-            codec.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT);
-            codec.start();
-        } catch (IOException | RuntimeException problem) { fail(problem); }
+            } catch (RuntimeException ignored) { }
+            publishPacingDiagnostics(false);
+        }, handler); }
+        catch (RuntimeException problem) { throw new CodecStartException("callback", problem); }
+        MediaFormat format = MediaFormat.createVideoFormat("video/avc", configuration.width, configuration.height);
+        format.setByteBuffer("csd-0", ByteBuffer.wrap(configuration.sps));
+        format.setByteBuffer("csd-1", ByteBuffer.wrap(configuration.pps));
+        format.setFloat(MediaFormat.KEY_FRAME_RATE, configuration.fps);
+        format.setFloat(MediaFormat.KEY_OPERATING_RATE, configuration.fps);
+        format.setInteger(MediaFormat.KEY_PRIORITY, 0);
+        format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE,
+                (int) Math.min(WireProtocol.MAX_PAYLOAD, (long) configuration.width * configuration.height * 3 / 2));
+        if (candidate.score.lowLatency) format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
+        try {
+            created.configure(format, surface, null, 0);
+            created.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT);
+        } catch (RuntimeException problem) { throw new CodecStartException("configure", problem); }
+        try { created.start(); }
+        catch (RuntimeException problem) { throw new CodecStartException("start", problem); }
+        activeCandidate = candidate;
+        decoderName = candidate.score.name;
+    }
+
+    private void prepareFallback() {
+        pending.clear();
+        inputSlots.clear();
+        decoderName = "";
+        latestInputPtsUs = -1;
+        lastRenderedPts = -1;
+        outputWidth = configuration.width;
+        outputHeight = configuration.height;
+        actualCallbackFps = 0;
+        rate = new FrameRateMeter();
+        renderClock = new RenderClock(configuration.fps, renderClock.enabled());
+        pacingEpoch++;
+    }
+
+    private void scheduleFallback(MediaCodec failedCodec, long generation, Exception problem) {
+        if (closed || fallbackScheduled || failedCodec != codec || generation != codecGeneration) return;
+        fallbackScheduled = true;
+        handler.post(() -> {
+            if (closed) return;
+            if (failedCodec != codec || generation != codecGeneration) {
+                fallbackScheduled = false;
+                return;
+            }
+            startNextCandidate(problem);
+        });
+    }
+
+    private void releaseCodec() {
+        MediaCodec previous = codec;
+        codec = null;
+        codecGeneration++;
+        fallbackScheduled = false;
+        activeCandidate = null;
+        inputSlots.clear();
+        if (previous == null) return;
+        try { previous.stop(); } catch (RuntimeException ignored) { }
+        try { previous.release(); } catch (RuntimeException ignored) { }
+    }
+
+    private static String failureStage(Exception problem) {
+        return problem instanceof CodecStartException ? ((CodecStartException) problem).stage : "runtime";
+    }
+
+    private static void appendFailure(StringBuilder target, String decoder, String stage) {
+        if (target.length() > 0) target.append("; ");
+        target.append(decoder == null || decoder.isEmpty() ? "decoder" : decoder)
+                .append(':').append(stage);
+        if (target.length() > 480) target.setLength(480);
+    }
+
+    private static String diagnosticDecoderName(String value) {
+        if (value == null || value.isEmpty()) return "unknown";
+        StringBuilder safe = new StringBuilder(Math.min(value.length(), 160));
+        for (int index = 0; index < value.length() && safe.length() < 160; index++) {
+            char current = value.charAt(index);
+            safe.append(current >= 0x20 && current <= 0x7e ? current : '?');
+        }
+        return safe.toString();
+    }
+
+    private static String decoderTier(CodecCandidate candidate) {
+        if (candidate == null) return "unknown";
+        if (candidate.score.hardwareAccelerated && !candidate.score.softwareOnly) return "hardware";
+        return candidate.score.softwareOnly ? "software" : "unknown";
     }
 
     private static boolean isHardware(MediaCodecInfo info) {
@@ -234,8 +448,15 @@ public final class VideoDecoder implements AutoCloseable {
         return !name.startsWith("omx.google.") && !name.startsWith("c2.android.") && !name.contains("software");
     }
 
+    private static boolean isSoftware(MediaCodecInfo info) {
+        if (Build.VERSION.SDK_INT >= 29) return info.isSoftwareOnly();
+        String name = info.getName().toLowerCase(Locale.ROOT);
+        return name.startsWith("omx.google.") || name.startsWith("c2.android.")
+                || name.contains("software") || name.contains(".sw.");
+    }
+
     private void pumpInputs() {
-        if (closed || codec == null) return;
+        if (closed || fallbackScheduled || codec == null) return;
         try {
             while (!inputSlots.isEmpty()) {
                 VideoAccessUnit frame = pending.poll(System.nanoTime());
@@ -248,7 +469,8 @@ public final class VideoDecoder implements AutoCloseable {
                 codec.queueInputBuffer(index, 0, frame.bytes.length, frame.ptsUs, 0);
                 long submitted = System.nanoTime();
                 submittedFrames++;
-                listener.onSubmitted(frame.ptsUs, submitted, configuration.width, configuration.height, decoderName);
+                try { listener.onSubmitted(frame.ptsUs, submitted, configuration.width, configuration.height, decoderName); }
+                catch (RuntimeException ignored) { }
                 long inputAge = Math.max(0, submitted - frame.receivedNanos);
                 totalInputAgeNanos += inputAge;
                 longestInputAgeNanos = Math.max(longestInputAgeNanos, inputAge);
@@ -256,12 +478,20 @@ public final class VideoDecoder implements AutoCloseable {
                     longestSubmitGapNanos = Math.max(longestSubmitGapNanos, submitted - lastSubmitNanos);
                 lastSubmitNanos = submitted;
             }
-        } catch (IOException | RuntimeException problem) { fail(problem); }
+        } catch (IOException | RuntimeException problem) {
+            MediaCodec failed = codec;
+            long generation = codecGeneration;
+            if (failed != null) scheduleFallback(failed, generation, problem);
+        }
     }
 
     private void fail(Exception problem) {
         if (closed) return;
-        listener.onError("H.264 解码中断：" + problem.getMessage());
+        String reason = decoderSurface == null || !decoderSurface.isValid() ? "surface-unavailable"
+                : candidates.isEmpty() ? "no-compatible-decoder"
+                : nextCandidate >= candidates.size() ? "candidates-exhausted" : "initialization-failed";
+        try { listener.onError("H.264 解码中断（" + reason + "）"); }
+        catch (RuntimeException ignored) { }
         close();
     }
 
@@ -315,6 +545,18 @@ public final class VideoDecoder implements AutoCloseable {
             json.put("decoderRenderCallbacks", renderCallbacks);
             json.put("actualCallbackFps", actualCallbackFps);
             json.put("decoder", decoderName);
+            json.put("decoderCandidates", candidates.size());
+            json.put("decoderFallbacks", decoderFallbacks);
+            json.put("decoderFailure", lastDecoderFailure);
+            if (activeCandidate != null) {
+                json.put("decoderScore", activeCandidate.score.score());
+                json.put("decoderKnownFailures", activeCandidate.score.knownFailures);
+                json.put("decoderTier", activeCandidate.score.hardwareAccelerated ? "hardware"
+                        : activeCandidate.score.softwareOnly ? "software" : "unknown");
+                json.put("decoderLowLatency", activeCandidate.score.lowLatency);
+                json.put("decoderFrameRateSupported", activeCandidate.score.frameRateSupported);
+                json.put("decoderPerformancePointCovered", activeCandidate.score.performancePointCovers);
+            }
             json.put("updatedMonotonicNs", now);
             if (currentDiagnosticId == diagnosticId) pacingDiagnostics = json.toString();
         } catch (JSONException ignored) { }
@@ -325,13 +567,7 @@ public final class VideoDecoder implements AutoCloseable {
         closed = true;
         pending.close();
         handler.post(() -> {
-            MediaCodec previous = codec;
-            codec = null;
-            inputSlots.clear();
-            if (previous != null) {
-                try { previous.stop(); } catch (RuntimeException ignored) { }
-                try { previous.release(); } catch (RuntimeException ignored) { }
-            }
+            releaseCodec();
             publishPacingDiagnostics(true);
             released.countDown();
             thread.quitSafely();

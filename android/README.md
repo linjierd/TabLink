@@ -26,7 +26,7 @@ tablink://connect?host=<IPv4>&port=27184&token=<64 lowercase hex>&cert=<64 hex S
 
 TLS 握手成功后，客户端在 `0x10` 认证中声明 `render-submitted-v1` 可选能力，再同步发送 `0x13` 当前原生显示能力和请求刷新率，然后才读取和解码视频。只有电脑端在 `0x02` 状态中回显同一能力后，客户端才会发送 `0x14` 解码提交进度；旧电脑端不回显时继续按原协议工作。旋转或显示模式变化仍会更新 `0x13`；若电脑端因此关闭当前 TCP，客户端沿用当前 URI 的地址、证书和凭证自动重连，不要求重新扫码。电脑端停止或重新创建网络会话后，旧配对失效，应扫描新码。
 
-首帧实际呈现后，配对链接保存在应用私有 `SharedPreferences("pairing", MODE_PRIVATE)`。正常启动不会自动使用它；用户可点击“重连上次电脑”。显示设置中可以“忘记上次配对的电脑”，或“更换连接 / 扫描二维码”。Token 不写入应用日志、状态文字或公开的显示能力接口。
+收到首帧呈现回调后，配对链接保存在应用私有 `SharedPreferences("pairing", MODE_PRIVATE)`。正常启动不会自动使用它；用户可点击“重连上次电脑”。显示设置中可以“忘记上次配对的电脑”，或“更换连接 / 扫描二维码”。Token 不写入应用日志、状态文字或公开的显示能力接口。
 
 扫码由独立、未导出的 `QrScannerActivity` 使用原生相机和内嵌 ZXing core 完成；不依赖 Google Play、第三方扫码应用或网络识别服务。相机只在用户打开扫码页面后申请权限，图像仅在内存中处理，离开页面后释放相机。ZXing 的来源、校验值和 Apache-2.0 许可见 `THIRD_PARTY_NOTICES.md`，许可文本也打包在 APK 的 `assets/licenses` 中。
 
@@ -68,7 +68,7 @@ Set-Location '<repository-root>\android'
 
 其他电脑可通过三个参数指定工具路径；首次需要下载 Gradle 插件依赖时省略 `-Offline`。脚本只在当前进程设置 Java/SDK 环境变量，并在退出时恢复。
 
-普通构建输出 `artifacts/TabLink-android-0.8.2-debug.apk`。增加 `-ReleasePreview` 会运行 `assembleRelease` / `lintRelease`，输出不可调试的 `artifacts/TabLink-android-0.8.2-preview.apk`。两者均为 `versionCode 13`，并使用本机生成且被 Git 忽略的 `build/signing/debug.keystore` 开发证书，以便覆盖早期 TabLink 测试安装；它不是应用商店生产签名。应安全保留同一份签名文件，绝不能把私钥提交到仓库。
+普通构建输出 `artifacts/TabLink-android-0.8.2-debug.apk`。增加 `-ReleasePreview` 会运行 `assembleRelease` / `lintRelease`，输出不可调试的 `artifacts/TabLink-android-0.8.2-preview.apk`。两者均为 `versionCode 14`，并使用本机生成且被 Git 忽略的 `build/signing/debug.keystore` 开发证书，以便覆盖早期 TabLink 测试安装；它不是应用商店生产签名。应安全保留同一份签名文件，绝不能把私钥提交到仓库。
 
 本机构建时发现系统 SDK 的 build-tools 35.0.0 目录只有未完成安装记录，因此在项目 `.tools/sdk` 中准备了隔离 SDK：复制现有 SDK platform 35，并从 [Google Android 官方仓库](https://dl.google.com/android/repository/build-tools_r35_windows.zip) 下载 build-tools 35.0.0。压缩包使用 [官方 repository 元数据](https://dl.google.com/android/repository/repository2-1.xml) 中 SHA-1 `af059bb67cf7786f45ee0db85e2d24985df1b4b6` 校验。没有修改系统 SDK。`.tools`、`.gradle`、`build` 和 `app/build` 属于本地构建工具或缓存，不应放进用户发行包。
 
@@ -90,7 +90,7 @@ adb -s SERIAL shell am start -n com.tablink.client/.MainActivity --es host 127.0
 
 ## 屏幕能力与刷新率
 
-只读接口 `content://com.tablink.client.display/capabilities` 返回单行 `json` 列。它仅公开显示硬件指标，不提供文件、连接 token 或设备控制功能。
+只读接口 `content://com.tablink.client.display/capabilities` 返回单行 `json` 列。Provider 需要系统级 `android.permission.DUMP`，设计供持有该权限的系统组件或 ADB shell 诊断使用，普通第三方应用不能轮询这些运行指标；目标设备的 ADB shell 是否获授该权限仍须实机确认。接口不提供文件、连接 token 或设备控制功能。
 
 ```text
 adb -s SERIAL shell content query --uri content://com.tablink.client.display/capabilities
@@ -108,7 +108,7 @@ adb -s SERIAL shell am start -n com.tablink.client/.MainActivity --ez profileOnl
 
 **0.4.1 的低亮度处理：** 本机实测 `SCREEN_BRIGHTNESS=1`，系统资源最大值为 255、最小值为 1，同时有低于 16 时固定 60 Hz 的防闪烁策略。只有正在显示新画面、原生模式支持超过 60 Hz、实际刷新率低于请求值、系统亮度处于 0–16 且运行时再次确认最大刻度为 255 时，应用才将自己的窗口亮度临时设为 `0.08`。较高的系统或已有窗口亮度不会被降低；未知刻度（例如 4095）不启用补偿。达到目标刷新率后会保留该临时值直到流结束，以免反复切换；停止、断线或退出恢复原窗口亮度。此功能没有 `WRITE_SETTINGS` 权限，也不写全局亮度。生效时显示“高刷最低亮度”，能力接口中 `brightnessWorkaroundActive=true`。
 
-角落的“解码 xx fps”来源于解码器实际渲染回调，不等于物理屏幕最终可见帧率。系统合成器可以合并或丢弃帧；应同时看当前屏幕 Hz，需要精确验收时另查 SurfaceFlinger 的实际呈现时间。
+角落 HUD 将“面板 Hz”“请求 Hz”“解码提交 fps”和“呈现回调 fps”分开显示。请求值只说明应用提出了模式请求，提交值只说明压缩帧进入 MediaCodec，呈现回调也不等于物理屏幕最终可见帧率；缺失或超过 5 秒未更新的数值显示 `—`，不会拿目标 90 Hz 补成实际 FPS。需要精确验收时仍须读取 SurfaceFlinger 的实际呈现时间。
 
 本机 W202DS 的普通“屏幕刷新率”已经选择 90 Hz，但中兴策略仍会让部分应用使用 60 Hz。经平板可见的开发者选项“锁定刷新率”开启后，0.4.1 已实际运行在原生 1200 × 1920、90 Hz 模式；该开关锁定的是当前已选择模式的最高刷新率。这是本次验收通过系统设置界面完成的显示性能设置，APK 不会自行修改。原值已保存在发行目录 `diagnostics/android-display-settings-before.json`。此时全局亮度仍为 1，`brightnessWorkaroundActive=false`，无需应用亮度补偿。
 
@@ -152,22 +152,25 @@ TCP 双向数据包格式：`type: uint8` + `length: uint32 big-endian` + `paylo
 
 | 方向 | type | 载荷 |
 | --- | --- | --- |
-| 平板 → 电脑 | `0x10` | 首包：`{"protocol":1,"token":"...","features":["render-submitted-v1"]}`；`features` 可选 |
+| 平板 → 电脑 | `0x10` | 首包：`{"protocol":1,"token":"...","features":["render-submitted-v1","decoder-refresh-v1"]}`；`features` 可选 |
 | 电脑 → 平板 | `0x01` | 完整 JPEG 图像 |
-| 电脑 → 平板 | `0x02` | `{"protocol":1,"features":["render-submitted-v1"],"width":1280,"height":720,"message":"...","capturePaused":true}`；能力与暂停字段可选 |
+| 电脑 → 平板 | `0x02` | `{"protocol":1,"features":["render-submitted-v1","decoder-refresh-v1"],"width":1280,"height":720,"message":"...","capturePaused":true}`；能力与暂停字段可选 |
 | 电脑 → 平板 | `0x03` | UTF-8 错误文本，显示后停止自动重连 |
 | 平板 → 电脑 | `0x11` | `{"kind":"down|move|up|scroll","x":0.5,"y":0.5,"delta":120}` |
 | 平板 → 电脑 | `0x12` | `{"kind":"frame-presented","sequence":21,"width":1280,"height":800}` |
 | 平板 → 电脑 | `0x13` | 与能力查询接口相同的屏幕模式 JSON |
-| 平板 → 电脑 | `0x14` | 协商后发送的 `render-submitted` 进度：累计 `frames`、本帧 `ptsUs`、尺寸、`fps` 和 `decoder`；不推进实际呈现计数 |
+| 平板 → 电脑 | `0x14` | 协商后发送的 `render-submitted` 进度：累计 `frames`、本帧 `ptsUs`、尺寸、`fps` 和 `decoder`；不推进呈现回调计数 |
+| 平板 → 电脑 | `0x15` | 协商 `decoder-refresh-v1` 后发送的 8 字节大端正整数恢复代次；请求当前会话的下一枚新 IDR，不代表呈现成功 |
 | 电脑 → 平板 | `0x20` | `{"codec":"video/avc","width":1200,"height":1920,"fps":90,"csd0":"BASE64_SPS","csd1":"BASE64_PPS"}` |
 | 电脑 → 平板 | `0x21` | 8 字节大端非负 `ptsUs`，后接一个完整 Annex-B H.264 access unit |
 
-`0x12` 是客户端画面实际呈现回调进度。JPEG 在成功解码、绘制且 `unlockCanvasAndPost` 正常返回后计数；H.264 只在 `MediaCodec.OnFrameRenderedListener` 通知后计数。首次立即确认，此后有新进展时约每秒确认一次；重绘旧 JPEG 不重复计数，每次 TCP 连接从 1 重新计数。新增 `fps`、`codec`、`decoder`、`droppedFrames` 字段，其中 FPS 由回调时间戳测量。回调可能延迟、成批或少报，不能替代最终可见帧率和实机验收。
+`0x12` 是客户端画面呈现回调进度。JPEG 在成功解码、绘制且 `unlockCanvasAndPost` 正常返回后计数；H.264 只在 `MediaCodec.OnFrameRenderedListener` 通知后计数。首次立即确认，此后有新进展时约每秒确认一次；重绘旧 JPEG 不重复计数，每次 TCP 连接从 1 重新计数。新增 `fps`、`codec`、`decoder`、`droppedFrames` 字段，其中 FPS 由回调时间戳测量。回调可能延迟、成批或少报，不能替代最终可见帧率和实机验收。
 
 `0x14` 只证明某个访问单元已经成功排入 MediaCodec 输入队列。每个 TCP 会话累计 `frames`；第一次提交立即报告，之后最多约每秒一次。解码器重配会保留会话累计帧数，并允许媒体 PTS 从零重新开始；重连才重置累计值。单调回调时钟必须前进，尺寸必须有效，decoder 名称最多 160 字符。暂停采集或能力未协商时不发送。电脑端把 submitted 与 presented 的 FPS、期限和健康阶段分别处理，绝不把 `0x14` 当作 `0x12`。
 
-H.264 必须先发 `0x20` 配置，SPS/PPS 分别为带 Annex-B 起始码的 Base64 字节；随后 `0x21` 中 PTS 严格递增，建议禁用 B 帧并至少每秒发送一个 IDR。客户端只选择硬件 AVC 解码器，以独立 Surface 显示，避免与 JPEG Canvas 生产者冲突。输入队列最多 6 帧；排队超过 150 ms 或队列溢出会放弃相关依赖链并等待新 IDR，避免无限积累延迟。配置变化重建解码器，Surface 销毁时释放并安全重连。
+H.264 必须先发 `0x20` 配置，SPS/PPS 分别为带 Annex-B 起始码的 Base64 字节；随后 `0x21` 中 PTS 严格递增，建议禁用 B 帧并至少每秒发送一个 IDR。客户端按尺寸、目标帧率、性能点、低延迟能力和本进程失败记录为 AVC decoder 排序，优先硬解，并保留其他硬解及软件 decoder 作为兜底。输入队列最多 6 帧；排队超过 150 ms 或队列溢出会放弃相关依赖链并等待新 IDR，避免无限积累延迟。配置变化会重建解码器，Surface 销毁时释放并安全重连。
+
+某个 MediaCodec 在创建、配置、启动或运行中失败时，客户端会在同一个 TLS/TCP 会话和同一块副屏上尝试下一候选。备用 decoder 成功启动后才进入“等待关键帧”状态并发送一次 `0x15`；电脑端暂停该会话的 P 帧，等编码器自然产生下一枚新 IDR，再在同一个 `0x21` 中补齐缺失的 SPS/PPS。电脑不会重启编码器、重新认证、重新安装驱动或新建副屏。只有备用 decoder 的真实 `OnFrameRenderedListener` 回调才结束等待状态；`0x14` 提交不算恢复成功。旧电脑端未回显该能力时，客户端不会发送未知消息，只等待原视频的自然 IDR。
 
 电脑暂时无法采集桌面（例如安全桌面正在使用）时，可在 `0x02` 中发送 `capturePaused:true` 和简短 `message`。客户端保留同一 TCP 连接、Surface、解码器和最后画面，只显示暂停提示，不将心跳当成新画面或推进 `0x12`。电脑必须持续发送间隔短于 15 秒的状态心跳，并在其守护逻辑中区分这种已确认的暂时暂停。普通状态包缺少 `capturePaused` 时保留原暂停状态，明确 `false` 才清除暂停提示。
 
@@ -185,11 +188,11 @@ H.264 必须先发 `0x20` 配置，SPS/PPS 分别为带 Annex-B 起始码的 Bas
 
 最终 0.4.2（APK SHA-256 `4F6FBBD8D22447A1D2702B2028A4868CC779D89124074E8923BBE667DFCD58FC`）已通过正常安装、默认开关开启的长时间真机验证：Windows 控制窗口最小化，原生 1200×1920 / 90 Hz，120.433 秒实际呈现 **89.702 fps**，四段 30 秒为 89.800 / 89.667 / 89.733 / 89.567 fps，P99 11.147 ms，最大间隔 33.295 ms，没有断线或采样覆盖缺口。该结果来自 SurfaceFlinger 实际呈现时间戳，而非计划帧率。完整方法和保留的未通过候选结果见根目录 `VERIFICATION.md` 与发行目录 `diagnostics/final042-driftfixed-*`。
 
-- 0.8.2 的协议断言覆盖能力协商、解码提交限频与累计、解码器重建、非法尺寸和旧回调保护；最终断言数量以 `VERIFICATION-0.8.2.md` 中本次构建输出为准。
+- 0.8.2 Preview 2 的纯 JVM 断言覆盖双能力协商、解码提交限频与累计、固定宽度恢复请求、候选评分、失败降权、非法尺寸和旧回调保护；它不运行真实 MediaCodec，create / configure / start / runtime callback 故障后的真机切换仍须实机验证。最终断言数量以 `VERIFICATION-0.8.2.md` 中本次构建输出为准。
 - 20 项纯 JVM HUD / 暂停状态断言：透明度与不透明度方向、持久化数值边界、九宫格位置、颜色格式，以及暂停、普通心跳、恢复和同会话序号延续。0.5.0 的设置手势、沉浸显示和电脑采集暂停恢复仍需真机联合验证；不能用这些逻辑测试替代运行中的画面验收。
 - 26,024 项独立纯 JVM RenderClock 断言覆盖稳定 90 fps、解码抖动、较慢输入、首批突发、长停顿、固定硬件流水线延迟、重复/倒序 PTS、极大 PTS 跳变、重连重置，以及不同帧率下未来排程不超过 25 ms。新增 100 秒缓慢时钟偏移、持续到达延迟和正负 5 ms 交替抖动用例；后者检查计划间隔均匀且不会反复触发上下限修正。逻辑测试仅验证时钟行为，不能替代最终实际呈现率验收。
-- `assembleDebug` 成功，`lintDebug` 无错误。Lint 仍提示目标 SDK 版本、较新 XML 属性和中文界面可翻译性等兼容/维护警告。
-- 使用 SDK `apksigner` 验证 APK 签名，并输出 SHA-256。
+- `assembleDebug` / `assembleRelease` 与 `lintDebug` / `lintRelease` 成功；release Lint 为 0 error / 18 warning，警告仍涉及目标 SDK 版本、较新 XML 属性和中文界面可翻译性等兼容/维护项。
+- 使用 SDK `apksigner` 验证 release APK 的 v1、v2 签名；最终公开 APK 的字节数和 SHA-256 记录在 GitHub Release 的 `SHA256SUMS.txt`。
 - 0.4.0 已在本机 W202DS 上显示 1200 × 1920 独立 USB 桌面，解码器实际为 `c2.unisoc.avc.decoder`。当时系统将物理屏幕固定在 60 Hz，解码回调约 63–65 fps，单次 SurfaceFlinger 实际呈现采样约 50.4 fps；这些数字不是同一指标。
 - 0.4.1 已安装并完成原生 1200 × 1920、物理屏幕 90 Hz 验证。2026-09-20 02:26 的三个只读样本中，能力接口均报告实际模式 2 / 90 Hz；SurfaceFlinger 周期为 11,111,111 ns，显示策略固定 90 Hz。此时中兴“锁定刷新率”已开启，应用亮度补偿未启用。
 - 同次旧 FFmpeg 采样的硬件解码回调为 63.37–64.62 fps，视频层实际呈现为 56.57–59.88 fps。随后 Windows 高精度 FFmpeg 到位，0.4.1 在 02:53 的三个短样本中达到 89.71–90.36 解码 fps、83.39–88.65 实际呈现 fps；物理面板仍为 90 Hz。这些是不同指标，且不代表持续满帧。两轮证据分别位于发行目录 `diagnostics/android-panel-90hz-verification.json` 和 `diagnostics/android-custom-ffmpeg-90hz-verification.json`，各自附有 `-latency.txt` 原始时间戳。动态负载的整体真机验收结果以根目录 `VERIFICATION.md` 为准。

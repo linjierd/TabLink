@@ -3,7 +3,7 @@
 [![CI](https://github.com/linjierd/TabLink/actions/workflows/ci.yml/badge.svg)](https://github.com/linjierd/TabLink/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/TabLink%20code-MIT-blue.svg)](LICENSE)
 
-Windows 电脑端当前候选版为 **0.8.2**。它继续全局只允许一个扩展副屏，并新增六阶段“连接健康中心”，分别核对线路、认证、唯一虚拟副屏、视频发送、客户端解码提交和屏幕实际呈现，见 [0.8.2 发布说明](RELEASE-0.8.2.md) 与 [0.8.2 验证记录](VERIFICATION-0.8.2.md)。Android 公开预览 APK 同步为 **0.8.2 / build 13**。协议主版本仍为 v1，并新增协商式 `render-submitted-v1` 可选能力；已签名的公网稳定自动更新频道仍保持 **0.8.0**，不会仅因 GitHub 预览包而自动切换。0.8.0 的签名更新设计见 [0.8.0 发布说明](RELEASE-0.8.0.md)、[自动更新设计与发布说明](AUTO-UPDATE.md) 及 [0.8.0 验证记录](VERIFICATION-0.8.0.md)。
+Windows 电脑端当前候选版为 **0.8.2 Preview 2**。它继续全局只允许一个扩展副屏，并提供六阶段“连接健康中心”，分别核对线路、认证、唯一虚拟副屏、视频发送、客户端解码提交和屏幕呈现回调，见 [0.8.2 发布说明](RELEASE-0.8.2.md) 与 [0.8.2 验证记录](VERIFICATION-0.8.2.md)。Android 公开预览 APK 同步为 **0.8.2 / build 14**。协议主版本仍为 v1，并提供协商式 `render-submitted-v1` 与 `decoder-refresh-v1` 可选能力；已签名的公网稳定自动更新频道仍保持 **0.8.0**，不会仅因 GitHub 预览包而自动切换。0.8.0 的签名更新设计见 [0.8.0 发布说明](RELEASE-0.8.0.md)、[自动更新设计与发布说明](AUTO-UPDATE.md) 及 [0.8.0 验证记录](VERIFICATION-0.8.0.md)。
 
 以下保留既有功能说明和历史记录；旧版运行条件、ADB 外置说明及旧帧率结果以新版说明为准，不能作为 0.8.2 的验证结果。
 
@@ -82,7 +82,7 @@ USB 网络共享本身可能向 Windows 提供上网网关和 DNS，因此系统
 
 ### 平板全屏与状态文字
 
-客户端启动即进入全屏，无常驻控制栏。左上角仅保留 H.264、实测解码 fps、屏幕 Hz / 请求 Hz 等文字，默认白色，**透明度 30%（不透明度 70%）**。
+客户端启动即进入全屏，无常驻控制栏。左上角分别显示面板 Hz / 请求 Hz、解码提交 fps / 呈现回调 fps，以及当前 decoder 和切换状态；缺失或超过 5 秒未更新的速度显示 `—`。文字默认白色，**透明度 30%（不透明度 70%）**。
 
 长按状态文字，或使用 Android 返回手势 / 返回键，打开显示设置。可以选择九宫格位置、白/绿/青/黄/黑、自定义 `#RRGGBB` 颜色和 0–100% 透明度；更改即时保存。100% 透明时文字隐藏，仍可用返回手势打开设置。点击“完成”回到全屏，普通设置不结束 USB 视频会话。“重连”和“退出”收在这个面板内。
 
@@ -132,22 +132,24 @@ DDA 目标按实际适配器、输出和显示边界严格核对，不简单选�
 | 目标 Hz / 编码 fps | 当前原生尺寸的请求值，影响 Windows 副屏与视频目标速度。 |
 | Android 当前 Hz | Android 当时报告的活动模式；请求 90 Hz 不保证系统已切换。 |
 | 已发送帧数 | 已发送的视频访问单元；配置包不计帧，也不证明已在平板显示。 |
-| 实际帧/秒 | 电脑按当前连接的递增画面确认与采样间隔计算，会受确认节流和采样窗口影响。 |
-| 客户端 fps / decoder | Android 根据解码显示进度统计的速度和实际解码器名称，诊断中单独记录。 |
+| 呈现回调帧/秒 | 电脑按当前连接的递增呈现回调与采样间隔计算，会受回调和采样窗口影响，不等于物理面板测量。 |
+| 客户端 fps / decoder | Android 分别报告解码提交、Surface 呈现回调速度和实际解码器名称，诊断中单独记录。 |
 
-H.264 的解码提交和实际呈现分开统计。`render-submitted` 只表示压缩帧已成功送入 MediaCodec 输入队列；`frame-presented` 来自 MediaCodec 的呈现回调。两者都不能单独证明物理面板已达到请求刷新率，且解码提交绝不会被记为实际呈现。合成编码吞吐、Windows Hz、USB 传输和实际观感需分别判断。
+H.264 的解码提交和客户端呈现回调分开统计。`render-submitted` 只表示压缩帧已成功送入 MediaCodec 输入队列；`frame-presented` 来自 MediaCodec 的呈现回调。两者都不能单独证明物理面板已达到请求刷新率，且解码提交绝不会被记为呈现回调。合成编码吞吐、Windows Hz、USB 传输和实际观感需分别判断。
+
+Android 会按分辨率、目标帧率、PerformancePoint、低延迟能力和本进程失败记录为 H.264 decoder 排序，优先使用硬解，并保留其他硬解和软件 decoder 兜底。运行中的 decoder 失败后，备用 decoder 在本机成功启动才请求 `decoder-refresh-v1` 恢复；Windows 保持同一认证连接、同一编码器和同一虚拟副屏，暂停发送依赖帧，下一枚自然 IDR 会在同一个视频包内补齐 SPS/PPS。恢复状态只在备用 decoder 的新呈现回调后结束，不会把解码提交当作用户已经看到画面。
 
 ## 连接健康中心
 
-“连接记录”页按顺序显示六个阶段：线路与监听、认证与屏幕参数、唯一虚拟副屏、捕获编码与发送、客户端解码提交、屏幕实际呈现。新连接使用独立 attempt 隔离旧回调；断线、暂停和重新连接会更新对应阶段，旧会话的迟到事件不能把新会话错误地标为正常。
+“连接记录”页按顺序显示六个阶段：线路与监听、认证与屏幕参数、唯一虚拟副屏、捕获编码与发送、客户端解码提交、客户端呈现回调。新连接使用独立 attempt 隔离旧回调；断线、暂停和重新连接会更新对应阶段，旧会话的迟到事件不能把新会话错误地标为正常。
 
-“安全修复”只在某个阶段明确进入“需处理”时启用，并执行该阶段允许的有限动作，例如刷新线路、重建连接、配置请求模式或重启视频。涉及显示模式的操作会先停止所有 TabLink 会话，再配置唯一副屏；“打开日志目录”只打开本地记录，不修改显示设备。界面分别显示已发送、客户端解码提交和实际呈现，避免用较早的非零 FPS 掩盖已经停滞的链路。
+“安全修复”只在某个阶段明确进入“需处理”时启用，并执行该阶段允许的有限动作，例如刷新线路、重建连接、配置请求模式或重启视频。涉及显示模式的操作会先停止所有 TabLink 会话，再配置唯一副屏；“打开日志目录”只打开本地记录，不修改显示设备。界面分别显示已发送、客户端解码提交和呈现回调，避免用较早的非零 FPS 掩盖已经停滞的链路。
 
 0.4.2 默认按视频时间戳平滑安排安卓端呈现，90 fps 时目标额外等待约 22.22 ms、未来排程最多 25 ms；这不是整条链路的总延迟。相同动态负载的 30 秒以上 A/B 中，平板最终呈现从 77.665 提高到 **89.837 fps**，P95 间隔从 22.211 降到 **11.121 ms**。慢源、暂停和重连会有界重建时间映射，避免无限排队；完整数据见 `VERIFICATION.md`。
 
 ## 功能范围
 
-当前包括一个独立扩展桌面、原生横竖屏匹配、H.264 硬件编解码、画面确认、重连、会话守护、排除列表和单指鼠标操作。程序不会自动修改电源计划或升级显卡驱动。
+当前包括一个独立扩展桌面、原生横竖屏匹配、H.264 NVENC 硬件编码、Android 硬解优先并提供软件 decoder 兜底、画面确认、重连、会话守护、排除列表和单指鼠标操作。程序不会自动修改电源计划或升级显卡驱动。
 
 暂不包含音频、压感笔和多点触控。0.8.2 任意时刻只允许一台接收设备占用一块 TabLink 虚拟副屏；不会创建第三、第四块 TabLink 显示器。刷新速度受捕获、编码、USB、解码与安卓面板策略共同限制，当前版本不承诺所有设备达到 90 fps。同一副屏的位置变化会自动恢复；目标身份、主副屏关系或显示模式发生不兼容变化时会停止采集。
 
@@ -189,12 +191,13 @@ dotnet run --project tests/TabLink.Core.Tests -c Release
 
 | 方向 | 类型 | 载荷 |
 | --- | --- | --- |
-| Android → PC | `0x10` | 首包认证：`{"protocol":1,"token":"…","features":["render-submitted-v1"]}`；`features` 可选。 |
+| Android → PC | `0x10` | 首包认证：`{"protocol":1,"token":"…","features":["render-submitted-v1","decoder-refresh-v1"]}`；`features` 可选。 |
 | PC → Android | `0x20` | H.264 配置 JSON：`codec:"video/avc"`、`width`、`height`、`fps`、Base64 `csd0` / `csd1`（SPS / PPS）。不计视频帧。 |
 | PC → Android | `0x21` | `ptsUs:int64 big-endian` 后接一个 Annex B H.264 访问单元，时间戳单位为微秒。 |
 | Android → PC | `0x12` | 确认：`kind:"frame-presented"`、递增 `sequence`、`width`、`height`，可附 `fps`、`codec`、`decoder`、`droppedFrames`。 |
 | Android → PC | `0x13` | 屏幕参数：`width`、`height`、`rotation`、`activeModeId`、`refreshRate`、`nativeWidth`、`nativeHeight`、`supportedModes`。 |
-| Android → PC | `0x14` | 协商后的解码提交进度：`evidence:"render-submitted"`、递增 `frames`、`ptsUs`、`width`、`height`，可附 `fps`、`decoder`；不推进 `0x12` 的实际呈现计数。 |
+| Android → PC | `0x14` | 协商后的解码提交进度：`evidence:"render-submitted"`、递增 `frames`、`ptsUs`、`width`、`height`，可附 `fps`、`decoder`；不推进 `0x12` 的呈现回调计数。 |
+| Android → PC | `0x15` | 协商后的 decoder 恢复请求：8 字节大端正整数 generation；只请求当前会话的下一枚新 IDR，不推进健康证据。 |
 | Android → PC | `0x11` | 鼠标事件：`kind:"down/move/up/scroll"`、归一化 `x` / `y`，滚动可带 `delta`。 |
 | PC → Android | `0x02` | UTF-8 状态 JSON；认证后回显 `protocol:1` 和本连接实际协商的 `features`。 |
 | PC → Android | `0x03` | UTF-8 错误文本，客户端显示后停止该连接的自动重试。 |
@@ -202,7 +205,7 @@ dotnet run --project tests/TabLink.Core.Tests -c Release
 
 每个 `supportedModes` 项含 `width`、`height`、`refreshRate`、`modeId`。连接前，电脑对选定序列号查询 `content://com.tablink.client.display/capabilities`；连接中用 `0x13` 接收变化。
 
-旧客户端不发送 `features` 时协商结果为空并继续使用既有协议。Android 与 HarmonyOS NEXT 源码都只有在电脑端回显 `render-submitted-v1` 后才发送 `0x14`；未知能力不会回显。任何未协商客户端发送 `0x14` 都会结束异常会话，设备自报的平台或进度类型不能绕过协商。
+旧客户端不发送 `features` 时协商结果为空并继续使用既有协议。Android 只有在电脑端分别回显 `render-submitted-v1`、`decoder-refresh-v1` 后才发送对应的 `0x14`、`0x15`；HarmonyOS NEXT 源码本轮仍只声明提交证据能力。未知能力不会回显，任何未协商客户端发送对应扩展消息都会结束异常会话，设备自报的平台或进度类型不能绕过协商。
 
 `0x12` 和 `0x14` 都只随当前连接的新进度推进。重复、倒序、超出本连接已发送视频帧范围或尺寸不匹配的报告不会刷新健康期限。断开和重新认证会清空旧的提交、呈现、客户端 profile、fps 和 decoder。触控坐标对应实际画面，等比显示黑边不产生点击，断开时释放鼠标左键。
 

@@ -113,7 +113,7 @@ internal sealed class NativeNetworkSession : IAsyncDisposable
         var state=deadline.Evaluate(now,server.LastClientProgressUtc,server.CapturePaused,desktop);
         display.Guard.Renew(state.DeadlineUtc);
         if(now>state.DeadlineUtc){State="设备超过 20 秒未确认显示画面";await DisposeAsync();return;}
-        var progress=server.HasRecentPresentation?$"实际呈现 {server.ClientPresentedFps:F1} 帧/秒":server.HasRecentSubmission?$"解码提交 {server.ClientSubmittedFps:F1} 帧/秒（呈现待验证）":"等待画面";
+        var progress=server.HasRecentPresentation?$"呈现回调 {server.ClientPresentedFps:F1} 帧/秒":server.HasRecentSubmission?$"解码提交 {server.ClientSubmittedFps:F1} 帧/秒（呈现待验证）":"等待画面";
         State=state.CapturePaused?"画面暂停，连接保留":server.ClientConnected?$"{profile!.Width} × {profile.Height} · {progress}":"等待设备重连";
         if(desktop.IsAvailable&&server.LastPresentedUtc>now.AddSeconds(-5))
             try{display.Guard.RefreshRememberedLayout();}catch(IOException){}

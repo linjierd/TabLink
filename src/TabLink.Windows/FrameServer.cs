@@ -15,6 +15,7 @@ internal sealed class FrameServer : IAsyncDisposable
 {
     internal const int ProtocolVersion=1;
     internal const string RenderSubmittedFeature="render-submitted-v1";
+    internal const string DecoderRefreshFeature="decoder-refresh-v1";
     internal static readonly TimeSpan TelemetryFreshnessWindow=TimeSpan.FromSeconds(5);
     public const int Port = 27183;
     public const int MaxPacket = 8 * 1024 * 1024;
@@ -206,8 +207,10 @@ internal sealed class FrameServer : IAsyncDisposable
                 Status?.Invoke("平板已连接，正在传输副屏");
                 await WritePacketAsync(stream,0x02,StatusPayload(network is null?
                     "USB 副屏已连接":"加密副屏已连接",negotiatedFeatures),sessionCts.Token);
+                var decoderRefresh=negotiatedFeatures.Contains(DecoderRefreshFeature,StringComparer.Ordinal)
+                    ?new DecoderRefreshGate():null;
                 var receive = ReadInputsAsync(stream,
-                    negotiatedFeatures.Contains(RenderSubmittedFeature,StringComparer.Ordinal),sessionCts.Token);
+                    negotiatedFeatures.Contains(RenderSubmittedFeature,StringComparer.Ordinal),decoderRefresh,sessionCts.Token);
                 // A peer disconnect/reconnect must also interrupt a blocked encoder.
                 var cancelOnReceiveEnd=receive.ContinueWith(_=>sessionCts.Cancel(),CancellationToken.None,
                     TaskContinuationOptions.ExecuteSynchronously,TaskScheduler.Default);
@@ -230,6 +233,11 @@ internal sealed class FrameServer : IAsyncDisposable
                             var packet=packets.Current;
                             if(receive.IsCompleted)break;
                             if(packet.Payload.Length is <1 or >MaxPacket)throw new InvalidDataException("无效视频包");
+                            if(decoderRefresh is not null)
+                            {
+                                if(!decoderRefresh.TryPrepare(packet,out var preparedPacket))continue;
+                                packet=preparedPacket;
+                            }
                             if(packet.CapturePaused is bool paused)
                             {
                                 if(packet.Type!=0x02||packet.IsFrame)throw new InvalidDataException("无效的本机采集状态包");
@@ -334,9 +342,15 @@ internal sealed class FrameServer : IAsyncDisposable
         finally {timeout.Cancel();}
     }
 
-    static string[] NegotiateFeatures(IEnumerable<string>? requestedFeatures)=>
-        requestedFeatures?.Any(feature=>string.Equals(feature,RenderSubmittedFeature,StringComparison.Ordinal))==true
-            ? [RenderSubmittedFeature] : [];
+    static string[] NegotiateFeatures(IEnumerable<string>? requestedFeatures)
+    {
+        if(requestedFeatures is null)return [];
+        var requested=requestedFeatures.ToHashSet(StringComparer.Ordinal);
+        var negotiated=new List<string>(2);
+        if(requested.Contains(RenderSubmittedFeature))negotiated.Add(RenderSubmittedFeature);
+        if(requested.Contains(DecoderRefreshFeature))negotiated.Add(DecoderRefreshFeature);
+        return [.. negotiated];
+    }
 
     static byte[] StatusPayload(string message,IReadOnlyList<string> negotiatedFeatures)=>
         JsonSerializer.SerializeToUtf8Bytes(new{message,protocol=ProtocolVersion,features=negotiatedFeatures});
@@ -344,7 +358,7 @@ internal sealed class FrameServer : IAsyncDisposable
     static bool IsFresh(DateTime? observedUtc,DateTime nowUtc)=>
         observedUtc is {} observed&&observed>nowUtc-TelemetryFreshnessWindow;
 
-    async Task ReadInputsAsync(Stream stream,bool renderSubmittedNegotiated,CancellationToken ct)
+    async Task ReadInputsAsync(Stream stream,bool renderSubmittedNegotiated,DecoderRefreshGate? decoderRefresh,CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
@@ -354,6 +368,14 @@ internal sealed class FrameServer : IAsyncDisposable
                 var profile=TabletDisplayProfile.Parse(Encoding.UTF8.GetString(packet.Payload));
                 lock(statisticsLock)clientDisplayProfile=profile;
                 DisplayProfileChanged?.Invoke(profile);continue;
+            }
+            if(packet.Type==0x15)
+            {
+                if(decoderRefresh is null)throw new InvalidDataException("客户端未协商解码器刷新功能");
+                if(packet.Payload.Length!=sizeof(long))throw new InvalidDataException("无效的解码器刷新请求");
+                var generation=BinaryPrimitives.ReadInt64BigEndian(packet.Payload);
+                if(generation<=0)throw new InvalidDataException("无效的解码器刷新代次");
+                decoderRefresh.Request(generation);continue;
             }
             if(packet.Type==0x14)
             {
@@ -489,6 +511,151 @@ internal sealed class FrameServer : IAsyncDisposable
 
 internal record InputMessage(string Kind, double X, double Y, double Delta = 0);
 internal record VideoPacket(byte Type,byte[] Payload,bool IsFrame,bool? CapturePaused=null);
+
+internal enum DecoderRefreshRequestResult { Accepted, Duplicate, Coalesced, RateLimited }
+
+// Connection-scoped PLI-style gate for a decoder that has already been rebuilt.
+// It never restarts capture or replays an old picture: dependent frames are
+// withheld until the running encoder produces a fresh IDR.
+internal sealed class DecoderRefreshGate
+{
+    const int MaxConfigurationBytes=128*1024;
+    const int MaxParameterSetBytes=64*1024;
+    const double TokenCapacity=2;
+    readonly object gate=new();
+    readonly Func<long> timestamp;
+    readonly long timestampFrequency;
+    byte[]? configuration;
+    long highestGeneration,pendingGeneration,completedGeneration;
+    long tokenTimestamp;
+    double tokens=TokenCapacity;
+    bool pending;
+
+    internal DecoderRefreshGate(Func<long>? timestamp=null,long timestampFrequency=0)
+    {
+        this.timestamp=timestamp??Stopwatch.GetTimestamp;
+        this.timestampFrequency=timestampFrequency>0?timestampFrequency:Stopwatch.Frequency;
+        tokenTimestamp=this.timestamp();
+    }
+
+    internal bool IsPending {get{lock(gate)return pending;}}
+    internal long CompletedGeneration {get{lock(gate)return completedGeneration;}}
+
+    // A two-request burst accommodates an immediate decoder fallback; one token
+    // per second thereafter bounds an authenticated peer without penalising an
+    // idempotent retry or a newer generation coalesced into the outstanding PLI.
+    internal DecoderRefreshRequestResult Request(long generation)
+    {
+        if(generation<=0)throw new ArgumentOutOfRangeException(nameof(generation));
+        lock(gate)
+        {
+            if(generation<=highestGeneration)return DecoderRefreshRequestResult.Duplicate;
+            if(pending)
+            {
+                highestGeneration=pendingGeneration=generation;
+                return DecoderRefreshRequestResult.Coalesced;
+            }
+            RefillTokens();
+            if(tokens<1)return DecoderRefreshRequestResult.RateLimited;
+            tokens-=1;
+            highestGeneration=pendingGeneration=generation;
+            pending=true;
+            return DecoderRefreshRequestResult.Accepted;
+        }
+    }
+
+    // Returns false only for a dependent video frame suppressed while waiting
+    // for the next fresh IDR. Status/configuration packets continue normally.
+    internal bool TryPrepare(VideoPacket packet,out VideoPacket prepared)
+    {
+        prepared=packet;
+        if(packet.Type==0x20)
+        {
+            lock(gate)configuration=packet.Payload.ToArray();
+            return true;
+        }
+        if(packet.Type!=0x21||!packet.IsFrame)return true;
+
+        byte[]? currentConfiguration;
+        lock(gate)
+        {
+            if(!pending)return true;
+            currentConfiguration=configuration;
+        }
+        if(packet.Payload.Length<13)throw new InvalidDataException("无效的 H.264 访问单元");
+        var accessUnit=packet.Payload.AsSpan(8);
+        if(!ContainsNal(accessUnit,5))return false;
+        if(currentConfiguration is null)throw new InvalidDataException("解码器刷新缺少 H.264 配置");
+
+        var (sps,pps)=ParseConfiguration(currentConfiguration);
+        var addSps=!ContainsNal(accessUnit,7);
+        var addPps=!ContainsNal(accessUnit,8);
+        var extra=checked((addSps?sps.Length:0)+(addPps?pps.Length:0));
+        if(extra>0)
+        {
+            var length=checked(packet.Payload.Length+extra);
+            if(length>FrameServer.MaxPacket)throw new InvalidDataException("补齐参数集后的 H.264 包超过限制");
+            var payload=new byte[length];
+            packet.Payload.AsSpan(0,8).CopyTo(payload);
+            var offset=8;
+            if(addSps){sps.CopyTo(payload,offset);offset+=sps.Length;}
+            if(addPps){pps.CopyTo(payload,offset);offset+=pps.Length;}
+            accessUnit.CopyTo(payload.AsSpan(offset));
+            prepared=packet with {Payload=payload};
+        }
+        lock(gate)
+        {
+            // Any newer generation coalesced before this point is also satisfied
+            // by this still-unsent fresh IDR.
+            completedGeneration=Math.Max(completedGeneration,pendingGeneration);
+            pending=false;
+        }
+        return true;
+    }
+
+    void RefillTokens()
+    {
+        var now=timestamp();
+        if(now<tokenTimestamp){tokenTimestamp=now;return;}
+        var elapsed=(double)(now-tokenTimestamp)/timestampFrequency;
+        if(elapsed>0)tokens=Math.Min(TokenCapacity,tokens+elapsed);
+        tokenTimestamp=now;
+    }
+
+    static (byte[] Sps,byte[] Pps) ParseConfiguration(byte[] bytes)
+    {
+        if(bytes.Length is <2 or >MaxConfigurationBytes)
+            throw new InvalidDataException("无效的 H.264 配置长度");
+        try
+        {
+            using var json=JsonDocument.Parse(bytes,new JsonDocumentOptions{MaxDepth=8});
+            var root=json.RootElement;
+            if(root.GetProperty("codec").GetString()!="video/avc")throw new InvalidDataException("解码器刷新只支持 H.264");
+            var sps=Convert.FromBase64String(root.GetProperty("csd0").GetString()??"");
+            var pps=Convert.FromBase64String(root.GetProperty("csd1").GetString()??"");
+            if(sps.Length is <4 or >MaxParameterSetBytes||pps.Length is <4 or >MaxParameterSetBytes||
+                !ContainsNal(sps,7)||!ContainsNal(pps,8))throw new InvalidDataException("H.264 配置缺少有效 SPS/PPS");
+            return(sps,pps);
+        }
+        catch(Exception ex) when(ex is JsonException or FormatException or KeyNotFoundException or InvalidOperationException)
+        {throw new InvalidDataException("无法解析解码器刷新配置",ex);}
+    }
+
+    internal static bool ContainsNal(ReadOnlySpan<byte> bytes,int expectedType)
+    {
+        for(var index=0;index+3<bytes.Length;index++)
+        {
+            int prefix;
+            if(bytes[index]!=0||bytes[index+1]!=0)continue;
+            if(bytes[index+2]==1)prefix=3;
+            else if(index+3<bytes.Length&&bytes[index+2]==0&&bytes[index+3]==1)prefix=4;
+            else continue;
+            var header=index+prefix;
+            if(header<bytes.Length&&(bytes[header]&0x80)==0&&(bytes[header]&31)==expectedType)return true;
+        }
+        return false;
+    }
+}
 
 internal sealed record PipelineTimingSnapshot(long Count,double TotalMs,double MaxMs,long SlowCount,long[] Histogram);
 internal sealed record FrameSendPerformanceSnapshot(Guid ConnectionId,DateTime? StartedUtc,double ElapsedMs,

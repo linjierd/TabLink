@@ -84,6 +84,8 @@ try {
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\HudStyle.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\CapturePauseState.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\StreamingBrightnessPolicy.java'),
+        (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\DecoderCandidateSelector.java'),
+        (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\DecoderRefreshRequest.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\PairingLink.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\PinnedTls.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\ReleaseManifest.java'),
@@ -93,6 +95,7 @@ try {
         (Join-Path $projectDirectory 'tests\ProtocolSmokeTest.java'),
         (Join-Path $projectDirectory 'tests\VideoFrameQueueTest.java'),
         (Join-Path $projectDirectory 'tests\RenderClockTest.java'),
+        (Join-Path $projectDirectory 'tests\DecoderCandidateSelectorTest.java'),
         (Join-Path $projectDirectory 'tests\DisplayUiPolicyTest.java'),
         (Join-Path $projectDirectory 'tests\PairingSecurityTest.java'),
         (Join-Path $projectDirectory 'tests\StableUpdateSecurityTest.java')
@@ -126,6 +129,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Bounded video input queue test failed.' }
     & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.RenderClockTest
     if ($LASTEXITCODE -ne 0) { throw 'Bounded render clock test failed.' }
+    & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.DecoderCandidateSelectorTest
+    if ($LASTEXITCODE -ne 0) { throw 'Decoder candidate scoring test failed.' }
     & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.DisplayUiPolicyTest
     if ($LASTEXITCODE -ne 0) { throw 'HUD or capture pause policy test failed.' }
     & (Join-Path $JavaHome 'bin\java.exe') -cp "$testDirectory;$zxingJar" com.tablink.client.PairingSecurityTest $keyStore

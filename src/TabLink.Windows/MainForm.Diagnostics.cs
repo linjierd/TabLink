@@ -37,7 +37,7 @@ internal sealed partial class MainForm
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));layout.RowStyles.Add(new RowStyle(SizeType.Absolute,205));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute,62));layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));layout.RowStyles.Add(new RowStyle(SizeType.Absolute,180));
-        var healthIntro=new Label{Dock=DockStyle.Top,AutoSize=true,ForeColor=muted,Text="按真实事件检查线路、认证、副屏、发送、客户端解码提交和屏幕实际呈现；解码提交不等于已经显示。"};
+        var healthIntro=new Label{Dock=DockStyle.Top,AutoSize=true,ForeColor=muted,Text="按真实事件检查线路、认证、副屏、发送、客户端解码提交和呈现回调；呈现回调仍不等于物理面板测量。"};
         layout.Controls.Add(healthIntro,0,0);layout.Controls.Add(healthSummary,0,1);
         layout.Controls.Add(Flow(repairSuggested,diagnose,repairConnection,openDiagnosticFolder),0,2);
         layout.Controls.Add(healthStages,0,3);layout.Controls.Add(healthDetail,0,4);
@@ -189,13 +189,13 @@ internal sealed partial class MainForm
             var submissionFresh=source.HasRecentSubmission||presentationFresh;
             if(healthSubmissionFresh&&!submissionFresh)
             {
-                connectionHealth.RestartFrom(healthAttempt,ConnectionHealthStage.AndroidDecodeSubmission,"最近 5 秒没有新的解码提交或实际呈现证据");
+                connectionHealth.RestartFrom(healthAttempt,ConnectionHealthStage.AndroidDecodeSubmission,"最近 5 秒没有新的解码提交或呈现回调证据");
                 healthSubmittedFrames=source.SubmittedFrames;healthPresentedFrames=source.PresentedFrames;
                 healthSubmissionFresh=healthPresentationFresh=false;
             }
             else if(healthPresentationFresh&&!presentationFresh)
             {
-                connectionHealth.RestartFrom(healthAttempt,ConnectionHealthStage.PhysicalPresentation,"最近 5 秒没有新的屏幕实际呈现证据");
+                connectionHealth.RestartFrom(healthAttempt,ConnectionHealthStage.PhysicalPresentation,"最近 5 秒没有新的客户端呈现回调证据");
                 healthPresentedFrames=source.PresentedFrames;
                 healthPresentationFresh=false;
             }
@@ -264,7 +264,7 @@ internal sealed partial class MainForm
         finally{healthStages.EndUpdate();}
         if(restoredTop is not null)healthStages.TopItem=restoredTop;
         healthSummary.Text=snapshot.IsActive
-            ?$"当前路径：{HealthPathText(snapshot.Path)} · 解码提交 {snapshot.SubmittedFrames:N0} · 实际呈现 {snapshot.PresentedFrames:N0}"
+            ?$"当前路径：{HealthPathText(snapshot.Path)} · 解码提交 {snapshot.SubmittedFrames:N0} · 呈现回调 {snapshot.PresentedFrames:N0}"
             :"当前没有活动连接；开始连接后将显示六阶段进度。";
         UpdateHealthRepairButton();
         UpdateHealthDetail();
@@ -327,7 +327,7 @@ internal sealed partial class MainForm
         ConnectionHealthStage.SingleVirtualDisplay=>"3. 唯一虚拟副屏",
         ConnectionHealthStage.CaptureEncodeSend=>"4. 捕获、编码与发送",
         ConnectionHealthStage.AndroidDecodeSubmission=>"5. 客户端解码提交",
-        ConnectionHealthStage.PhysicalPresentation=>"6. 屏幕实际呈现",
+        ConnectionHealthStage.PhysicalPresentation=>"6. 客户端呈现回调",
         _=>value.ToString()
     };
     static string HealthStateText(ConnectionHealthState value)=>value switch
@@ -335,7 +335,7 @@ internal sealed partial class MainForm
     static string HealthPathText(ConnectionHealthPath value)=>value switch
     {ConnectionHealthPath.NativeNetwork=>"Wi-Fi / USB 网络",ConnectionHealthPath.AdbCompatibility=>"USB 调试兼容",ConnectionHealthPath.Browser=>"浏览器",_=>"未选择"};
     static string HealthReasonText(ConnectionHealthReason value)=>value switch
-    {ConnectionHealthReason.Idle=>"等待上一步",ConnectionHealthReason.Starting=>"正在启动",ConnectionHealthReason.Ready=>"已就绪",ConnectionHealthReason.Authenticating=>"等待客户端认证",ConnectionHealthReason.DisplayProfileReceived=>"已收到屏幕参数",ConnectionHealthReason.DisplayPreparing=>"正在准备副屏",ConnectionHealthReason.DisplayReady=>"副屏已就绪",ConnectionHealthReason.PipelineStarting=>"正在启动视频流水线",ConnectionHealthReason.FrameSent=>"电脑已发送画面",ConnectionHealthReason.CapturePaused=>"画面采集暂停",ConnectionHealthReason.DecodeSubmitted=>"已提交硬件解码",ConnectionHealthReason.FramePresented=>"Surface 已实际呈现",ConnectionHealthReason.Reconnecting=>"正在重连",ConnectionHealthReason.NeedsAttention=>"需要处理",ConnectionHealthReason.Stopped=>"连接已停止",_=>value.ToString()};
+    {ConnectionHealthReason.Idle=>"等待上一步",ConnectionHealthReason.Starting=>"正在启动",ConnectionHealthReason.Ready=>"已就绪",ConnectionHealthReason.Authenticating=>"等待客户端认证",ConnectionHealthReason.DisplayProfileReceived=>"已收到屏幕参数",ConnectionHealthReason.DisplayPreparing=>"正在准备副屏",ConnectionHealthReason.DisplayReady=>"副屏已就绪",ConnectionHealthReason.PipelineStarting=>"正在启动视频流水线",ConnectionHealthReason.FrameSent=>"电脑已发送画面",ConnectionHealthReason.CapturePaused=>"画面采集暂停",ConnectionHealthReason.DecodeSubmitted=>"已提交当前解码器",ConnectionHealthReason.FramePresented=>"收到 Surface 呈现回调",ConnectionHealthReason.Reconnecting=>"正在重连",ConnectionHealthReason.NeedsAttention=>"需要处理",ConnectionHealthReason.Stopped=>"连接已停止",_=>value.ToString()};
     static string HealthRecoveryText(ConnectionHealthRecovery value)=>value switch
     {ConnectionHealthRecovery.RefreshRoute=>"刷新线路",ConnectionHealthRecovery.RecreatePairing=>"重建当前连接",ConnectionHealthRecovery.ConfigureDisplayMode=>"配置设备请求模式",ConnectionHealthRecovery.ReclaimOwnedDisplay=>"回收本次拥有的副屏",ConnectionHealthRecovery.RestartVideo=>"重启视频连接",ConnectionHealthRecovery.OpenLogs=>"打开日志",_=>"无需操作"};
 
@@ -433,7 +433,7 @@ internal sealed partial class MainForm
                 found.Add(new("USB 冲突",conflicts.Length==0?"通过":"需要处理",conflicts.Length==0?"未发现 ExtensoDeskServer 进程。":"ExtensoDeskServer 正在运行，可能接管 USB 设备。请先退出它的服务再连接。"));foreach(var p in conflicts)p.Dispose();
                 return found;
             },deadline.Token);
-            if(server is {} primary)results.Add(new("主连接","信息",$"客户端连接={primary.ClientConnected}，电脑发送={primary.FramesSent} 帧，解码提交={primary.SubmittedFrames} 帧 / {primary.ClientSubmittedFps:F1} fps，实际呈现={primary.PresentedFrames} 帧 / {primary.ClientPresentedFps:F1} fps，采集暂停={primary.CapturePaused}。"));
+            if(server is {} primary)results.Add(new("主连接","信息",$"客户端连接={primary.ClientConnected}，电脑发送={primary.FramesSent} 帧，解码提交={primary.SubmittedFrames} 帧 / {primary.ClientSubmittedFps:F1} fps，呈现回调={primary.PresentedFrames} 帧 / {primary.ClientPresentedFps:F1} fps，采集暂停={primary.CapturePaused}。"));
             foreach(var s in additionalSessions.Where(x=>!x.IsStopped))results.Add(new("独立设备 "+s.Port,"信息",s.State));
             foreach(var s in browserStates.Values)results.Add(new("浏览器 "+s.Id.ToString()[..8],"信息",s.Message));
             Diagnostics.Save("connection-diagnosis.json",()=>new{timestamp=DateTimeOffset.Now,findings=results},Log);

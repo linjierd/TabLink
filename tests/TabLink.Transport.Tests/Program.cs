@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Security;
@@ -7,6 +8,7 @@ using System.Runtime.CompilerServices;
 using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Threading.Channels;
 using TabLink.Windows;
 
 using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(60));
@@ -45,6 +47,23 @@ static async Task<(TcpClient Client,SslStream Stream)> Connect(NetworkSessionOpt
 }
 static async Task ReadUntil(Stream stream,byte type,CancellationToken ct)
 {while((await FrameServer.ReadPacketAsync(stream,8192,ct)).Type!=type){}}
+static byte[] RefreshConfiguration()=>JsonSerializer.SerializeToUtf8Bytes(new
+{
+    codec="video/avc",width=1200,height=1920,fps=90,
+    csd0=Convert.ToBase64String(new byte[]{0,0,0,1,0x67,0x42,0,0x1f}),
+    csd1=Convert.ToBase64String(new byte[]{0,0,0,1,0x68,0xab,0xcd})
+});
+static byte[] AccessUnit(long pts,byte type,bool includeSps=false,bool includePps=false)
+{
+    var bytes=new List<byte>();
+    if(includeSps)bytes.AddRange(new byte[]{0,0,0,1,0x67,0x42,0,0x1f});
+    if(includePps)bytes.AddRange(new byte[]{0,0,0,1,0x68,0xab,0xcd});
+    bytes.AddRange(new byte[]{0,0,0,1,type,0x55});
+    var payload=new byte[8+bytes.Count];
+    BinaryPrimitives.WriteInt64BigEndian(payload,pts);bytes.CopyTo(payload,8);
+    return payload;
+}
+static byte[] Generation(long value){var bytes=new byte[8];BinaryPrimitives.WriteInt64BigEndian(bytes,value);return bytes;}
 static string[] CheckNegotiationStatus((byte Type,byte[] Payload) packet,string reason)
 {
     Check(packet.Type==0x02,reason+": negotiation status did not precede media");
@@ -85,6 +104,39 @@ Console.WriteLine("PASS explicit local IPv4 required; wildcard, broadcast, multi
     stats.Reset(true);Check(stats.Snapshot().ConnectionId!=oldId,"new connection reused metric identity");
 }
 Console.WriteLine("PASS bounded cumulative pipeline snapshots distinguish source/send stalls and bursts, copy histograms, and reset connection identity");
+
+// The decoder refresh gate is private to one authenticated connection. It
+// coalesces an outstanding request, suppresses only dependent frames and uses
+// a small token bucket once each fresh-IDR request has completed.
+{
+    long clock=0;
+    var first=new DecoderRefreshGate(()=>clock,1000);
+    var second=new DecoderRefreshGate(()=>clock,1000);
+    var config=new VideoPacket(0x20,RefreshConfiguration(),false);
+    Check(first.TryPrepare(config,out var firstConfig)&&ReferenceEquals(firstConfig,config),"refresh gate changed the ordinary codec configuration");
+    Check(second.TryPrepare(config,out _),"second refresh gate rejected codec configuration");
+    Check(first.Request(1)==DecoderRefreshRequestResult.Accepted&&first.IsPending,"first decoder generation was not accepted");
+    Check(first.Request(1)==DecoderRefreshRequestResult.Duplicate,"duplicate decoder generation was not idempotent");
+    var predicted=new VideoPacket(0x21,AccessUnit(1,0x41),true);
+    Check(!first.TryPrepare(predicted,out _),"pending refresh leaked a dependent frame");
+    Check(second.TryPrepare(predicted,out var independent)&&independent.Payload.SequenceEqual(predicted.Payload),"one connection gated another connection's frame");
+    var idr=new VideoPacket(0x21,AccessUnit(2,0x65),true);
+    Check(first.TryPrepare(idr,out var refreshed)&&!first.IsPending&&first.CompletedGeneration==1,
+        "fresh IDR did not complete the requested generation");
+    Check(DecoderRefreshGate.ContainsNal(refreshed.Payload.AsSpan(8),7)&&
+        DecoderRefreshGate.ContainsNal(refreshed.Payload.AsSpan(8),8)&&
+        DecoderRefreshGate.ContainsNal(refreshed.Payload.AsSpan(8),5),"fresh IDR did not carry SPS, PPS and IDR together");
+    Check(first.Request(2)==DecoderRefreshRequestResult.Accepted,"bounded burst did not admit a second decoder generation");
+    Check(first.Request(3)==DecoderRefreshRequestResult.Coalesced,"newer outstanding generation was not coalesced");
+    Check(first.TryPrepare(idr with {Payload=AccessUnit(3,0x65,true,true)},out var alreadyComplete)&&
+        alreadyComplete.Payload.Length==AccessUnit(3,0x65,true,true).Length&&first.CompletedGeneration==3,
+        "existing SPS/PPS were duplicated or coalesced generation was not completed");
+    Check(first.Request(4)==DecoderRefreshRequestResult.RateLimited,"decoder refresh token bucket did not limit a third immediate request");
+    Check(!first.IsPending&&first.CompletedGeneration==3,"rate-limited request altered completed or pending refresh state");
+    clock+=1000;
+    Check(first.Request(4)==DecoderRefreshRequestResult.Accepted,"decoder refresh token did not refill after one second");
+}
+Console.WriteLine("PASS decoder refresh gate is connection-local, idempotent, coalesced and rate-limited; only a fresh IDR carries missing SPS/PPS");
 
 var options=new NetworkSessionOptions(IPAddress.Loopback,FreePort(),TimeSpan.FromMilliseconds(900),TimeSpan.FromSeconds(3));
 var prepared=0;var videos=0;var inputs=0;var releases=0;var profiles=0;
@@ -221,6 +273,103 @@ await using(var server=new FrameServer(options,async(profile,token)=>
     Console.WriteLine("PASS TLS profile/prepare/config/video/ACK/input ordering, profile change event, reconnect preserving listener/token/pin and resetting ACK evidence");
     Console.WriteLine("PASS disposal cancels a blocked encoder and closes its client; status logs contain no token/pin");
 }
+
+var refreshPackets=Channel.CreateUnbounded<VideoPacket>();
+var refreshVideos=0;var refreshInputs=0;
+async IAsyncEnumerable<VideoPacket> RefreshVideo([EnumeratorCancellation]CancellationToken token)
+{
+    Interlocked.Increment(ref refreshVideos);
+    yield return new(0x20,RefreshConfiguration(),false);
+    await foreach(var packet in refreshPackets.Reader.ReadAllAsync(token))yield return packet;
+}
+await using(var refreshServer=new FrameServer(RefreshVideo,_=>Interlocked.Increment(ref refreshInputs),()=>{},listenPort:0))
+{
+    refreshServer.Start();
+    using(var client=new TcpClient())
+    {
+        await client.ConnectAsync(IPAddress.Loopback,refreshServer.ListeningPort,ct);
+        var stream=client.GetStream();
+        var endpoint=client.Client.LocalEndPoint;
+        await Hello(stream,refreshServer.Token,ct,[FrameServer.RenderSubmittedFeature,FrameServer.DecoderRefreshFeature,"unknown-refresh-v9"]);
+        var status=await FrameServer.ReadPacketAsync(stream,8192,ct);
+        Check(CheckNegotiationStatus(status,"decoder refresh HELLO").SequenceEqual(
+            [FrameServer.RenderSubmittedFeature,FrameServer.DecoderRefreshFeature]),"decoder refresh feature intersection or order changed");
+        await FrameServer.WritePacketAsync(stream,0x13,Profile(),ct);
+        var config=await FrameServer.ReadPacketAsync(stream,8192,ct);
+        Check(config.Type==0x20,"initial decoder configuration missing");
+        await refreshPackets.Writer.WriteAsync(new(0x21,AccessUnit(0,0x65,true,true),true),ct);
+        var initial=await FrameServer.ReadPacketAsync(stream,FrameServer.MaxPacket,ct);
+        Check(initial.Type==0x21,"initial IDR missing");
+        await WaitFor(()=>refreshServer.FramesSent==1,ct);
+        await FrameServer.WritePacketAsync(stream,0x12,JsonSerializer.SerializeToUtf8Bytes(new{kind="frame-presented",sequence=1,width=1200,height=1920}),ct);
+        await WaitFor(()=>refreshServer.PresentedFrames==1,ct);
+        var presentedAt=refreshServer.LastPresentedUtc;
+        var connectionId=refreshServer.SendPerformance.ConnectionId;
+
+        await FrameServer.WritePacketAsync(stream,0x15,Generation(1),ct);
+        await FrameServer.WritePacketAsync(stream,0x11,JsonSerializer.SerializeToUtf8Bytes(new{kind="move",x=0.5,y=0.5}),ct);
+        await WaitFor(()=>refreshInputs==1,ct); // Ordered receive-stream barrier after 0x15.
+        Check(refreshServer.PresentedFrames==1&&refreshServer.LastPresentedUtc==presentedAt,
+            "decoder refresh request fabricated presentation progress");
+        await refreshPackets.Writer.WriteAsync(new(0x21,AccessUnit(1,0x41),true),ct);
+        await refreshPackets.Writer.WriteAsync(new(0x21,AccessUnit(2,0x65),true),ct);
+        var recovered=await FrameServer.ReadPacketAsync(stream,FrameServer.MaxPacket,ct);
+        Check(recovered.Type==0x21&&BinaryPrimitives.ReadInt64BigEndian(recovered.Payload)==2,
+            "refresh emitted a configuration or dependent frame before the fresh IDR");
+        Check(DecoderRefreshGate.ContainsNal(recovered.Payload.AsSpan(8),7)&&
+            DecoderRefreshGate.ContainsNal(recovered.Payload.AsSpan(8),8)&&
+            DecoderRefreshGate.ContainsNal(recovered.Payload.AsSpan(8),5),"wire refresh did not combine SPS/PPS with the fresh IDR");
+        await WaitFor(()=>refreshServer.FramesSent==2,ct);
+        Check(refreshVideos==1&&refreshServer.SendPerformance.ConnectionId==connectionId&&client.Client.LocalEndPoint!.Equals(endpoint)&&
+            refreshServer.PresentedFrames==1&&refreshServer.SubmittedFrames==0,
+            "decoder refresh restarted media/TCP or fabricated client progress");
+        await FrameServer.WritePacketAsync(stream,0x12,JsonSerializer.SerializeToUtf8Bytes(new{kind="frame-presented",sequence=2,width=1200,height=1920}),ct);
+        await FrameServer.WritePacketAsync(stream,0x14,JsonSerializer.SerializeToUtf8Bytes(new{evidence="render-submitted",frames=2,ptsUs=2,width=1200,height=1920,fps=60,decoder="fallback-decoder"}),ct);
+        await WaitFor(()=>refreshServer.PresentedFrames==2&&refreshServer.SubmittedFrames==2,ct);
+
+        await FrameServer.WritePacketAsync(stream,0x15,Generation(1),ct);
+        await FrameServer.WritePacketAsync(stream,0x11,JsonSerializer.SerializeToUtf8Bytes(new{kind="move",x=0.6,y=0.6}),ct);
+        await WaitFor(()=>refreshInputs==2,ct);
+        await refreshPackets.Writer.WriteAsync(new(0x21,AccessUnit(3,0x41),true),ct);
+        var afterDuplicate=await FrameServer.ReadPacketAsync(stream,FrameServer.MaxPacket,ct);
+        Check(afterDuplicate.Type==0x21&&BinaryPrimitives.ReadInt64BigEndian(afterDuplicate.Payload)==3,
+            "duplicate generation reopened the keyframe gate");
+        await WaitFor(()=>refreshServer.FramesSent==3,ct);
+        await FrameServer.WritePacketAsync(stream,0x14,JsonSerializer.SerializeToUtf8Bytes(new{evidence="render-submitted",frames=3,ptsUs=1,width=1200,height=1920,fps=60,decoder="fabricated-skipped-p-frame"}),ct);
+        await Closed(stream,ct);
+    }
+    await WaitFor(()=>!refreshServer.ClientConnected,ct);
+
+    // Old clients remain compatible, but an unnegotiated new control message
+    // fails closed instead of changing the media stream.
+    using(var legacy=new TcpClient())
+    {
+        await legacy.ConnectAsync(IPAddress.Loopback,refreshServer.ListeningPort,ct);
+        var stream=legacy.GetStream();await Hello(stream,refreshServer.Token,ct);
+        Check(CheckNegotiationStatus(await FrameServer.ReadPacketAsync(stream,8192,ct),"legacy refresh HELLO").Length==0,
+            "legacy peer received an unsolicited decoder feature");
+        await ReadUntil(stream,0x20,ct);
+        await FrameServer.WritePacketAsync(stream,0x15,Generation(1),ct);
+        await Closed(stream,ct);
+    }
+    await WaitFor(()=>!refreshServer.ClientConnected,ct);
+
+    foreach(var invalidPayload in new[]{new byte[7],Generation(0),Generation(-1)})
+    {
+        using var invalid=new TcpClient();
+        await invalid.ConnectAsync(IPAddress.Loopback,refreshServer.ListeningPort,ct);
+        var stream=invalid.GetStream();await Hello(stream,refreshServer.Token,ct,[FrameServer.DecoderRefreshFeature]);
+        Check(CheckNegotiationStatus(await FrameServer.ReadPacketAsync(stream,8192,ct),"invalid refresh HELLO")
+            .SequenceEqual([FrameServer.DecoderRefreshFeature]),"decoder-only feature was not negotiated");
+        await ReadUntil(stream,0x20,ct);
+        await FrameServer.WritePacketAsync(stream,0x15,invalidPayload,ct);
+        await Closed(stream,ct);
+        await WaitFor(()=>!refreshServer.ClientConnected,ct);
+    }
+}
+Console.WriteLine("PASS negotiated 0x15 keeps one authenticated TCP/media source, suppresses P frames and sends SPS/PPS+fresh IDR without synthetic ACK evidence");
+Console.WriteLine("PASS skipped P frames do not enter frame counters or recent-PTS evidence");
+Console.WriteLine("PASS legacy clients negotiate no decoder feature; unnegotiated, non-8-byte, zero and negative decoder refresh requests fail closed");
 
 var harmonyOptions=new NetworkSessionOptions(IPAddress.Loopback,FreePort());
 async IAsyncEnumerable<VideoPacket> HarmonyVideo([EnumeratorCancellation]CancellationToken token)

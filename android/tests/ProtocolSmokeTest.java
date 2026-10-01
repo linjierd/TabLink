@@ -108,6 +108,20 @@ public final class ProtocolSmokeTest {
         check(WireProtocol.read(input(submissionBytes.toByteArray())).type == WireProtocol.RENDER_SUBMITTED,
                 "render-submitted packet type round trips");
 
+        check(WireProtocol.DECODER_REFRESH == 0x15, "decoder refresh keeps its negotiated protocol type");
+        byte[] refresh = DecoderRefreshRequest.encode(0x0102030405060708L);
+        check(refresh.length == 8 && refresh[0] == 1 && refresh[7] == 8,
+                "decoder refresh generation uses fixed-width big-endian encoding");
+        check(DecoderRefreshRequest.decode(refresh) == 0x0102030405060708L,
+                "decoder refresh generation round trips");
+        try { DecoderRefreshRequest.encode(0); throw new AssertionError("zero refresh generation"); }
+        catch (IllegalArgumentException expected) { assertions++; }
+        try { DecoderRefreshRequest.decode(new byte[7]); throw new AssertionError("short refresh generation"); }
+        catch (IOException expected) { assertions++; }
+        try { DecoderRefreshRequest.decode(ByteBuffer.allocate(8).putLong(-1).array());
+            throw new AssertionError("negative refresh generation"); }
+        catch (IOException expected) { assertions++; }
+
         VideoAccessUnit idr = video(1, true, 0);
         check(idr.ptsUs == 1 && idr.keyFrame, "video PTS and Annex-B IDR parsed");
         check(!video(2, false, 0).keyFrame, "inter frame is not IDR");

@@ -243,7 +243,7 @@ internal sealed partial class MainForm
             if(state is {CapturePaused:false}&&healthPresentationFresh&&
                 (state.LastPresentedUtc is null||state.LastPresentedUtc<=now-FrameServer.TelemetryFreshnessWindow))
             {
-                connectionHealth.RestartFrom(healthAttempt,ConnectionHealthStage.PhysicalPresentation,"最近 5 秒没有新的浏览器实际呈现证据");
+                connectionHealth.RestartFrom(healthAttempt,ConnectionHealthStage.PhysicalPresentation,"最近 5 秒没有新的浏览器呈现回调证据");
                 healthPresentedFrames=state.PresentedFrames;healthPresentationFresh=false;RefreshConnectionHealthUi();
             }
             try

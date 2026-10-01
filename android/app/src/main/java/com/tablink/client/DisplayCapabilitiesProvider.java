@@ -6,7 +6,7 @@ import android.database.Cursor;
 import android.database.MatrixCursor;
 import android.net.Uri;
 
-/** Public read-only display/pacing metrics; no session tokens, files, or device control. */
+/** ADB/system-only display and pacing diagnostics guarded by android.permission.DUMP. */
 public final class DisplayCapabilitiesProvider extends ContentProvider {
     private static final String URI = "content://com.tablink.client.display/capabilities";
     private static final String PACING_URI = "content://com.tablink.client.display/pacing";

@@ -18,6 +18,7 @@
             android:name=".DisplayCapabilitiesProvider"
             android:authorities="com.tablink.client.display"
             android:exported="true"
+            android:readPermission="android.permission.DUMP"
             android:grantUriPermissions="false" />
         <provider
             android:name=".UpdateApkProvider"

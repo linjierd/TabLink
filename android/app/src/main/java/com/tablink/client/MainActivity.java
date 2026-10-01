@@ -69,6 +69,7 @@ import javax.net.ssl.SSLHandshakeException;
 public final class MainActivity extends Activity {
     private static final String ACTION_SET_RENDER_PACING = "com.tablink.client.SET_RENDER_PACING";
     private static final int SCAN_REQUEST = 71;
+    private static final long METRIC_FRESHNESS_MILLIS = 5000;
     private static final int BACKGROUND = Color.rgb(16, 25, 34);
     private static final int ACCENT = Color.rgb(110, 231, 183);
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -97,6 +98,14 @@ public final class MainActivity extends Activity {
     private boolean brightnessOverrideActive;
     private float previousWindowBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE;
     private Session brightnessOwner;
+    private final Runnable performanceTicker = new Runnable() {
+        @Override public void run() {
+            if (!activityStarted) return;
+            Session current = session;
+            if (current != null) updatePerformance(current);
+            ui.postDelayed(this, 1000);
+        }
+    };
     private final DisplayManager.DisplayListener displayListener = new DisplayManager.DisplayListener() {
         @Override public void onDisplayAdded(int id) { }
         @Override public void onDisplayRemoved(int id) { }
@@ -143,6 +152,8 @@ public final class MainActivity extends Activity {
         ((DisplayManager) getSystemService(DISPLAY_SERVICE)).registerDisplayListener(displayListener, ui);
         requestPreferredDisplayMode();
         connect();
+        ui.removeCallbacks(performanceTicker);
+        ui.post(performanceTicker);
         updater.onForeground();
     }
 
@@ -170,6 +181,7 @@ public final class MainActivity extends Activity {
 
     @Override protected void onStop() {
         activityStarted = false;
+        ui.removeCallbacks(performanceTicker);
         updater.onBackground();
         ((DisplayManager) getSystemService(DISPLAY_SERVICE)).unregisterDisplayListener(displayListener);
         DisplayCapabilities.recordRequestedMode(0, 0);
@@ -757,12 +769,35 @@ public final class MainActivity extends Activity {
         CapturePauseState capture = source.captureState;
         if (capture.paused) {
             performance.setText("采集暂停 · " + capture.message + "\n长按或返回打开设置");
-        } else if (source.hasPresentedFrame) {
+        } else if ("H.264".equals(source.streamCodec)
+                && (source.hasPresentedFrame || !source.decoderName.isEmpty())) {
             JSONObject profile = DisplayCapabilities.read(this);
-            performance.setText(String.format(Locale.ROOT, "%s · 解码 %.1f fps · 屏幕 %.0f Hz / 请求 %.0f Hz",
-                    source.streamCodec, source.actualFps, profile.optDouble("refreshRate"), profile.optDouble("requestedRefreshRate"))
+            long now = SystemClock.elapsedRealtime();
+            String panel = formatHz(profile.optDouble("refreshRate", Double.NaN));
+            String requested = formatHz(profile.optDouble("requestedRefreshRate", Double.NaN));
+            String submitted = formatFps(source.submittedFps, source.lastSubmittedMillis, now);
+            String presented = formatFps(source.actualFps, source.lastPresentedMillis, now);
+            String decoder = source.decoderName.isEmpty() ? "正在选择" : source.decoderName;
+            String state = source.waitingForKeyFrame ? "解码恢复中 · 等待关键帧"
+                    : source.decoderSelection.isEmpty() ? "等待首帧" : source.decoderSelection;
+            performance.setText("面板 " + panel + " · 请求 " + requested
+                    + "\n解码提交 " + submitted + " · 呈现回调 " + presented
+                    + "\n解码器 " + decoder + " · " + state
                     + (brightnessOverrideActive ? " · 高刷最低亮度" : ""));
+        } else if (source.hasPresentedFrame) {
+            performance.setText(String.format(Locale.ROOT, "%s · 呈现回调 %.1f fps",
+                    source.streamCodec, source.actualFps));
         } else performance.setText("TabLink · " + status.getText());
+    }
+
+    private static String formatHz(double value) {
+        return Double.isFinite(value) && value > 0 ? String.format(Locale.ROOT, "%.0f Hz", value) : "—";
+    }
+
+    private static String formatFps(double value, long updatedMillis, long nowMillis) {
+        return Double.isFinite(value) && value > 0 && updatedMillis > 0
+                && nowMillis - updatedMillis <= METRIC_FRESHNESS_MILLIS
+                ? String.format(Locale.ROOT, "%.1f fps", value) : "—";
     }
 
     private static String visibleMessage(String value) {
@@ -783,6 +818,9 @@ public final class MainActivity extends Activity {
         volatile PresentationProgress presentation;
         volatile SubmissionProgress submission;
         volatile boolean submissionAckNegotiated;
+        volatile boolean decoderRefreshNegotiated;
+        private final AtomicLong decoderRefreshGeneration = new AtomicLong();
+        volatile long pendingDecoderRefresh;
         volatile boolean hasPresentedFrame;
         private String lastDisplayProfile;
         private final AtomicLong frameIds = new AtomicLong();
@@ -791,8 +829,13 @@ public final class MainActivity extends Activity {
         volatile VideoDecoder video;
         volatile long videoGeneration;
         volatile double actualFps;
+        volatile double submittedFps;
+        volatile long lastSubmittedMillis;
+        volatile long lastPresentedMillis;
         volatile String streamCodec = "JPEG";
         volatile String decoderName = "";
+        volatile String decoderSelection = "";
+        volatile boolean waitingForKeyFrame;
         volatile long droppedFrames;
         volatile CapturePauseState captureState = new CapturePauseState();
 
@@ -833,6 +876,7 @@ public final class MainActivity extends Activity {
                 if ("scroll".equals(kind)) event.put("delta", delta);
                 WireProtocol.Packet packet = new WireProtocol.Packet(WireProtocol.INPUT,
                         event.toString().getBytes(StandardCharsets.UTF_8));
+                if ("move".equals(kind) && outgoing.remainingCapacity() < 3) return;
                 if (!outgoing.offer(packet) && !"move".equals(kind)) {
                     // Reconnect releases host mouse state rather than losing an up event.
                     closeSocket();
@@ -871,8 +915,9 @@ public final class MainActivity extends Activity {
                 acknowledgement.put("decoder", decoderName);
                 acknowledgement.put("droppedFrames", droppedFrames);
                 // An acknowledgement may be skipped when input is busy; never block rendering.
-                outgoing.offer(new WireProtocol.Packet(WireProtocol.PRESENTED,
-                        acknowledgement.toString().getBytes(StandardCharsets.UTF_8)));
+                if (outgoing.remainingCapacity() > 1)
+                    outgoing.offer(new WireProtocol.Packet(WireProtocol.PRESENTED,
+                            acknowledgement.toString().getBytes(StandardCharsets.UTF_8)));
             } catch (JSONException ignored) { }
         }
 
@@ -886,9 +931,15 @@ public final class MainActivity extends Activity {
         void frameSubmitted(SubmissionProgress progress, long ptsUs, long submittedNanos,
                 int width, int height, String decoder) {
             if (!running || !connected || session != this || submission != progress) return;
+            lastSubmittedMillis = SystemClock.elapsedRealtime();
             SubmissionProgress.Report report = progress.submitted(ptsUs, width, height, submittedNanos,
-                    SystemClock.elapsedRealtime(), decoder);
-            if (report == null || !submissionAckNegotiated || captureState.paused) return;
+                    lastSubmittedMillis, decoder);
+            if (report == null) return;
+            submittedFps = report.fps;
+            ui.post(() -> {
+                if (session == this && activityStarted) updatePerformance(this);
+            });
+            if (!submissionAckNegotiated || captureState.paused || outgoing.remainingCapacity() < 2) return;
             try {
                 JSONObject acknowledgement = new JSONObject();
                 acknowledgement.put("evidence", "render-submitted");
@@ -906,15 +957,46 @@ public final class MainActivity extends Activity {
         }
 
         void acceptHostFeatures(JSONObject state) {
-            if (submissionAckNegotiated) return;
             if (state.optInt("protocol", -1) != 1) return;
             JSONArray features = state.optJSONArray("features");
             if (features == null || features.length() > 64) return;
             for (int index = 0; index < features.length(); index++) {
-                if ("render-submitted-v1".equals(features.optString(index, null))) {
-                    submissionAckNegotiated = true;
-                    return;
+                String feature = features.optString(index, null);
+                if ("render-submitted-v1".equals(feature)) submissionAckNegotiated = true;
+                else if ("decoder-refresh-v1".equals(feature)) decoderRefreshNegotiated = true;
+            }
+            long pending = pendingDecoderRefresh;
+            if (decoderRefreshNegotiated && pending > 0) enqueueDecoderRefresh(pending, true);
+        }
+
+        void requestDecoderRefresh() {
+            if (!running || !connected || session != this) return;
+            long generation = decoderRefreshGeneration.incrementAndGet();
+            if (generation <= 0) {
+                decoderRefreshGeneration.set(1);
+                generation = 1;
+            }
+            pendingDecoderRefresh = generation;
+            if (decoderRefreshNegotiated) enqueueDecoderRefresh(generation, true);
+        }
+
+        void enqueueDecoderRefresh(long generation, boolean retry) {
+            if (!running || !connected || session != this || !decoderRefreshNegotiated
+                    || generation <= 0 || pendingDecoderRefresh != generation) return;
+            WireProtocol.Packet control = new WireProtocol.Packet(WireProtocol.DECODER_REFRESH,
+                    DecoderRefreshRequest.encode(generation));
+            boolean queued = outgoing.offer(control);
+            if (!queued) {
+                for (WireProtocol.Packet candidate : outgoing) {
+                    if (candidate.type != WireProtocol.RENDER_SUBMITTED && candidate.type != WireProtocol.PRESENTED)
+                        continue;
+                    if (outgoing.remove(candidate) && outgoing.offer(control)) { queued = true; break; }
                 }
+            }
+            if (queued) {
+                if (pendingDecoderRefresh == generation) pendingDecoderRefresh = 0;
+            } else if (retry) {
+                ui.postDelayed(() -> enqueueDecoderRefresh(generation, false), 100);
             }
         }
 
@@ -930,6 +1012,11 @@ public final class MainActivity extends Activity {
             videoGeneration++;
             VideoDecoder previous = video;
             video = null;
+            waitingForKeyFrame = false;
+            decoderName = "";
+            decoderSelection = "";
+            actualFps = submittedFps = 0;
+            lastPresentedMillis = lastSubmittedMillis = 0;
             if (previous != null) previous.close();
             ui.post(() -> {
                 if (session == this || session == null) {
@@ -955,18 +1042,29 @@ public final class MainActivity extends Activity {
             long generation = ++videoGeneration;
             streamCodec = "H.264";
             actualFps = 0;
+            submittedFps = 0;
+            lastPresentedMillis = lastSubmittedMillis = 0;
+            decoderName = "";
+            decoderSelection = "";
+            waitingForKeyFrame = false;
             droppedFrames = 0;
+            final VideoDecoder[] holder = new VideoDecoder[1];
             VideoDecoder next = new VideoDecoder(configuration, new VideoDecoder.Listener() {
                 @Override public void onSubmitted(long ptsUs, long submittedNanos, int width, int height, String decoder) {
                     if (!running || !connected || session != Session.this || generation != videoGeneration
-                            || presentation != progress || submission != submittedProgress) return;
+                            || video != holder[0] || presentation != progress || submission != submittedProgress) return;
                     frameSubmitted(submittedProgress, ptsUs, submittedNanos, width, height, decoder);
                 }
                 @Override public void onPresented(long ptsUs, long renderNanos, int width, int height,
                         double fps, String decoder, long dropped) {
-                    if (!running || !connected || session != Session.this || generation != videoGeneration || presentation != progress) return;
+                    if (!running || !connected || session != Session.this || generation != videoGeneration
+                            || video != holder[0] || presentation != progress) return;
                     actualFps = fps;
+                    lastPresentedMillis = SystemClock.elapsedRealtime();
                     decoderName = decoder;
+                    boolean recovered = waitingForKeyFrame;
+                    waitingForKeyFrame = false;
+                    if (recovered) decoderSelection += " · 已恢复";
                     droppedFrames = dropped;
                     framePresented(progress, frameIds.incrementAndGet(), width, height);
                 }
@@ -975,12 +1073,40 @@ public final class MainActivity extends Activity {
                         if (session == Session.this && generation == videoGeneration) videoSurface.setImageSize(width, height);
                     });
                 }
+                @Override public void onDecoderSelected(String selectedDecoder, String tier, boolean fallback,
+                        String failedDecoder, String reason) {
+                    if (!running || !connected || session != Session.this || generation != videoGeneration
+                            || video != holder[0] || presentation != progress || submission != submittedProgress) return;
+                    decoderName = selectedDecoder;
+                    String tierLabel = "hardware".equals(tier) ? "硬解"
+                            : "software".equals(tier) ? "软件解码" : "解码器";
+                    decoderSelection = fallback
+                            ? "切换到" + ("hardware".equals(tier) ? "备用硬解" : tierLabel)
+                            : "首选" + tierLabel;
+                    if (fallback) {
+                        actualFps = submittedFps = 0;
+                        lastPresentedMillis = lastSubmittedMillis = 0;
+                        waitingForKeyFrame = true;
+                        requestDecoderRefresh();
+                    }
+                    ui.post(() -> {
+                        if (session != Session.this || generation != videoGeneration || video != holder[0]
+                                || !activityStarted) return;
+                        if (fallback) {
+                            String message = "H.264 解码器已切换，正在等待关键帧；连接与副屏保持不变";
+                            status.setText(message);
+                            if (settingsStatus != null) settingsStatus.setText(message);
+                        }
+                        updatePerformance(Session.this);
+                    });
+                }
                 @Override public void onError(String message) {
-                    if (generation != videoGeneration) return;
+                    if (generation != videoGeneration || video != holder[0]) return;
                     setStatus(Session.this, message, false);
                     closeSocket();
                 }
             }, renderPacingEnabled);
+            holder[0] = next;
             video = next;
             ui.post(() -> {
                 if (session != this || video != next || !running) return;
@@ -1000,7 +1126,15 @@ public final class MainActivity extends Activity {
                 presentation = progress;
                 submission = submittedProgress;
                 submissionAckNegotiated = false;
+                decoderRefreshNegotiated = false;
+                decoderRefreshGeneration.set(0);
+                pendingDecoderRefresh = 0;
                 hasPresentedFrame = false;
+                waitingForKeyFrame = false;
+                decoderName = "";
+                decoderSelection = "";
+                actualFps = submittedFps = 0;
+                lastPresentedMillis = lastSubmittedMillis = 0;
                 captureState = new CapturePauseState();
                 lastDisplayProfile = null;
                 frameIds.set(0);
@@ -1021,7 +1155,9 @@ public final class MainActivity extends Activity {
                     JSONObject hello = new JSONObject();
                     hello.put("protocol", 1);
                     hello.put("token", sessionToken);
-                    hello.put("features", new JSONArray().put("render-submitted-v1"));
+                    hello.put("features", new JSONArray()
+                            .put("render-submitted-v1")
+                            .put("decoder-refresh-v1"));
                     WireProtocol.write(output, WireProtocol.HELLO, hello.toString().getBytes(StandardCharsets.UTF_8));
                     // Send the initial native/rotation/requested-Hz profile synchronously,
                     // before any decoder is created or incoming video packet is consumed.
@@ -1082,6 +1218,8 @@ public final class MainActivity extends Activity {
                 } finally {
                     connected = false;
                     submissionAckNegotiated = false;
+                    decoderRefreshNegotiated = false;
+                    pendingDecoderRefresh = 0;
                     submission = null;
                     stopVideo();
                     closeSocket();
