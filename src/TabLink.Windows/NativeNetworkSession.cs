@@ -21,9 +21,12 @@ internal sealed class NativeNetworkSession : IAsyncDisposable
     internal event Action<TabletDisplayProfile>? DisplayPreparationStarted;
     internal event Action<VirtualDisplayInfo>? DisplayPrepared;
     internal event Action<Exception>? DisplayPreparationFailed;
+    internal event Action? Stopped;
     readonly bool allowTouch;
     readonly Func<Func<Task>,Task> onUi;
     readonly Action<string> log;
+    readonly VideoEncoderSelectionOptions encoderOptions;
+    readonly Action<VideoEncoderRuntimeSnapshot>? encoderSelected;
     readonly CancellationTokenSource lifetime=new();
     readonly SemaphoreSlim preparation=new(1,1);
     readonly SessionPresentationDeadline deadline=new();
@@ -38,8 +41,11 @@ internal sealed class NativeNetworkSession : IAsyncDisposable
     bool stopped;
     Task? disposal;
 
-    internal NativeNetworkSession(NetworkInterfaceChoice network,int port,bool allowTouch,Func<Func<Task>,Task> onUi,Action<string> log)
-    {Network=network;Port=port;this.allowTouch=allowTouch;this.onUi=onUi;this.log=log;}
+    internal NativeNetworkSession(NetworkInterfaceChoice network,int port,bool allowTouch,Func<Func<Task>,Task> onUi,
+        Action<string> log,VideoEncoderSelectionOptions? encoderOptions=null,
+        Action<VideoEncoderRuntimeSnapshot>? encoderSelected=null)
+    {Network=network;Port=port;this.allowTouch=allowTouch;this.onUi=onUi;this.log=log;
+        this.encoderOptions=encoderOptions??new();this.encoderSelected=encoderSelected;}
 
     internal async Task StartAsync(CancellationToken ct)
     {
@@ -95,7 +101,8 @@ internal sealed class NativeNetworkSession : IAsyncDisposable
     IAsyncEnumerable<VideoPacket> Video(CancellationToken ct)
     {
         var owned=display??throw new IOException("设备尚未分配到独立副屏。");
-        return VideoPipeline.StreamAsync(owned.CurrentDisplay,profile??throw new IOException("缺少屏幕参数。"),ct,log,owned.Lease);
+        return VideoPipeline.StreamAsync(owned.CurrentDisplay,profile??throw new IOException("缺少屏幕参数。"),ct,log,
+            owned.Lease,encoderOptions:encoderOptions,encoderSelected:encoderSelected);
     }
 
     internal async Task CheckAsync(IReadOnlyList<NetworkInterfaceChoice>? available,InputDesktopStatus desktop)
@@ -112,7 +119,7 @@ internal sealed class NativeNetworkSession : IAsyncDisposable
         var now=DateTime.UtcNow;
         var state=deadline.Evaluate(now,server.LastClientProgressUtc,server.CapturePaused,desktop);
         display.Guard.Renew(state.DeadlineUtc);
-        if(now>state.DeadlineUtc){State="设备超过 20 秒未确认显示画面";await DisposeAsync();return;}
+        if(now>state.DeadlineUtc){State="设备超过首帧或后续呈现期限";await DisposeAsync();return;}
         var progress=server.HasRecentPresentation?$"呈现回调 {server.ClientPresentedFps:F1} 帧/秒":server.HasRecentSubmission?$"解码提交 {server.ClientSubmittedFps:F1} 帧/秒（呈现待验证）":"等待画面";
         State=state.CapturePaused?"画面暂停，连接保留":server.ClientConnected?$"{profile!.Width} × {profile.Height} · {progress}":"等待设备重连";
         if(desktop.IsAvailable&&server.LastPresentedUtc>now.AddSeconds(-5))
@@ -153,7 +160,7 @@ internal sealed class NativeNetworkSession : IAsyncDisposable
     public ValueTask DisposeAsync()=>new(disposal??=DisposeCoreAsync());
     async Task DisposeCoreAsync()
     {
-        stopped=true;lifetime.Cancel();
+        stopped=true;Stopped?.Invoke();lifetime.Cancel();
         try{if(server is {} running){await running.DisposeAsync();server=null;}}
         finally
         {

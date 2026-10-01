@@ -26,6 +26,8 @@ public sealed record TabletDisplayProfile(int Width,int Height,int Rotation,int 
         if(!Size(Width)||!Size(Height)||!Size(NativeWidth)||!Size(NativeHeight)||Rotation is <0 or >3||!Hz(RefreshRate)
             ||SupportedModes is null||SupportedModes.Count is <1 or >128
             ||SupportedModes.Any(m=>m is null||!Size(m.Width)||!Size(m.Height)||!Hz(m.RefreshRate))
+            ||(long)Width*Height>16_000_000||(long)NativeWidth*NativeHeight>16_000_000
+            ||SupportedModes.Any(m=>(long)m.Width*m.Height>16_000_000)
             ||!SupportedModes.Any(m=>m.Width==NativeWidth&&m.Height==NativeHeight)
             ||!((Width==NativeWidth&&Height==NativeHeight)||(Width==NativeHeight&&Height==NativeWidth)))
             throw new InvalidDataException("APK 返回的屏幕分辨率或刷新率无效，已停止配置副屏。");

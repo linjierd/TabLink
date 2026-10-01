@@ -30,19 +30,38 @@ if ($PSBoundParameters.ContainsKey('OutputDirectory')) {
 else {
     $publishRoot = Join-Path $projectRoot 'dist\TabLink'
 }
-$apkPath = Join-Path $projectRoot $(if ($PublicRelease) { 'android\artifacts\TabLink-android-0.8.3-preview.apk' } else { 'android\artifacts\TabLink-android-0.8.3-debug.apk' })
+$apkPath = Join-Path $projectRoot $(if ($PublicRelease) { 'android\artifacts\TabLink-android-0.8.4-preview.apk' } else { 'android\artifacts\TabLink-android-0.8.4-debug.apk' })
 $ffmpegRoot = Join-Path $projectRoot 'third_party\ffmpeg-tablink'
-$ffmpegBinary = Join-Path $ffmpegRoot 'bin\ffmpeg.exe'
+$ffmpegHardwareBinary = Join-Path $ffmpegRoot 'bin\ffmpeg.exe'
+$ffmpegSoftwareBinary = Join-Path $ffmpegRoot 'bin\ffmpeg-x264.exe'
 $ffmpegSourceBundle = Join-Path $ffmpegRoot 'source-bundle.tar.gz'
 $ffmpegChecksums = Join-Path $ffmpegRoot 'SHA256SUMS'
-if (-not (Test-Path -LiteralPath $ffmpegBinary)) { throw 'Build the verified TabLink FFmpeg component first.' }
+if (-not (Test-Path -LiteralPath $ffmpegHardwareBinary -PathType Leaf)) { throw 'Build the verified TabLink hardware FFmpeg component first.' }
+if (-not (Test-Path -LiteralPath $ffmpegSoftwareBinary -PathType Leaf)) { throw 'Build the verified TabLink libx264 FFmpeg component first.' }
 if (-not (Test-Path -LiteralPath (Join-Path $ffmpegRoot 'README.md'))) { throw 'FFmpeg source notice missing.' }
 if (-not (Test-Path -LiteralPath $ffmpegSourceBundle)) { throw 'FFmpeg corresponding source bundle missing.' }
+$ffmpegSourceManifest = Join-Path $ffmpegRoot 'SOURCE-BUNDLE-MANIFEST.json'
+if (-not (Test-Path -LiteralPath $ffmpegSourceManifest -PathType Leaf)) { throw 'FFmpeg corresponding-source manifest missing.' }
+foreach ($licenseName in @(
+    'COPYING.LGPLv2.1',
+    'COPYING.GPLv2',
+    'COPYING.MinGW-w64-runtime.txt',
+    'COPYING.NVIDIA.txt',
+    'COPYING.oneVPL.txt',
+    'COPYING.oneVPL-third-party-programs.txt',
+    'COPYING.AMF.txt',
+    'COPYING.x264.txt'
+)) {
+    if (-not (Test-Path -LiteralPath (Join-Path $ffmpegRoot ('bin\' + $licenseName)) -PathType Leaf)) {
+        throw "FFmpeg distribution license or notice missing: bin\$licenseName"
+    }
+}
 
 function Assert-FfmpegArtifactsMatchChecksums {
     param(
         [Parameter(Mandatory = $true)][string]$ChecksumPath,
-        [Parameter(Mandatory = $true)][string]$BinaryPath,
+        [Parameter(Mandatory = $true)][string]$HardwareBinaryPath,
+        [Parameter(Mandatory = $true)][string]$SoftwareBinaryPath,
         [Parameter(Mandatory = $true)][string]$SourceBundlePath
     )
 
@@ -51,12 +70,13 @@ function Assert-FfmpegArtifactsMatchChecksums {
     }
 
     $artifactPaths = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::OrdinalIgnoreCase)
-    $artifactPaths.Add('bin\ffmpeg.exe', $BinaryPath)
+    $artifactPaths.Add('bin\ffmpeg.exe', $HardwareBinaryPath)
+    $artifactPaths.Add('bin\ffmpeg-x264.exe', $SoftwareBinaryPath)
     $artifactPaths.Add('source-bundle.tar.gz', $SourceBundlePath)
     $declaredHashes = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::OrdinalIgnoreCase)
     $checksumLines = @(Get-Content -LiteralPath $ChecksumPath)
     if ($checksumLines.Count -ne $artifactPaths.Count) {
-        throw 'FFmpeg SHA256SUMS must contain exactly the binary and corresponding source bundle entries.'
+        throw 'FFmpeg SHA256SUMS must contain exactly the two binaries and corresponding source bundle entries.'
     }
 
     foreach ($line in $checksumLines) {
@@ -85,8 +105,169 @@ function Assert-FfmpegArtifactsMatchChecksums {
     }
 }
 
+function Invoke-FfmpegAuditCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$BinaryPath,
+        [Parameter(Mandatory = $true)][string]$Argument,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    $output = @(& $BinaryPath $Argument 2>&1 | ForEach-Object { $_.ToString() })
+    if ($LASTEXITCODE -ne 0 -or $output.Count -eq 0) {
+        throw "$Description FFmpeg failed its $Argument audit."
+    }
+    return ($output -join "`n")
+}
+
+function Assert-FfmpegBinarySafe {
+    param(
+        [Parameter(Mandatory = $true)][string]$BinaryPath,
+        [Parameter(Mandatory = $true)][ValidateSet('Hardware','Software')][string]$Flavor
+    )
+
+    $description = if ($Flavor -eq 'Hardware') { 'Hardware' } else { 'libx264' }
+    $version = Invoke-FfmpegAuditCommand -BinaryPath $BinaryPath -Argument '-version' -Description $description
+    $buildConfiguration = Invoke-FfmpegAuditCommand -BinaryPath $BinaryPath -Argument '-buildconf' -Description $description
+    $encoders = Invoke-FfmpegAuditCommand -BinaryPath $BinaryPath -Argument '-encoders' -Description $description
+    $protocols = Invoke-FfmpegAuditCommand -BinaryPath $BinaryPath -Argument '-protocols' -Description $description
+    $license = Invoke-FfmpegAuditCommand -BinaryPath $BinaryPath -Argument '-L' -Description $description
+
+    $personalPathPattern = '(?i)(?:[A-Z]:[\\/]+Users[\\/]|/[A-Z]/Users/)'
+    $binaryBytes = [IO.File]::ReadAllBytes($BinaryPath)
+    $binaryViews = @(
+        [Text.Encoding]::ASCII.GetString($binaryBytes),
+        [Text.Encoding]::Unicode.GetString($binaryBytes),
+        [Text.Encoding]::BigEndianUnicode.GetString($binaryBytes)
+    )
+    if ($null -ne ($binaryViews | Where-Object { $_ -match $personalPathPattern } | Select-Object -First 1)) {
+        throw "$description FFmpeg exposes a builder-specific personal Users path."
+    }
+    foreach ($auditOutput in @($version, $buildConfiguration, $encoders, $protocols, $license)) {
+        if ($auditOutput -match $personalPathPattern) {
+            throw "$description FFmpeg audit output exposes a builder-specific personal Users path."
+        }
+    }
+
+    $versionFirstLine = @($version -split "`r?`n")[0]
+    $expectedVersionPrefix = if ($Flavor -eq 'Hardware') {
+        'ffmpeg version 7.0.2-tablink-084-hardware1 '
+    }
+    else {
+        'ffmpeg version 7.0.2-tablink-084-libx264-1 '
+    }
+    if (-not $versionFirstLine.StartsWith($expectedVersionPrefix, [StringComparison]::Ordinal)) {
+        throw "$description FFmpeg does not identify as the pinned TabLink FFmpeg 7.0.2 build ($expectedVersionPrefix)."
+    }
+
+    $configurationOptions = @(
+        foreach ($line in ($buildConfiguration -split "`r?`n")) {
+            $option = $line.Trim().Replace("'", '').Replace('"', '')
+            if ($option.StartsWith('--', [StringComparison]::Ordinal)) { $option }
+        }
+    )
+    $configurationOptionSet = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($option in $configurationOptions) { [void]$configurationOptionSet.Add($option) }
+    $expectedPrefix = if ($Flavor -eq 'Hardware') { '--prefix=/ffmpeg-tablink-084-hardware' } else { '--prefix=/ffmpeg-tablink-084-software' }
+    foreach ($requiredOption in @(
+        $expectedPrefix,
+        '--disable-everything',
+        '--disable-autodetect',
+        '--disable-network',
+        '--disable-shared',
+        '--enable-static',
+        '--enable-ffmpeg',
+        '--enable-protocol=file,pipe',
+        '--enable-parser=h264',
+        '--enable-bsf=h264_metadata'
+    )) {
+        if (-not $configurationOptionSet.Contains($requiredOption)) {
+            throw "$description FFmpeg build configuration is missing the required option: $requiredOption"
+        }
+    }
+
+    $encoderNames = @(
+        foreach ($line in ($encoders -split "`r?`n")) {
+            $encoderMatch = [regex]::Match($line, '^\s*[VAS\.FSCXBD]{6}\s+(?<Name>\S+)')
+            if ($encoderMatch.Success) { $encoderMatch.Groups['Name'].Value }
+        }
+    )
+    $encoderSet = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($encoderName in $encoderNames) { [void]$encoderSet.Add($encoderName) }
+
+    if ($Flavor -eq 'Hardware') {
+        foreach ($requiredOption in @('--enable-ffnvcodec','--enable-nvenc','--enable-libvpl','--enable-amf')) {
+            if (-not $configurationOptionSet.Contains($requiredOption)) {
+                throw "Hardware FFmpeg build configuration is missing the required option: $requiredOption"
+            }
+        }
+        foreach ($forbiddenOption in @('--enable-gpl','--enable-nonfree','--enable-libx264')) {
+            if ($configurationOptionSet.Contains($forbiddenOption)) {
+                throw "Hardware FFmpeg build configuration contains a forbidden option: $forbiddenOption"
+            }
+        }
+        foreach ($requiredEncoder in @('h264_nvenc','h264_qsv','h264_amf')) {
+            if (-not $encoderSet.Contains($requiredEncoder)) {
+                throw "Hardware FFmpeg is missing the required encoder: $requiredEncoder"
+            }
+        }
+        if ($encoderSet.Contains('libx264') -or $encoderSet.Contains('libx264rgb')) {
+            throw 'Hardware FFmpeg unexpectedly contains a libx264 encoder.'
+        }
+        if ($license -notmatch 'GNU Lesser General Public\s+License' -or $license -match 'under the terms of the GNU General Public\s+License') {
+            throw 'Hardware FFmpeg did not report the required LGPL-only license.'
+        }
+    }
+    else {
+        foreach ($requiredOption in @('--enable-gpl','--enable-libx264')) {
+            if (-not $configurationOptionSet.Contains($requiredOption)) {
+                throw "libx264 FFmpeg build configuration is missing the required option: $requiredOption"
+            }
+        }
+        if ($configurationOptionSet.Contains('--enable-nonfree')) {
+            throw 'libx264 FFmpeg build configuration contains the forbidden option: --enable-nonfree'
+        }
+        if (-not $encoderSet.Contains('libx264')) {
+            throw 'libx264 FFmpeg is missing the required libx264 encoder.'
+        }
+        foreach ($forbiddenEncoder in @('h264_nvenc','h264_qsv','h264_amf')) {
+            if ($encoderSet.Contains($forbiddenEncoder)) {
+                throw "libx264 FFmpeg unexpectedly contains a hardware encoder: $forbiddenEncoder"
+            }
+        }
+        if ($license -notmatch 'under the terms of the GNU General Public\s+License' -or $license -match 'GNU Lesser General Public\s+License') {
+            throw 'libx264 FFmpeg did not report the required GPL license.'
+        }
+    }
+
+    $expectedEncoders = if ($Flavor -eq 'Hardware') {
+        @('h264_amf','h264_nvenc','h264_qsv','rawvideo','wrapped_avframe')
+    }
+    else {
+        @('libx264','rawvideo','wrapped_avframe')
+    }
+    $unexpectedEncoders = @($encoderNames | Where-Object { $_ -notin $expectedEncoders } | Sort-Object -Unique)
+    $missingEncoders = @($expectedEncoders | Where-Object { -not $encoderSet.Contains($_) })
+    if ($unexpectedEncoders.Count -ne 0 -or $missingEncoders.Count -ne 0) {
+        throw "$description FFmpeg encoder surface does not match its release contract. Missing: $($missingEncoders -join ', '); unexpected: $($unexpectedEncoders -join ', ')."
+    }
+
+    $protocolNames = @(
+        foreach ($line in ($protocols -split "`r?`n")) {
+            if ($line -match '^\s{2}(?<Name>[A-Za-z0-9+._-]+)\s*$') { $Matches['Name'] }
+        }
+    )
+    $unexpectedProtocols = @($protocolNames | Where-Object { $_ -notin @('file','pipe') } | Sort-Object -Unique)
+    $missingProtocols = @('file','pipe') | Where-Object { $_ -notin $protocolNames }
+    if ($unexpectedProtocols.Count -ne 0 -or $missingProtocols.Count -ne 0) {
+        throw "$description FFmpeg protocol surface must be exactly file and pipe. Missing: $($missingProtocols -join ', '); unexpected: $($unexpectedProtocols -join ', ')."
+    }
+}
+
 function Assert-FfmpegSourceBundleSafe {
-    param([Parameter(Mandatory = $true)][string]$BundlePath)
+    param(
+        [Parameter(Mandatory = $true)][string]$BundlePath,
+        [Parameter(Mandatory = $true)][string]$ManifestPath
+    )
 
     $auditRoot = Join-Path $projectRoot ('.ffmpeg-source-audit-' + [Guid]::NewGuid().ToString('N'))
     try {
@@ -109,23 +290,53 @@ function Assert-FfmpegSourceBundleSafe {
             if (-not $normalizedEntries.Add($normalizedEntry)) {
                 throw "FFmpeg source bundle contains a duplicate entry: $entry"
             }
+            if ($normalizedEntry -match '(?i)(?:^|/)\.git(?:/|$)') {
+                throw "FFmpeg source bundle contains forbidden Git metadata: $entry"
+            }
+            if ($normalizedEntry -match '(?i)^ffmpeg-tablink/(?:build|toolchain|downloads)(?:/|$)' -or
+                $normalizedEntry -match '(?i)\.(?:exe|dll|pdb|obj|o|a|lib|exp|ilk|pyc)(?:/)?$' -or
+                $normalizedEntry -match '(?i)(?:^|/)__pycache__(?:/|$)') {
+                throw "FFmpeg source bundle contains a build output: $entry"
+            }
+            if ($normalizedEntry -match '(?i)^ffmpeg-tablink/bin/' -and
+                $normalizedEntry -notmatch '(?i)^ffmpeg-tablink/bin/COPYING[^/]*$') {
+                throw "FFmpeg source bundle bin directory contains a non-license artifact: $entry"
+            }
         }
 
         $requiredEntries = @(
             'ffmpeg-tablink/source/ffmpeg-7.0.2/',
             'ffmpeg-tablink/source/ffmpeg-7.0.2/configure',
             'ffmpeg-tablink/source/ffmpeg-7.0.2/COPYING.LGPLv2.1',
+            'ffmpeg-tablink/source/ffmpeg-7.0.2/COPYING.GPLv2',
             'ffmpeg-tablink/source/nv-codec-headers-n12.2.72.0/',
             'ffmpeg-tablink/source/nv-codec-headers-n12.2.72.0/include/ffnvcodec/nvEncodeAPI.h',
+            'ffmpeg-tablink/source/oneVPL-2.11.0/',
+            'ffmpeg-tablink/source/oneVPL-2.11.0/api/vpl/mfxvideo.h',
+            'ffmpeg-tablink/source/oneVPL-2.11.0/LICENSE',
+            'ffmpeg-tablink/source/oneVPL-2.11.0/third-party-programs.txt',
+            'ffmpeg-tablink/source/AMF-1.4.35/',
+            'ffmpeg-tablink/source/AMF-1.4.35/amf/public/include/core/Factory.h',
+            'ffmpeg-tablink/source/AMF-1.4.35/LICENSE.txt',
+            'ffmpeg-tablink/source/x264-b35605ace3dd/',
+            'ffmpeg-tablink/source/x264-b35605ace3dd/x264.h',
+            'ffmpeg-tablink/source/x264-b35605ace3dd/COPYING',
             'ffmpeg-tablink/0001-windows-private-high-resolution-usleep.patch',
             'ffmpeg-tablink/README.md',
             'ffmpeg-tablink/build.ps1',
             'ffmpeg-tablink/build.sh',
+            'ffmpeg-tablink/New-SourceBundle.ps1',
             'ffmpeg-tablink/prepare-toolchain.ps1',
             'ffmpeg-tablink/downloads-manifest.json',
+            'ffmpeg-tablink/SOURCE-BUNDLE-MANIFEST.json',
             'ffmpeg-tablink/bin/COPYING.LGPLv2.1',
+            'ffmpeg-tablink/bin/COPYING.GPLv2',
             'ffmpeg-tablink/bin/COPYING.MinGW-w64-runtime.txt',
             'ffmpeg-tablink/bin/COPYING.NVIDIA.txt',
+            'ffmpeg-tablink/bin/COPYING.oneVPL.txt',
+            'ffmpeg-tablink/bin/COPYING.oneVPL-third-party-programs.txt',
+            'ffmpeg-tablink/bin/COPYING.AMF.txt',
+            'ffmpeg-tablink/bin/COPYING.x264.txt',
             'ffmpeg-tablink/signature-verification.log',
             'ffmpeg-tablink/production-parser-test.log',
             'ffmpeg-tablink/NATIVE-MOTION-VALIDATION.md',
@@ -146,6 +357,22 @@ function Assert-FfmpegSourceBundleSafe {
         New-Item -ItemType Directory -Path $auditRoot | Out-Null
         & tar -xzf $BundlePath -C $auditRoot
         if ($LASTEXITCODE -ne 0) { throw 'Unable to extract the FFmpeg source bundle for privacy audit.' }
+
+        $bundledManifestPath = Join-Path $auditRoot 'ffmpeg-tablink\SOURCE-BUNDLE-MANIFEST.json'
+        $externalManifestHash = (Get-FileHash -LiteralPath $ManifestPath -Algorithm SHA256).Hash
+        $bundledManifestHash = (Get-FileHash -LiteralPath $bundledManifestPath -Algorithm SHA256).Hash
+        if (-not [string]::Equals($externalManifestHash, $bundledManifestHash, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'The published FFmpeg source manifest does not match the manifest inside the source bundle.'
+        }
+        try {
+            $manifestDocument = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
+        }
+        catch {
+            throw 'FFmpeg SOURCE-BUNDLE-MANIFEST.json is not valid JSON.'
+        }
+        if ($null -eq $manifestDocument -or $manifestDocument -isnot [PSCustomObject]) {
+            throw 'FFmpeg SOURCE-BUNDLE-MANIFEST.json must contain a JSON object.'
+        }
 
         $personalPathPattern = '(?i)(?:[A-Z]:[\\/]+Users[\\/]|/[A-Z]/Users/)'
         foreach ($file in Get-ChildItem -LiteralPath $auditRoot -File -Recurse -Force) {
@@ -172,16 +399,11 @@ function Assert-FfmpegSourceBundleSafe {
 }
 
 if ($PublicRelease) {
-    Assert-FfmpegArtifactsMatchChecksums -ChecksumPath $ffmpegChecksums -BinaryPath $ffmpegBinary -SourceBundlePath $ffmpegSourceBundle
-    $ffmpegBytes = [IO.File]::ReadAllBytes($ffmpegBinary)
-    $ffmpegAscii = [Text.Encoding]::ASCII.GetString($ffmpegBytes)
-    $ffmpegUtf16 = [Text.Encoding]::Unicode.GetString($ffmpegBytes)
-    $ffmpegVersion = @(& $ffmpegBinary -version 2>&1 | ForEach-Object { $_.ToString() }) -join "`n"
-    if ($LASTEXITCODE -ne 0) { throw 'Bundled FFmpeg failed its version probe.' }
-    $userPathPattern = '(?i)[A-Z]:[\\/]+Users[\\/]'
-    if ($ffmpegAscii -match $userPathPattern -or $ffmpegUtf16 -match $userPathPattern -or $ffmpegVersion -match $userPathPattern) {
-        throw 'Bundled FFmpeg exposes a builder-specific Users path; rebuild it with the neutral prefix before publishing.'
-    }
+    Assert-FfmpegArtifactsMatchChecksums -ChecksumPath $ffmpegChecksums `
+        -HardwareBinaryPath $ffmpegHardwareBinary -SoftwareBinaryPath $ffmpegSoftwareBinary `
+        -SourceBundlePath $ffmpegSourceBundle
+    Assert-FfmpegBinarySafe -BinaryPath $ffmpegHardwareBinary -Flavor Hardware
+    Assert-FfmpegBinarySafe -BinaryPath $ffmpegSoftwareBinary -Flavor Software
 }
 New-Item -ItemType Directory -Path $publishRoot -Force | Out-Null
 if (-not $PublicRelease) {
@@ -281,12 +503,13 @@ if (-not $PublicRelease) {
 }
 $ffmpegOutput = Join-Path $publishRoot 'tools\ffmpeg'
 New-Item -ItemType Directory -Path $ffmpegOutput -Force | Out-Null
-Copy-Item -LiteralPath $ffmpegBinary -Destination $ffmpegOutput
+Copy-Item -LiteralPath $ffmpegHardwareBinary -Destination $ffmpegOutput
+Copy-Item -LiteralPath $ffmpegSoftwareBinary -Destination $ffmpegOutput
 Get-ChildItem -LiteralPath (Join-Path $ffmpegRoot 'bin') -Filter 'COPYING*' -File | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $ffmpegOutput }
 if ($PublicRelease) {
-    Assert-FfmpegSourceBundleSafe -BundlePath $ffmpegSourceBundle
+    Assert-FfmpegSourceBundleSafe -BundlePath $ffmpegSourceBundle -ManifestPath $ffmpegSourceManifest
 }
-foreach ($name in @('README.md','source-bundle.tar.gz','0001-windows-private-high-resolution-usleep.patch','downloads-manifest.json')) {
+foreach ($name in @('README.md','SHA256SUMS','source-bundle.tar.gz','SOURCE-BUNDLE-MANIFEST.json','0001-windows-private-high-resolution-usleep.patch','downloads-manifest.json')) {
     Copy-Item -LiteralPath (Join-Path $ffmpegRoot $name) -Destination $ffmpegOutput
 }
 if (Test-Path -LiteralPath (Join-Path $ffmpegRoot 'NATIVE-MOTION-VALIDATION.md')) {
@@ -301,8 +524,8 @@ Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md') -Destination $publis
 Copy-Item -LiteralPath (Join-Path $projectRoot 'AUTHORS.md') -Destination $publishRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot 'LICENSE') -Destination $publishRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot 'THIRD_PARTY_NOTICES.md') -Destination $publishRoot
-Copy-Item -LiteralPath (Join-Path $projectRoot 'RELEASE-0.8.3.md') -Destination $publishRoot
-Copy-Item -LiteralPath (Join-Path $projectRoot 'VERIFICATION-0.8.3.md') -Destination $publishRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot 'RELEASE-0.8.4.md') -Destination $publishRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot 'VERIFICATION-0.8.4.md') -Destination $publishRoot
 if ($PublicRelease) {
     Copy-Item -LiteralPath (Join-Path $projectRoot 'PUBLIC-RELEASE.md') -Destination $publishRoot
     Copy-Item -LiteralPath (Join-Path $projectRoot 'ADB-SETUP.md') -Destination $publishRoot

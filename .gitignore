@@ -42,7 +42,9 @@ coverage.*
 third_party/ffmpeg/
 third_party/adb/bin/
 third_party/adb/.cache/
-third_party/ffmpeg-tablink/bin/
+!third_party/ffmpeg-tablink/bin/
+third_party/ffmpeg-tablink/bin/*
+!third_party/ffmpeg-tablink/bin/COPYING*
 third_party/ffmpeg-tablink/build/
 third_party/ffmpeg-tablink/downloads/
 third_party/ffmpeg-tablink/source/

@@ -42,6 +42,7 @@ internal sealed partial class MainForm
         {
             if(sessionList.SelectedItem is not NativeSessionRow row)return;
             await row.Session.DisposeAsync();
+            if(!HasAnySessions)ClearEncoderSelectionIfIdle();
             StopConnectionHealth("原生客户端连接已停止并回收本次副屏");
             RefreshSessionList();
         });
@@ -65,29 +66,34 @@ internal sealed partial class MainForm
         if(port==0)throw new IOException("其他原生配对端口已用完，请使用首页主连接或停止一个设备。");
         await EnsureOwnedDisplayCleanupBeforeNewConnectionAsync();
         _=VideoPipeline.FindFfmpeg();
-        BeginConnectionHealth(ConnectionHealthPath.NativeNetwork,$"选择原生客户端线路 {choice.InterfaceAlias} · {choice.LocalAddress}:{port}");
-        var session=new NativeNetworkSession(choice,port,touch.Checked,OnUiAsync,Log);
-        session.DisplayPreparationStarted+=profile=>
-        {
-            MarkHealthDisplayProfile(profile);
-            MarkHealthDisplayPreparing("正在按原生客户端报告的模式准备唯一虚拟副屏");
-        };
-        session.DisplayPrepared+=display=>
-        {
-            MarkHealthDisplayReady(display);
-            MarkHealthPipelineStarting("正在启动原生客户端的视频流水线");
-        };
-        session.DisplayPreparationFailed+=ex=>MarkConnectionHealthAttention(ex.Message);
-        additionalSessions.Add(session);
+        var encoderGeneration=BeginEncoderSelectionConnection();
+        NativeNetworkSession? session=null;
         try
         {
+            BeginConnectionHealth(ConnectionHealthPath.NativeNetwork,$"选择原生客户端线路 {choice.InterfaceAlias} · {choice.LocalAddress}:{port}");
+            session=new NativeNetworkSession(choice,port,touch.Checked,OnUiAsync,Log,
+                CurrentEncoderOptions(),snapshot=>ReportEncoderSelection(encoderGeneration,snapshot));
+            session.Stopped+=()=>InvalidateEncoderSelection(encoderGeneration);
+            session.DisplayPreparationStarted+=profile=>
+            {
+                MarkHealthDisplayProfile(profile);
+                MarkHealthDisplayPreparing("正在按原生客户端报告的模式准备唯一虚拟副屏");
+            };
+            session.DisplayPrepared+=display=>
+            {
+                MarkHealthDisplayReady(display);
+                MarkHealthPipelineStarting("正在启动原生客户端的视频流水线");
+            };
+            session.DisplayPreparationFailed+=ex=>MarkConnectionHealthAttention(ex.Message);
+            additionalSessions.Add(session);
             await session.StartAsync(lifetime.Token);
             MarkHealthRouteReady($"{choice.InterfaceAlias} · {choice.LocalAddress}:{port} · TLS 监听已启动");
             MarkHealthAuthenticationStarted("等待原生客户端扫描当前二维码并完成 TLS 与令牌认证");
         }
         catch(Exception ex)
         {
-            additionalSessions.Remove(session);
+            InvalidateEncoderSelection(encoderGeneration);
+            if(session is not null)additionalSessions.Remove(session);
             MarkConnectionHealthAttention(ex.Message);
             throw;
         }
@@ -194,6 +200,7 @@ internal sealed partial class MainForm
             if(!browserCleanupReservations.IsEmpty)MarkOwnedDisplayCleanupAttention(OwnedDisplayCleanupFailureDetail(ex));
             Log("浏览器连接清理需要检查："+ex.Message);
         }
+        if(!HasAnySessions)ClearEncoderSelectionIfIdle();
         if(!connectionHealth.Snapshot().Steps.Any(step=>step.State==ConnectionHealthState.Attention))StopConnectionHealth("所有连接已停止并回收本次副屏");
         RefreshSessionList();UpdateButtons();
     }
@@ -216,12 +223,14 @@ internal sealed partial class MainForm
         {
             var active=browserDisplays.Count;
             status.Text=active>0?"浏览器副屏正在传输":"浏览器接入已开启，等待设备扫码";
-            metrics.Text=active>0?$"浏览器活动副屏 {active} · 全局最多一块虚拟屏":"本地 HTTPS + WebRTC · 尚未分配虚拟副屏";
+            var encoding=encoderRuntime is null?"":$" · 编码 {EncoderRuntimeName(encoderRuntime)} / {encoderRuntime.EffectiveFps} fps";
+            metrics.Text=active>0?$"浏览器活动副屏 {active} · 全局最多一块虚拟屏{encoding}":"本地 HTTPS + WebRTC · 尚未分配虚拟副屏";
         }
         else if(server is null&&additionalSessions.Any(x=>!x.IsStopped))
         {
             status.Text="副屏服务运行中";
-            metrics.Text=$"原生连接 {additionalSessions.Count(x=>!x.IsStopped)} · 全局最多一块虚拟屏";
+            var encoding=encoderRuntime is null?"":$" · 编码 {EncoderRuntimeName(encoderRuntime)} / {encoderRuntime.EffectiveFps} fps";
+            metrics.Text=$"原生连接 {additionalSessions.Count(x=>!x.IsStopped)} · 全局最多一块虚拟屏{encoding}";
         }
         UpdateBrowserButtons(ready);
         EvaluateAutomaticUpdateApplication();

@@ -236,6 +236,7 @@ internal sealed class BrowserRtcSession : IAsyncDisposable
     async Task StreamVideo(CancellationToken ct)
     {
         byte[] sps=[],pps=[];
+        BrowserMediaParameters? media=null;
         // The async source is consumed directly: no unbounded encoded-frame
         // queue. UDP sends are synchronous; FFmpeg's stdout pipe is bounded.
         await foreach(var packet in display!.VideoFactory(ct).WithCancellation(ct))
@@ -254,12 +255,14 @@ internal sealed class BrowserRtcSession : IAsyncDisposable
             {
                 using var config=JsonDocument.Parse(packet.Payload);
                 var root=config.RootElement;
-                if(root.GetProperty("width").GetInt32()!=profile.Width||root.GetProperty("height").GetInt32()!=profile.Height||
-                    root.GetProperty("fps").GetInt32()!=profile.RequestedRefreshRate)throw new InvalidDataException("编码参数与浏览器协商不一致。");
+                media=BrowserMediaParameters.Negotiate(profile,root.GetProperty("width").GetInt32(),
+                    root.GetProperty("height").GetInt32(),root.GetProperty("fps").GetInt32());
                 sps=Convert.FromBase64String(root.GetProperty("csd0").GetString()!);
                 pps=Convert.FromBase64String(root.GetProperty("csd1").GetString()!);
                 if(sps.Length>4096||pps.Length>4096||!ContainsNal(sps,7)||!ContainsNal(pps,8))throw new InvalidDataException("无效 H.264 配置。");
                 lock(gate)needKeyFrame=true;
+                Queue(new{type="media",width=media.Value.Width,height=media.Value.Height,
+                    fps=media.Value.FramesPerSecond,displayFps=profile.RequestedRefreshRate});
             }
             if(packet.Type!=0x21||!packet.IsFrame)continue;
             if(packet.Payload.Length is <9 or >8388608)throw new InvalidDataException("无效 H.264 帧。");
@@ -277,7 +280,8 @@ internal sealed class BrowserRtcSession : IAsyncDisposable
                 if(sps.Length==0||pps.Length==0)throw new InvalidDataException("缺少 H.264 配置。");
                 bytes=[..sps,..pps,..bytes];
             }
-            peer!.SendVideo((uint)(90000/profile.RequestedRefreshRate),bytes);
+            if(media is null)throw new InvalidDataException("缺少 H.264 媒体参数。");
+            peer!.SendVideo(media.Value.RtpTimestampStep,bytes);
         }
     }
 
@@ -377,6 +381,21 @@ internal sealed class BrowserRtcSession : IAsyncDisposable
             if(task is not null)try{await task.ConfigureAwait(false);}catch{}
         try {if(display is not null)await display.DisposeAsync();}
         finally {report(new(Id,"closed","浏览器副屏已断开。"));lifetime.Dispose();}
+    }
+}
+
+internal readonly record struct BrowserMediaParameters(int Width,int Height,int FramesPerSecond,uint RtpTimestampStep)
+{
+    internal static BrowserMediaParameters Negotiate(TabletDisplayProfile display,int width,int height,int fps)
+    {
+        if(width!=display.Width||height!=display.Height)
+            throw new InvalidDataException("编码尺寸与浏览器协商不一致。");
+        // The virtual display retains the receiver-requested refresh rate. A
+        // software encoder may independently cap the media cadence at 30 fps.
+        var requested=display.RequestedRefreshRate;
+        if(fps!=requested&&(requested!=60||fps!=30)||fps<=0||90000%fps!=0)
+            throw new InvalidDataException("编码帧率与浏览器协商不一致。");
+        return new(width,height,fps,(uint)(90000/fps));
     }
 }
 #endif

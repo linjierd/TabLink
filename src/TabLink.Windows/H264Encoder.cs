@@ -8,11 +8,29 @@ using Microsoft.Win32.SafeHandles;
 
 namespace TabLink.Windows;
 
-internal enum H264EncoderKind { Nvenc, LibX264 }
 internal enum H264CapturePreference { GdiGrab, PreferDesktopDuplication }
 
 internal sealed record H264AccessUnit(byte[] Data, long Sequence, long PtsUs,
     byte[] Sps, byte[] Pps, bool IsKeyFrame, bool ConfigurationChanged);
+
+// A DDA startup failure may change only the capture path. The already selected
+// encoder backend is immutable, and the retry is legal only before any frame
+// has crossed the process boundary.
+internal sealed class H264CaptureStartupFallback(VideoEncoderBackend selectedBackend)
+{
+    internal VideoEncoderBackend SelectedBackend { get; } = selectedBackend;
+    internal bool Attempted { get; private set; }
+    internal bool FrameObserved { get; private set; }
+
+    internal bool TryBegin(bool usingDesktopDuplication, long emittedFrames)
+    {
+        if (emittedFrames < 0) throw new ArgumentOutOfRangeException(nameof(emittedFrames));
+        if (emittedFrames > 0) FrameObserved = true;
+        if (Attempted || FrameObserved || !usingDesktopDuplication) return false;
+        Attempted = true;
+        return true;
+    }
+}
 
 // Owns exactly one FFmpeg process. There is no encoder fallback: the selected
 // codec either starts and delivers H.264 or reports its bounded stderr tail.
@@ -21,7 +39,7 @@ internal sealed class H264Encoder : IAsyncDisposable
     readonly VirtualDisplayInfo? display;
     readonly DisplayLease? displayIdentity;
     readonly string ffmpegPath;
-    readonly H264EncoderKind kind;
+    readonly VideoEncoderBackend backend;
     readonly H264CapturePreference capturePreference;
     readonly int syntheticFrames;
     readonly bool browserCompatible;
@@ -30,6 +48,7 @@ internal sealed class H264Encoder : IAsyncDisposable
     readonly object errorLock = new();
     readonly StringBuilder errorTail = new();
     readonly CancellationTokenSource lifetime = new();
+    readonly H264CaptureStartupFallback captureStartupFallback;
     Process? process;
     SafeFileHandle? job;
     Task? errorPump, disposeTask;
@@ -39,7 +58,8 @@ internal sealed class H264Encoder : IAsyncDisposable
     internal int Width { get; }
     internal int Height { get; }
     internal int Fps { get; }
-    internal string CodecName => kind == H264EncoderKind.Nvenc ? "h264_nvenc" : "libx264";
+    internal VideoEncoderBackend Backend => backend;
+    internal string CodecName => VideoEncoderBackendMetadata.CodecName(backend);
     internal string CaptureBackend => display is null ? "synthetic-lavfi" : dxgiTarget is null ? "gdigrab-selected-display" : "ddagrab-selected-display";
     internal string? CaptureFallbackReason { get; private set; }
     internal event Action<string>? Status;
@@ -47,10 +67,10 @@ internal sealed class H264Encoder : IAsyncDisposable
     internal string LastError { get { lock (errorLock) return errorTail.ToString(); } }
 
     internal H264Encoder(VirtualDisplayInfo display, int width, int height, int fps, string ffmpegPath,
-        H264EncoderKind kind = H264EncoderKind.Nvenc,
+        VideoEncoderBackend backend = VideoEncoderBackend.Nvenc,
         H264CapturePreference capturePreference = H264CapturePreference.GdiGrab,DisplayLease? identity=null,
         bool browserCompatible=false,VideoEncodingPlan? encodingPlan=null)
-        : this(width, height, fps, ffmpegPath, kind, 0,browserCompatible,encodingPlan)
+        : this(width, height, fps, ffmpegPath, backend, 0,browserCompatible,encodingPlan)
     {
         ArgumentNullException.ThrowIfNull(display);
         if (!display.IsTabLinkCompatible || display.IsPrimary || display.Bounds.Width < 1 || display.Bounds.Height < 1)
@@ -60,16 +80,19 @@ internal sealed class H264Encoder : IAsyncDisposable
         this.capturePreference = capturePreference;
     }
 
-    H264Encoder(int width, int height, int fps, string ffmpegPath, H264EncoderKind kind, int syntheticFrames,
+    H264Encoder(int width, int height, int fps, string ffmpegPath, VideoEncoderBackend backend, int syntheticFrames,
         bool browserCompatible=false,VideoEncodingPlan? encodingPlan=null)
     {
-        if (width is < 64 or > 8192 || height is < 64 or > 8192 || (width & 1) != 0 || (height & 1) != 0)
-            throw new ArgumentOutOfRangeException(nameof(width), "H.264 尺寸必须是 64–8192 范围的偶数");
+        if (width is < 64 or > 8192 || height is < 64 or > 8192 || (width & 1) != 0 || (height & 1) != 0 ||
+            (long)width * height > 16_000_000)
+            throw new ArgumentOutOfRangeException(nameof(width), "H.264 尺寸必须是 64–8192 范围的偶数，且总像素不超过 1600 万");
         if (fps is < 1 or > 144) throw new ArgumentOutOfRangeException(nameof(fps));
         if (!File.Exists(ffmpegPath)) throw new FileNotFoundException("找不到 FFmpeg 编码程序", ffmpegPath);
         Width = width; Height = height; Fps = fps;
         this.ffmpegPath = Path.GetFullPath(ffmpegPath);
-        this.kind = kind;
+        _=VideoEncoderBackendMetadata.CodecName(backend);
+        this.backend = backend;
+        captureStartupFallback = new H264CaptureStartupFallback(backend);
         this.syntheticFrames = syntheticFrames;
         this.browserCompatible=browserCompatible;
         this.encodingPlan=encodingPlan;
@@ -88,9 +111,9 @@ internal sealed class H264Encoder : IAsyncDisposable
     // This finite source benchmarks the complete process/parser path without
     // reading any desktop pixel or changing display settings.
     internal static H264Encoder CreateSynthetic(int width, int height, int fps, string ffmpegPath,
-        H264EncoderKind kind = H264EncoderKind.Nvenc, int frameCount = 300,bool browserCompatible=false,
+        VideoEncoderBackend backend = VideoEncoderBackend.Nvenc, int frameCount = 300,bool browserCompatible=false,
         VideoEncodingPlan? encodingPlan=null) =>
-        new(width, height, fps, ffmpegPath, kind, Math.Clamp(frameCount, 1, 10000),browserCompatible,encodingPlan);
+        new(width, height, fps, ffmpegPath, backend, Math.Clamp(frameCount, 1, 10000),browserCompatible,encodingPlan);
 
     internal void Start()
     {
@@ -110,38 +133,54 @@ internal sealed class H264Encoder : IAsyncDisposable
     // lifecycle must be held by the caller, including a pre-first-frame retry.
     void StartProcessCore()
     {
-            var start = new ProcessStartInfo(ffmpegPath)
+        var start = new ProcessStartInfo(ffmpegPath)
+        {
+            UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true
+        };
+        foreach (var argument in BuildArguments()) start.ArgumentList.Add(argument);
+        var child = new Process { StartInfo = start };
+        try
+        {
+            if (!child.Start()) throw new IOException("无法启动 H.264 编码器");
+            process = child;
+            // Closing this host's handle also terminates its encoder after a
+            // crash; no global FFmpeg lookup or process-name termination.
+            job = CreateKillOnCloseJob(child);
+            if (backend == VideoEncoderBackend.LibX264)
             {
-                UseShellExecute = false, CreateNoWindow = true,
-                RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true
-            };
-            foreach (var argument in BuildArguments()) start.ArgumentList.Add(argument);
-            var child = new Process { StartInfo = start };
-            try
-            {
-                if (!child.Start()) throw new IOException("无法启动 H.264 编码器");
-                process = child;
-                // Closing this host's handle also terminates its encoder after a
-                // crash; no global FFmpeg lookup or process-name termination.
-                job = CreateKillOnCloseJob(child);
-                child.StandardInput.Close();
-                errorPump = DrainErrorsAsync(child.StandardError);
-                ReportStatus($"H.264 捕获后端：{CaptureBackend}；编码器：{CodecName}" +
-                    (CaptureFallbackReason is null ? "" : "；" + CaptureFallbackReason));
+                try { child.PriorityClass = ProcessPriorityClass.BelowNormal; }
+                catch (Exception error) when (error is Win32Exception or InvalidOperationException)
+                { ReportStatus("软件编码器优先级无法降低：" + error.Message); }
             }
-            catch
+            child.StandardInput.Close();
+            errorPump = DrainErrorsAsync(child.StandardError);
+            ReportStatus($"H.264 捕获后端：{CaptureBackend}；编码器：{CodecName}" +
+                (CaptureFallbackReason is null ? "" : "；" + CaptureFallbackReason));
+        }
+        catch
+        {
+            try { TryKill(child); }
+            finally
             {
-                try { if (!child.HasExited) child.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
-                child.Dispose(); process = null; job?.Dispose(); job = null;
-                throw;
+                try { child.Dispose(); }
+                finally
+                {
+                    if (ReferenceEquals(process, child)) process = null;
+                    var failedJob = job;
+                    job = null; errorPump = null;
+                    failedJob?.Dispose();
+                }
             }
+            throw;
+        }
     }
 
     void SelectCaptureBackend()
     {
         if (display is null || capturePreference == H264CapturePreference.GdiGrab) return;
-        if (kind != H264EncoderKind.Nvenc)
-        { CaptureFallbackReason = "GPU 捕获需要 NVENC，使用指定副屏 GDI 捕获"; return; }
+        if (backend != VideoEncoderBackend.Nvenc)
+        { CaptureFallbackReason = VideoEncoderBackendMetadata.DisplayName(backend) + " 当前使用指定副屏 GDI 捕获"; return; }
         if (Width != display.Bounds.Width || Height != display.Bounds.Height)
         { CaptureFallbackReason = "输出尺寸需要缩放，使用指定副屏 GDI 捕获"; return; }
         try
@@ -172,6 +211,7 @@ internal sealed class H264Encoder : IAsyncDisposable
             while (true)
             {
                 var child = process ?? throw new InvalidOperationException("H.264 编码进程已结束");
+                var attemptErrorPump = errorPump;
                 var parser = new AnnexBParser();
                 while (true)
                 {
@@ -181,25 +221,40 @@ internal sealed class H264Encoder : IAsyncDisposable
                 {
                     linked.Token.ThrowIfCancellationRequested();
                     ValidateDisplay(sequence == 0);
+                    ValidateAccessUnit(unit, sequence);
                     yield return Wrap(unit, ++sequence);
                 }
                 }
-            await child.WaitForExitAsync(linked.Token).ConfigureAwait(false);
-            if (errorPump is not null) await errorPump.ConfigureAwait(false);
-            if (child.ExitCode != 0)
-            {
-                // Access loss is a desktop-lifecycle event. Never fall back to
-                // GDI after a running DDA attempt (especially during UAC).
-                if(dxgiTarget is not null&&IsTransientDesktopFailure(LastError))
-                    throw new CaptureUnavailableException("Desktop duplication 需要重建："+LastError);
-                throw new IOException($"{CodecName} 编码失败（退出码 {child.ExitCode}）：{LastError}");
-            }
+                await child.WaitForExitAsync(linked.Token).ConfigureAwait(false);
+                await WaitForErrorPumpAsync(attemptErrorPump, TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                var exitCode = child.ExitCode;
+                var attemptError = LastError;
+                if (exitCode != 0)
+                {
+                    var failure = new IOException($"{CodecName} 编码失败（退出码 {exitCode}）：{attemptError}");
+                    if (await TryRestartWithGdiBeforeFirstFrameAsync(child, attemptErrorPump, sequence, linked.Token)
+                        .ConfigureAwait(false))
+                        continue;
+                    // Access loss after a delivered frame is a desktop-lifecycle
+                    // event. It must rebuild the stream, never switch capture.
+                    if(dxgiTarget is not null&&IsTransientDesktopFailure(attemptError))
+                        throw new CaptureUnavailableException("Desktop duplication 需要重建："+attemptError);
+                    throw failure;
+                }
             if (parser.Complete() is { } final)
             {
                 ValidateDisplay();
+                ValidateAccessUnit(final, sequence);
                 yield return Wrap(final, ++sequence);
             }
-            if (sequence == 0) throw new IOException($"{CodecName} 没有输出画面：{LastError}");
+                if (sequence == 0)
+                {
+                    var failure = new IOException($"{CodecName} 没有输出画面：{attemptError}");
+                    if (await TryRestartWithGdiBeforeFirstFrameAsync(child, attemptErrorPump, sequence, linked.Token)
+                        .ConfigureAwait(false))
+                        continue;
+                    throw failure;
+                }
             if (display is not null && !linked.IsCancellationRequested)
                 throw new IOException($"{CodecName} 意外停止输出：{LastError}");
                 break;
@@ -208,9 +263,70 @@ internal sealed class H264Encoder : IAsyncDisposable
         finally { KillOwnedProcess(); }
     }
 
+    async Task<bool> TryRestartWithGdiBeforeFirstFrameAsync(Process failedProcess, Task? failedErrorPump,
+        long emittedFrames, CancellationToken cancellationToken)
+    {
+        var wasUsingDesktopDuplication = dxgiTarget is not null;
+        if (!captureStartupFallback.TryBegin(wasUsingDesktopDuplication, emittedFrames)) return false;
+
+        // A secure/unavailable desktop or changed display identity belongs to
+        // CaptureRecovery. It must not be bypassed by opening GDI.
+        EnsureDesktopAvailable();
+        dxgiTarget = null;
+        ValidateDisplay(true);
+        cancellationToken.ThrowIfCancellationRequested();
+        await ReleaseAttemptAsync(failedProcess, failedErrorPump).ConfigureAwait(false);
+
+        lock (lifecycle)
+        {
+            ObjectDisposedException.ThrowIf(disposeTask is not null, this);
+            cancellationToken.ThrowIfCancellationRequested();
+            CaptureFallbackReason = "Desktop duplication 首帧前初始化失败；已保持 " +
+                VideoEncoderBackendMetadata.DisplayName(captureStartupFallback.SelectedBackend) +
+                " 编码器，仅改用指定副屏 GDI 捕获重试一次";
+            lock (errorLock) errorTail.Clear();
+            EnsureDesktopAvailable();
+            ValidateDisplay(true);
+            StartProcessCore();
+        }
+        return true;
+    }
+
+    async Task ReleaseAttemptAsync(Process ownedProcess, Task? ownedErrorPump)
+    {
+        var ownedJob = job;
+        job = null;
+        try
+        {
+            TryKill(ownedProcess);
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try { await ownedProcess.WaitForExitAsync(deadline.Token).ConfigureAwait(false); }
+            catch (Exception ex) when (ex is OperationCanceledException or InvalidOperationException or Win32Exception) { }
+            await WaitForErrorPumpAsync(ownedErrorPump, TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (ReferenceEquals(process, ownedProcess)) process = null;
+            if (ReferenceEquals(errorPump, ownedErrorPump)) errorPump = null;
+            try { ownedJob?.Dispose(); }
+            finally
+            {
+                ownedProcess.Dispose();
+            }
+        }
+    }
+
     H264AccessUnit Wrap(AnnexBAccessUnit unit, long sequence) =>
         new(unit.Data, sequence, checked((sequence - 1) * 1_000_000L / Fps),
             unit.Sps, unit.Pps, unit.IsKeyFrame, unit.ConfigurationChanged);
+
+    static void ValidateAccessUnit(AnnexBAccessUnit unit, long emittedCount)
+    {
+        if (emittedCount == 0 && !unit.IsKeyFrame)
+            throw new InvalidDataException("编码器第一帧不是 IDR，已停止不完整的视频链路。");
+        if (unit.ConfigurationChanged && !unit.IsKeyFrame)
+            throw new InvalidDataException("编码参数变化未与 IDR 同帧输出，已停止不安全的解码重建。");
+    }
 
     IReadOnlyList<string> BuildArguments()
     {
@@ -239,22 +355,47 @@ internal sealed class H264Encoder : IAsyncDisposable
             ?browserCompatible?(Width*Height>1280*720?"8M":"4M"):"30M"
             :N(encodingPlan.BitrateKbps)+"k";
         var buffer=encodingPlan is null?"1M":N(encodingPlan.BufferKbits)+"k";
-        if (kind == H264EncoderKind.Nvenc)
-            arguments.AddRange(["-preset", "p1", "-tune", "ull", "-rc", "cbr", "-b:v", bitrate, "-maxrate", bitrate,
-                "-bufsize", buffer, "-rc-lookahead", "0", "-zerolatency", "1", "-delay", "0",
-                "-profile:v", browserCompatible?"baseline":"high", "-aud", "1", "-forced-idr", "1"]);
-        else if(encodingPlan is null)
-            arguments.AddRange(["-preset", "ultrafast", "-tune", "zerolatency", "-crf", "20", "-maxrate", "30M",
-                "-bufsize", "2M", "-x264-params", "aud=1:repeat-headers=1:scenecut=0"]);
-        else
-            arguments.AddRange(["-preset", "ultrafast", "-tune", "zerolatency", "-b:v", bitrate, "-maxrate", bitrate,
-                "-bufsize", buffer, "-x264-params", "aud=1:repeat-headers=1:scenecut=0"]);
-        if(browserCompatible)arguments.AddRange(["-profile:v","baseline","-level:v","4.2"]);
-        if (dxgiTarget is null) arguments.AddRange(["-pix_fmt", "yuv420p"]);
+        switch (backend)
+        {
+            case VideoEncoderBackend.Nvenc:
+                arguments.AddRange(["-preset", "p1", "-tune", "ull", "-rc", "cbr", "-b:v", bitrate, "-maxrate", bitrate,
+                    "-bufsize", buffer, "-rc-lookahead", "0", "-zerolatency", "1", "-delay", "0",
+                    "-forced-idr", "1"]);
+                break;
+            case VideoEncoderBackend.Qsv:
+                arguments.AddRange(["-preset", "veryfast", "-async_depth", "1", "-look_ahead", "0",
+                    "-b:v", bitrate, "-maxrate", bitrate, "-bufsize", buffer,
+                    "-repeat_pps", "1", "-forced_idr", "1"]);
+                break;
+            case VideoEncoderBackend.Amf:
+                arguments.AddRange(["-usage", "ultralowlatency", "-quality", "speed", "-rc", "cbr",
+                    "-preencode", "0", "-preanalysis", "0", "-frame_skipping", "0",
+                    "-b:v", bitrate, "-maxrate", bitrate, "-bufsize", buffer]);
+                break;
+            case VideoEncoderBackend.LibX264:
+                arguments.AddRange(["-preset", "ultrafast", "-tune", "zerolatency"]);
+                if (encodingPlan is null)
+                    arguments.AddRange(["-crf", "20", "-maxrate", browserCompatible ? "8M" : "30M", "-bufsize", "2M"]);
+                else
+                    arguments.AddRange(["-b:v", bitrate, "-maxrate", bitrate, "-bufsize", buffer]);
+                arguments.AddRange(["-threads", Math.Max(1, Environment.ProcessorCount / 2).ToString(CultureInfo.InvariantCulture),
+                    "-x264-params", "repeat-headers=1:scenecut=0:rc-lookahead=0:sync-lookahead=0"]);
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(backend), backend, "未知的视频编码后端。");
+        }
+        arguments.AddRange(["-profile:v", browserCompatible ? "baseline" : "high"]);
+        if(browserCompatible)arguments.AddRange(["-level:v","4.2"]);
+        if (dxgiTarget is null)
+            arguments.AddRange(["-pix_fmt", backend is VideoEncoderBackend.Qsv or VideoEncoderBackend.Amf ? "nv12" : "yuv420p"]);
         arguments.AddRange(["-bf", "0", "-g", N(encodingPlan?.GopFrames??Fps), "-fps_mode", "passthrough",
-            "-flush_packets", "1", "-f", "h264", "pipe:1"]);
+            "-bsf:v", "h264_metadata=aud=insert", "-flush_packets", "1", "-f", "h264", "pipe:1"]);
         return arguments;
     }
+
+    internal IReadOnlyList<string> BuildArgumentsForTesting()=>BuildArguments();
+    internal static void ValidateAccessUnitForTesting(AnnexBAccessUnit unit,long emittedCount)=>
+        ValidateAccessUnit(unit,emittedCount);
 
     void ValidateDisplay(bool force = false)
     {
@@ -338,11 +479,42 @@ internal sealed class H264Encoder : IAsyncDisposable
         catch (Exception ex) when (ex is IOException or ObjectDisposedException) { }
     }
 
+    static bool TryKill(Process ownedProcess) => TryExpectedKill(() =>
+    {
+        if (!ownedProcess.HasExited) ownedProcess.Kill(entireProcessTree: true);
+    });
+
+    static bool TryExpectedKill(Action kill)
+    {
+        try { kill(); return true; }
+        catch (Exception ex) when (ex is InvalidOperationException or Win32Exception) { return false; }
+    }
+
     void KillOwnedProcess()
     {
-        try { if (process is { HasExited: false } own) own.Kill(entireProcessTree: true); }
-        catch (Exception ex) when (ex is InvalidOperationException or Win32Exception) { }
+        if (process is { } ownedProcess) TryKill(ownedProcess);
     }
+
+    static async Task<bool> WaitForErrorPumpAsync(Task? pump, TimeSpan timeout)
+    {
+        if (pump is null) return true;
+        try
+        {
+            await pump.WaitAsync(timeout).ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception error)
+        {
+            // stderr is diagnostic cleanup. A timeout or a fault here must not
+            // replace the encoder/capture failure that caused process exit.
+            Trace.WriteLine("H.264 stderr cleanup did not complete: " + error.Message);
+            return false;
+        }
+    }
+
+    internal static bool TryExpectedKillForTesting(Action kill) => TryExpectedKill(kill);
+    internal static Task<bool> WaitForErrorPumpForTestingAsync(Task? pump, TimeSpan timeout) =>
+        WaitForErrorPumpAsync(pump, timeout);
 
     public ValueTask DisposeAsync()
     {
@@ -352,19 +524,35 @@ internal sealed class H264Encoder : IAsyncDisposable
     async Task DisposeCoreAsync()
     {
         lifetime.Cancel();
-        KillOwnedProcess();
-        job?.Dispose(); job = null;
+        var ownedProcess = process;
+        var ownedErrorPump = errorPump;
+        var ownedJob = job;
+        job = null;
         try
         {
-            if (process is not null)
+            KillOwnedProcess();
+            ownedJob?.Dispose();
+            if (ownedProcess is not null)
             {
                 using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                try { await process.WaitForExitAsync(deadline.Token).ConfigureAwait(false); }
-                catch (Exception ex) when (ex is OperationCanceledException or InvalidOperationException) { }
+                try { await ownedProcess.WaitForExitAsync(deadline.Token).ConfigureAwait(false); }
+                catch (Exception ex) when (ex is OperationCanceledException or InvalidOperationException or Win32Exception) { }
             }
-            if (errorPump is not null) await errorPump.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            await WaitForErrorPumpAsync(ownedErrorPump, TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         }
-        finally { process?.Dispose(); lifetime.Dispose(); }
+        finally
+        {
+            try { ownedJob?.Dispose(); }
+            finally
+            {
+                try { ownedProcess?.Dispose(); }
+                finally
+                {
+                    process = null; errorPump = null;
+                    lifetime.Dispose();
+                }
+            }
+        }
     }
 
     static SafeFileHandle CreateKillOnCloseJob(Process child)

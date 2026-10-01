@@ -28,6 +28,11 @@ internal sealed partial class MainForm : Form
     TabletDisplayProfile? tabletProfile;
     AdaptiveVideoSession? videoQuality;
     VideoQualityPreset selectedQuality=VideoQualityPreset.Automatic;
+    VideoEncoderPreference selectedEncoder=VideoEncoderPreference.Automatic;
+    bool allowSoftwareFallback;
+    VideoEncoderRuntimeSnapshot? encoderRuntime;
+    readonly EncoderSelectionGenerationGate encoderSelectionGenerations=new();
+    EncoderSelectionGeneration primaryEncoderGeneration;
     bool adaptingDisplay;
     long previousPresented;
     DateTime previousSampleUtc;
@@ -56,6 +61,8 @@ internal sealed partial class MainForm : Form
     readonly TabControl mainTabs=new(){Dock=DockStyle.Fill,Multiline=false,Padding=new Point(16,7),Margin=new Padding(0,8,0,6)};
     readonly ComboBox connectionMode=new(){DropDownStyle=ComboBoxStyle.DropDownList,Width=280};
     readonly ComboBox qualityMode=new(){DropDownStyle=ComboBoxStyle.DropDownList,Width=150};
+    readonly ComboBox encoderMode=new(){DropDownStyle=ComboBoxStyle.DropDownList,Width=200,DropDownWidth=220};
+    readonly CheckBox softwareFallback=new(){Text="允许软件回退（最高 30 fps）",AutoSize=true};
     readonly Label connectionModeHint=new(){AutoSize=true,ForeColor=Color.FromArgb(90,107,128),MaximumSize=new Size(820,0)};
     readonly Panel connectionHost=new(){Dock=DockStyle.Fill,BackColor=Color.White};
     Control? clientConnectionPanel,browserConnectionPanel,usbDebugConnectionPanel;
@@ -72,7 +79,12 @@ internal sealed partial class MainForm : Form
         this.diagnosticPairing=diagnosticPairing;
         Text="TabLink · 平板副屏"; AutoScaleMode=AutoScaleMode.Dpi; Size=new Size(960,680); MinimumSize=new Size(760,640);
         StartPosition=FormStartPosition.CenterScreen; Font=new Font("Microsoft YaHei UI",10); BackColor=Color.FromArgb(244,247,251); ForeColor=ink;
-        if(!verification)selectedQuality=qualityPreferences.Load();
+        if(!verification)
+        {
+            var videoPreferences=qualityPreferences.Load();
+            selectedQuality=videoPreferences.Quality;selectedEncoder=videoPreferences.Encoder;
+            allowSoftwareFallback=videoPreferences.AllowSoftwareFallback;
+        }
         BuildUi();
         var showWindow=new ToolStripMenuItem("打开主窗口");
         var exit=new ToolStripMenuItem("退出 TabLink");
@@ -198,7 +210,7 @@ internal sealed partial class MainForm : Form
         var connectionLayout=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=1,RowCount=2};
         connectionLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));connectionLayout.RowStyles.Add(new RowStyle(SizeType.Percent,100));
         var modeHeader=new FlowLayoutPanel{Dock=DockStyle.Top,AutoSize=true,FlowDirection=FlowDirection.TopDown,WrapContents=false,Margin=new Padding(4,0,4,6)};
-        var modeRow=new FlowLayoutPanel{AutoSize=true,WrapContents=true,Margin=Padding.Empty};
+        var modeRow=new FlowLayoutPanel{AutoSize=true,WrapContents=false,Margin=Padding.Empty};
         modeRow.Controls.Add(new Label{Text="连接方式",AutoSize=true,Font=new Font("Microsoft YaHei UI",10,FontStyle.Bold),Margin=new Padding(0,7,14,0)});
         connectionMode.Items.AddRange(["TabLink 客户端（推荐）","浏览器接入","USB 调试（兼容）"]);modeRow.Controls.Add(connectionMode);
         modeRow.Controls.Add(new Label{Text="画质",AutoSize=true,Font=new Font("Microsoft YaHei UI",10,FontStyle.Bold),Margin=new Padding(22,7,10,0)});
@@ -206,8 +218,15 @@ internal sealed partial class MainForm : Form
         qualityMode.SelectedItem=qualityMode.Items.OfType<QualityChoice>().First(item=>item.Preset==selectedQuality);
         qualityMode.SelectedIndexChanged+=(_,_)=>ChangeVideoQuality();
         modeRow.Controls.Add(qualityMode);
+        var encoderRow=new FlowLayoutPanel{AutoSize=true,WrapContents=false,Margin=new Padding(0,2,0,0)};
+        encoderRow.Controls.Add(new Label{Text="编码",AutoSize=true,Font=new Font("Microsoft YaHei UI",10,FontStyle.Bold),Margin=new Padding(0,7,14,0)});
+        encoderMode.Items.AddRange(Enum.GetValues<VideoEncoderPreference>().Select(value=>(object)new EncoderChoice(value)).ToArray());
+        encoderMode.SelectedItem=encoderMode.Items.OfType<EncoderChoice>().First(item=>item.Preference==selectedEncoder);
+        encoderMode.SelectedIndexChanged+=(_,_)=>ChangeEncoderPreference();encoderRow.Controls.Add(encoderMode);
+        softwareFallback.Checked=allowSoftwareFallback;softwareFallback.Margin=new Padding(14,7,0,0);
+        softwareFallback.CheckedChanged+=(_,_)=>ChangeSoftwareFallback();encoderRow.Controls.Add(softwareFallback);
         touch.Margin=new Padding(0,8,0,8);
-        modeHeader.Controls.Add(modeRow);modeHeader.Controls.Add(connectionModeHint);modeHeader.Controls.Add(touch);
+        modeHeader.Controls.Add(modeRow);modeHeader.Controls.Add(encoderRow);modeHeader.Controls.Add(connectionModeHint);modeHeader.Controls.Add(touch);
         connectionLayout.Controls.Add(modeHeader,0,0);connectionLayout.Controls.Add(connectionHost,0,1);connectionPage.Controls.Add(connectionLayout);
 
         clientConnectionPanel=BuildNetworkPanel();browserConnectionPanel=BuildBrowserPanel();
@@ -286,9 +305,7 @@ internal sealed partial class MainForm : Form
     {
         if(qualityMode.SelectedItem is not QualityChoice choice)return;
         selectedQuality=choice.Preset;
-        try{qualityPreferences.Save(selectedQuality);}
-        catch(Exception ex) when(ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
-        {Log("画质偏好暂时无法保存："+ex.Message);}
+        SaveVideoPreferences();
         if(videoQuality is null)
         {
             Log("画质已设置为“"+VideoQualitySessionName(selectedQuality)+"”，将在下一次原生客户端连接时使用。");
@@ -301,6 +318,85 @@ internal sealed partial class MainForm : Form
         else if(!snapshot.RuntimeChangesEnabled)
             SetStatus("画质偏好已保存；当前客户端不支持同连接切换，将在下次连接生效");
     }
+
+    void ChangeEncoderPreference()
+    {
+        if(encoderMode.SelectedItem is not EncoderChoice choice)return;
+        selectedEncoder=choice.Preference;
+        if(selectedEncoder==VideoEncoderPreference.LibX264&&!softwareFallback.Checked)
+        {softwareFallback.Checked=true;return;}
+        SaveVideoPreferences();
+        Log("编码器已设置为“"+VideoEncoderPreferenceMetadata.DisplayName(selectedEncoder)+"”，将在下一次连接时实测并使用；当前连接保持原编码器。");
+    }
+
+    void ChangeSoftwareFallback()
+    {
+        allowSoftwareFallback=softwareFallback.Checked;
+        if(!allowSoftwareFallback&&selectedEncoder==VideoEncoderPreference.LibX264)
+        {
+            selectedEncoder=VideoEncoderPreference.Automatic;
+            encoderMode.SelectedItem=encoderMode.Items.OfType<EncoderChoice>().First(item=>item.Preference==selectedEncoder);
+        }
+        SaveVideoPreferences();
+        Log(allowSoftwareFallback?"已允许在硬件编码器都不可用时尝试软件 x264（最高 30 fps）。":"已关闭软件编码回退；自动模式只尝试硬件编码器。");
+    }
+
+    void SaveVideoPreferences()
+    {
+        try{qualityPreferences.Save(new(selectedQuality,selectedEncoder,allowSoftwareFallback));}
+        catch(Exception ex) when(ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {Log("视频偏好暂时无法保存："+ex.Message);}
+    }
+
+    VideoEncoderSelectionOptions CurrentEncoderOptions()=>new(selectedEncoder,allowSoftwareFallback,null);
+
+    EncoderSelectionGeneration BeginEncoderSelectionConnection()
+    {
+        var generation=encoderSelectionGenerations.Begin();
+        ClearEncoderSelectionForGeneration(generation);
+        return generation;
+    }
+
+    void ClearEncoderSelectionForGeneration(EncoderSelectionGeneration generation)
+    {
+        if(IsDisposed||Disposing||closing)return;
+        if(InvokeRequired)
+        {if(IsHandleCreated)try{BeginInvoke(()=>ClearEncoderSelectionForGeneration(generation));}catch(InvalidOperationException){}return;}
+        encoderSelectionGenerations.TryInitialize(generation,()=>encoderRuntime=null);
+    }
+
+    void InvalidateEncoderSelection(EncoderSelectionGeneration generation)
+    {
+        if(!encoderSelectionGenerations.Invalidate(generation))return;
+        ClearEncoderSelectionIfIdle();
+    }
+
+    void ClearEncoderSelectionIfIdle()
+    {
+        if(IsDisposed||Disposing||closing)return;
+        if(InvokeRequired)
+        {if(IsHandleCreated)try{BeginInvoke(ClearEncoderSelectionIfIdle);}catch(InvalidOperationException){}return;}
+        encoderSelectionGenerations.TryCommitIfIdle(()=>encoderRuntime=null);
+    }
+
+    void ReportEncoderSelection(EncoderSelectionGeneration generation,VideoEncoderRuntimeSnapshot snapshot)
+    {
+        if(IsDisposed||Disposing||closing||!encoderSelectionGenerations.IsCurrent(generation))return;
+        if(InvokeRequired)
+        {if(IsHandleCreated)try{BeginInvoke(()=>ReportEncoderSelection(generation,snapshot));}catch(InvalidOperationException){}return;}
+        encoderSelectionGenerations.TryCommitSnapshot(generation,() =>
+        {
+            encoderRuntime=snapshot;
+            Diagnostics.Save("encoder-selection.json",()=>new{timestamp=DateTimeOffset.Now,selection=snapshot},Log);
+            var downgrade=snapshot.DowngradeReason is null?"":" · "+snapshot.DowngradeReason;
+            metrics.Text=$"编码 {EncoderRuntimeName(snapshot)} · {snapshot.Adapter??"未识别 GPU"} · {snapshot.Width} × {snapshot.Height} @ {snapshot.EffectiveFps} fps{downgrade}";
+        });
+    }
+
+    static string EncoderRuntimeName(VideoEncoderRuntimeSnapshot snapshot)=>
+        Enum.TryParse<VideoEncoderBackend>(snapshot.Backend,true,out var backend)&&Enum.IsDefined(backend)
+            ?VideoEncoderBackendMetadata.DisplayName(backend)
+            :snapshot.Codec;
 
     static string VideoQualitySessionName(VideoQualityPreset value)=>VideoQualitySessionNameCore(value);
     static string VideoQualitySessionNameCore(VideoQualityPreset value)=>value switch
@@ -387,6 +483,8 @@ internal sealed partial class MainForm : Form
         // Establish tablet authorization before bringing back a previously
         // detached virtual screen. A missing tablet must not leave a phantom.
         approved=await adb.ApproveAsync(device.Device,lifetime.Token);
+        var encoderGeneration=BeginEncoderSelectionConnection();
+        primaryEncoderGeneration=encoderGeneration;
         try
         {
             MarkHealthRouteReady("USB 身份与 ADB 授权已核验，准备本机反向通道");
@@ -408,7 +506,8 @@ internal sealed partial class MainForm : Form
             var profile=tabletProfile;
             var quality=new AdaptiveVideoSession(profile,selectedQuality,VideoTransportKind.Usb);
             videoQuality=quality;
-            server=new FrameServer(ct=>VideoPipeline.StreamAsync(current,profile,ct,Log,captureIdentity,quality:quality),
+            server=new FrameServer(ct=>VideoPipeline.StreamAsync(current,profile,ct,Log,captureIdentity,quality:quality,
+                    encoderOptions:CurrentEncoderOptions(),encoderSelected:snapshot=>ReportEncoderSelection(encoderGeneration,snapshot)),
                 touch.Checked?capture.Input:null,capture.ReleaseInput,quality:quality);
             var newServer=server;
             server.DisplayProfileChanged+=p=>{if(!IsDisposed)BeginInvoke(async()=>await AdaptDisplayAsync(newServer,p));};
@@ -537,6 +636,8 @@ internal sealed partial class MainForm : Form
     async Task StopCoreAsync()
     {
         stopping=true;UpdateButtons();
+        var stoppedEncoderGeneration=primaryEncoderGeneration;primaryEncoderGeneration=default;
+        InvalidateEncoderSelection(stoppedEncoderGeneration);
         if(networkPreparation is {IsCompleted:false} preparing)
         {
             server?.RequestReconnect();
@@ -638,7 +739,7 @@ internal sealed partial class MainForm : Form
                 var resumeDeadlineUtc=presentationDeadline.RecoveryDeadlineUtc;
                 displayGuard?.Renew(deadline);
                 if(now>deadline)
-                {const string message="平板超过 20 秒没有报告新的客户端进度，自动停止副屏。";MarkConnectionHealthAttention(message);Log(message);await StopAsync();return;}
+                {const string message="平板超过首帧或后续客户端进度期限，自动停止副屏。";MarkConnectionHealthAttention(message);Log(message);await StopAsync();return;}
                 var receiving=!capturePaused&&server.ClientConnected&&server.LastClientProgressUtc>now.AddSeconds(-5);
                 if(capturePaused)status.Text="画面采集正在恢复，连接保留";
                 else if(receiving)status.Text="平板已连接，正在传输副屏";
@@ -676,8 +777,9 @@ internal sealed partial class MainForm : Form
                         feedback?.AwaitingKeyFrame??false));
                 }
                 var qualityText=qualitySnapshot is null?"":$" · {VideoQualitySessionName(qualitySnapshot.Preset)} · 目标 {qualitySnapshot.Plan.BitrateKbps/1000d:F1} Mbps";
-                metrics.Text=$"{progressText} · {tabletProfile?.Width} × {tabletProfile?.Height} · 屏幕 {server.ClientDisplayProfile?.RefreshRate??tabletProfile?.RefreshRate:F0} / 目标 {tabletProfile?.RequestedRefreshRate} Hz · 提交 {server.ClientSubmittedFps:F1} / 呈现 {server.ClientPresentedFps:F1} 帧/秒{qualityText}";
-                Diagnostics.Save("session-health.json",()=>new{timestamp=DateTimeOffset.Now,pid=Environment.ProcessId,serial=approved?.Serial,transport=networkChoice is null?"ADB":"TLS",networkInterface=networkChoice?.InterfaceAlias,receiving,capturePaused,inputDesktop,resumeDeadlineUtc,windowVisible=Visible,measuredPresentedFps=measuredFps,server.ClientSubmittedFps,server.ClientPresentedFps,server.ClientDecoder,targetProfile=tabletProfile,clientProfile=server.ClientDisplayProfile,server.FramesSent,server.PresentedFrames,server.PresentedWidth,server.PresentedHeight,server.LastPresentedUtc,server.SubmittedFrames,server.LastSubmittedUtc,server.HasRecentSubmission,server.HasRecentPresentation,server.HasRecentReceiverFeedback,receiverFeedback=feedback,videoQuality=qualitySnapshot,sendPerformance,displays=VirtualDisplayManager.GetDisplays()},Log);
+                var encoderText=encoderRuntime is null?"":$" · 编码 {encoderRuntime.Backend} / {encoderRuntime.EffectiveFps} fps";
+                metrics.Text=$"{progressText} · {tabletProfile?.Width} × {tabletProfile?.Height} · 屏幕 {server.ClientDisplayProfile?.RefreshRate??tabletProfile?.RefreshRate:F0} / 目标 {tabletProfile?.RequestedRefreshRate} Hz · 提交 {server.ClientSubmittedFps:F1} / 呈现 {server.ClientPresentedFps:F1} 帧/秒{qualityText}{encoderText}";
+                Diagnostics.Save("session-health.json",()=>new{timestamp=DateTimeOffset.Now,pid=Environment.ProcessId,serial=approved?.Serial,transport=networkChoice is null?"ADB":"TLS",networkInterface=networkChoice?.InterfaceAlias,receiving,capturePaused,inputDesktop,resumeDeadlineUtc,windowVisible=Visible,measuredPresentedFps=measuredFps,server.ClientSubmittedFps,server.ClientPresentedFps,server.ClientDecoder,targetProfile=tabletProfile,clientProfile=server.ClientDisplayProfile,server.FramesSent,server.PresentedFrames,server.PresentedWidth,server.PresentedHeight,server.LastPresentedUtc,server.SubmittedFrames,server.LastSubmittedUtc,server.HasRecentSubmission,server.HasRecentPresentation,server.HasRecentReceiverFeedback,receiverFeedback=feedback,videoQuality=qualitySnapshot,videoEncoder=encoderRuntime,sendPerformance,displays=VirtualDisplayManager.GetDisplays()},Log);
                 RefreshPrimaryConnectionHealth(server);
             }
         }
@@ -738,6 +840,7 @@ internal sealed partial class MainForm : Form
         connectionMode.Enabled=!busy&&!stopping&&!closing&&!HasAnySessions;
         qualityMode.Enabled=!busy&&!stopping&&!closing&&connectionMode.SelectedIndex!=1&&browserHost is null&&
             !additionalSessions.Any(session=>!session.IsStopped);
+        encoderMode.Enabled=softwareFallback.Enabled=!busy&&!stopping&&!closing&&!HasAnySessions;
         refresh.Enabled=idle;chooseAdb.Enabled=idle;connect.Enabled=idle&&adb is not null;installApk.Enabled=idle&&adb is not null;
         devices.Enabled=idle;displays.Enabled=idle;touch.Enabled=idle;stop.Enabled=!busy&&!stopping&&server is not null;
         trayStop.Enabled=!closing&&HasAnySessions;
@@ -752,6 +855,7 @@ internal sealed partial class MainForm : Form
     sealed record DisplayChoice(VirtualDisplayInfo Info){public override string ToString()=>$"{Info.FriendlyName} · {Info.Bounds.Width} × {Info.Bounds.Height} · {Info.DeviceName}";}
     sealed record RuleChoice(DeviceExclusionRule Rule){public override string ToString()=>$"{Rule.Label??"排除设备"}     {(Rule.Serial is null?"":"序列号 "+Rule.Serial)}  {(Rule.Vid is null?"":"VID:PID "+Rule.Vid+":"+Rule.Pid)}";}
     sealed record QualityChoice(VideoQualityPreset Preset){public override string ToString()=>VideoQualityPresetDisplay(Preset);}
+    sealed record EncoderChoice(VideoEncoderPreference Preference){public override string ToString()=>VideoEncoderPreferenceMetadata.DisplayName(Preference);}
     static string VideoQualityPresetDisplay(VideoQualityPreset value)=>value switch
     {
         VideoQualityPreset.Automatic=>"自动",

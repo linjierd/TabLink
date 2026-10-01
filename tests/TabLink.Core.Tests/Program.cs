@@ -235,6 +235,7 @@ try
             DisplayProfileJson().Replace("\"refreshRate\":60", "\"refreshRate\":0"),
             DisplayProfileJson().Replace("\"nativeWidth\":1200", "\"nativeWidth\":1440"),
             DisplayProfileJson().Replace("\"height\":1920", "\"height\":9000"),
+            "{\"width\":4096,\"height\":4096,\"rotation\":0,\"activeModeId\":1,\"refreshRate\":60,\"nativeWidth\":4096,\"nativeHeight\":4096,\"supportedModes\":[{\"width\":4096,\"height\":4096,\"refreshRate\":60,\"modeId\":1}]}",
             "{\"width\":1200,\"height\":1920,\"rotation\":0,\"refreshRate\":60,\"nativeWidth\":1200,\"nativeHeight\":1920,\"supportedModes\":null}" })
         {
             try { TabletDisplayProfile.Parse(json); throw new Exception("Malformed profile was accepted: " + json[..Math.Min(json.Length, 100)]); }

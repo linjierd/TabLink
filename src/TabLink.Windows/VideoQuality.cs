@@ -389,9 +389,16 @@ internal sealed class AdaptiveVideoSession
     };
 }
 
+internal sealed record VideoPreferences(VideoQualityPreset Quality,VideoEncoderPreference Encoder,
+    bool AllowSoftwareFallback)
+{
+    internal static VideoPreferences Default {get;}=new(VideoQualityPreset.Automatic,
+        VideoEncoderPreference.Automatic,false);
+}
+
 internal sealed class VideoQualityPreferences
 {
-    const int CurrentSchema = 1;
+    const int CurrentSchema = 2;
     static readonly JsonSerializerOptions Options = new()
     {
         WriteIndented = true,
@@ -402,25 +409,32 @@ internal sealed class VideoQualityPreferences
 
     internal VideoQualityPreferences(string path) => this.path = Path.GetFullPath(path);
 
-    internal VideoQualityPreset Load()
+    internal VideoPreferences Load()
     {
         try
         {
-            if (!File.Exists(path)) return VideoQualityPreset.Automatic;
+            if (!File.Exists(path)) return VideoPreferences.Default;
             var data = JsonSerializer.Deserialize<Stored>(File.ReadAllText(path), Options);
-            return data is { Schema: CurrentSchema } && Enum.TryParse<VideoQualityPreset>(data.Preset, true, out var parsed) &&
-                Enum.IsDefined(parsed)
-                ? parsed : VideoQualityPreset.Automatic;
+            if(data is null||!Enum.TryParse<VideoQualityPreset>(data.Preset,true,out var quality)||!Enum.IsDefined(quality))
+                return VideoPreferences.Default;
+            if(data.Schema==1)return new(quality,VideoEncoderPreference.Automatic,false);
+            return data.Schema==CurrentSchema&&Enum.TryParse<VideoEncoderPreference>(data.Encoder,true,out var encoder)&&
+                Enum.IsDefined(encoder)
+                ?new(quality,encoder,data.AllowSoftwareFallback)
+                :VideoPreferences.Default;
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or
             System.Security.SecurityException or JsonException)
         {
-            return VideoQualityPreset.Automatic;
+            return VideoPreferences.Default;
         }
     }
 
-    internal void Save(VideoQualityPreset preset)
+    internal void Save(VideoPreferences preferences)
     {
+        ArgumentNullException.ThrowIfNull(preferences);
+        if(!Enum.IsDefined(preferences.Quality)||!Enum.IsDefined(preferences.Encoder))
+            throw new ArgumentOutOfRangeException(nameof(preferences));
         var directory = Path.GetDirectoryName(path)!;
         Directory.CreateDirectory(directory);
         var temporary = Path.Combine(directory, "." + Path.GetFileName(path) + "." + Guid.NewGuid().ToString("N") + ".tmp");
@@ -428,7 +442,8 @@ internal sealed class VideoQualityPreferences
         {
             using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
             {
-                JsonSerializer.Serialize(stream, new Stored(CurrentSchema, preset.ToString()), Options);
+                JsonSerializer.Serialize(stream, new Stored(CurrentSchema,preferences.Quality.ToString(),
+                    preferences.Encoder.ToString(),preferences.AllowSoftwareFallback), Options);
                 stream.Flush(true);
             }
             File.Move(temporary, path, true);
@@ -436,5 +451,5 @@ internal sealed class VideoQualityPreferences
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 
-    sealed record Stored(int Schema, string Preset);
+    sealed record Stored(int Schema,string Preset,string? Encoder=null,bool AllowSoftwareFallback=false);
 }

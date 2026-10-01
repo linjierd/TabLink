@@ -85,12 +85,16 @@ Check(available.IsAvailable && !available.IsUnavailable && unavailable.IsUnavail
 var origin = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 var presentation = new SessionPresentationDeadline();
 presentation.Reset(origin);
-Check(presentation.Evaluate(origin.AddSeconds(1), null, false, available).DeadlineUtc == origin.AddSeconds(20),
-    "without progress or a recovery event, the original presentation deadline remains fixed");
+Check(SessionPresentationDeadline.HasSafeEncoderProbeBudget &&
+    SessionPresentationDeadline.EncoderProbeBudget == TimeSpan.FromSeconds(30) &&
+    SessionPresentationDeadline.InitialPresentationTimeout == TimeSpan.FromSeconds(45),
+    "encoder probing has one explicit budget below the first-presentation deadline");
+Check(presentation.Evaluate(origin.AddSeconds(1), null, false, available).DeadlineUtc == origin.AddSeconds(45),
+    "without progress or a recovery event, the first-presentation deadline remains fixed after encoder probing");
 var oscillatingDeadlines = Enumerable.Range(5, 100).Select(second =>
     presentation.Evaluate(origin.AddSeconds(second), null, second % 2 == 1, available).DeadlineUtc).ToArray();
-Check(oscillatingDeadlines.All(deadline => deadline == origin.AddSeconds(25)),
-    "paused/running oscillation without real ACK cannot renew the first fixed 20-second grace");
+Check(oscillatingDeadlines.All(deadline => deadline == origin.AddSeconds(45)),
+    "paused/running oscillation without real ACK cannot renew the fixed first-presentation grace");
 Check(presentation.LastProgressUtc == origin, "capture pause never fabricates presentation progress");
 
 presentation.Reset(origin);
@@ -123,11 +127,11 @@ Check(presentation.Evaluate(origin.AddSeconds(130), null, true, unavailable).Dea
 
 presentation.Reset(origin);
 Check(Enumerable.Range(0, 100).All(second =>
-    presentation.Evaluate(origin.AddSeconds(second), null, second % 2 == 0, unknown).DeadlineUtc == origin.AddSeconds(20)),
+    presentation.Evaluate(origin.AddSeconds(second), null, second % 2 == 0, unknown).DeadlineUtc == origin.AddSeconds(45)),
     "unknown probes and host pause flags cannot indefinitely renew the deadline");
 presentation.Evaluate(origin.AddSeconds(110), null, true, unavailable);
 presentation.Reset(origin.AddSeconds(200));
-Check(presentation.Evaluate(origin.AddSeconds(201), null, false, available).DeadlineUtc == origin.AddSeconds(220)
+Check(presentation.Evaluate(origin.AddSeconds(201), null, false, available).DeadlineUtc == origin.AddSeconds(245)
     && presentation.RecoveryDeadlineUtc == DateTime.MinValue,
     "a new connection cannot inherit the previous connection's desktop transition or grace");
 using (var first = new Scenario("FAKE-A"))

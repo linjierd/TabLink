@@ -16,5 +16,33 @@
     "name": "nv-codec-headers-n12.2.72.0.tar.gz",
     "size": 80935,
     "sha256": "dbeaec433d93b850714760282f1d0992b1254fc3b5a6cb7d76fc1340a1e47563"
+  },
+  {
+    "url": "https://github.com/Kitware/CMake/releases/download/v3.31.6/cmake-3.31.6-windows-x86_64.zip",
+    "name": "cmake-3.31.6-windows-x86_64.zip",
+    "size": 46473549,
+    "sha256": "d163cd3ab4959b0a53fa8988f2ddbd2e6c501658201e6a154386bad9dbe4f836"
+  },
+  {
+    "url": "https://github.com/oneapi-src/oneVPL/archive/refs/tags/v2.11.0.tar.gz",
+    "name": "oneVPL-v2.11.0.tar.gz",
+    "size": 11372299,
+    "sha256": "3e322ba6b3593da03e1cfdb8062f9f1545f6d9b1de39e36876de5934b26737d2",
+    "tag": "v2.11.0",
+    "commit": "11a9bbda5b22ac1c544da59b4007bb57f737b487"
+  },
+  {
+    "url": "https://github.com/GPUOpen-LibrariesAndSDKs/AMF/archive/refs/tags/v1.4.35.tar.gz",
+    "name": "AMF-v1.4.35.tar.gz",
+    "size": 179084584,
+    "sha256": "5d93101eae5895247bea58cff40bb84424158170ae7f931105666157cc187636",
+    "tag": "v1.4.35",
+    "commit": "ba07d1b3c7c7ee0d846125cffc1d6d78a020c45a"
+  },
+  {
+    "kind": "git",
+    "url": "https://code.videolan.org/videolan/x264.git",
+    "name": "x264",
+    "commit": "b35605ace3ddf7c1a5d67a2eb553f034aef41d55"
   }
 ]

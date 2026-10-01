@@ -10,6 +10,7 @@ internal sealed partial class MainForm
     NetworkInterfaceChoice? browserChoice;
     readonly List<NetworkFirewall> browserRules=[];
     readonly ConcurrentDictionary<Guid,BrowserOwnedDisplay> browserDisplays=new();
+    readonly ConcurrentDictionary<Guid,EncoderSelectionGeneration> browserEncoderGenerations=new();
     readonly ConcurrentDictionary<Guid,DisplaySessionReservation> browserCleanupReservations=new();
     readonly ConcurrentDictionary<Guid,BrowserSessionStatus> browserStates=new();
     readonly ListBox browserSessions=new(){Dock=DockStyle.Top,Height=140,IntegralHeight=false,Visible=false};
@@ -107,6 +108,8 @@ internal sealed partial class MainForm
     async Task<BrowserDisplaySession> PrepareBrowserAsync(Guid id,TabletDisplayProfile profile,bool allowTouch,CancellationToken ct)
     {
         DisplaySessionReservation? reservation=null;DesktopCapture? captureInput=null;ActiveDisplayPower? powerRequest=null;
+        var encoderGeneration=BeginEncoderSelectionConnection();
+        browserEncoderGenerations[id]=encoderGeneration;
         try
         {
             if(!browserCleanupReservations.IsEmpty)
@@ -117,11 +120,15 @@ internal sealed partial class MainForm
             captureInput=new DesktopCapture(reservation.CurrentDisplay,identity:reservation.Lease);powerRequest=new ActiveDisplayPower();
             MarkHealthDisplayReady(reservation.CurrentDisplay);
             MarkHealthPipelineStarting("正在启动浏览器兼容的视频流水线");
-            var owned=new BrowserOwnedDisplay(reservation,captureInput,powerRequest,profile);browserDisplays[id]=owned;
+            var owned=new BrowserOwnedDisplay(reservation,captureInput,powerRequest,profile,encoderGeneration);browserDisplays[id]=owned;
             var token=ct;token.ThrowIfCancellationRequested();
-            return new BrowserDisplaySession(c=>VideoPipeline.StreamAsync(owned.Reservation.CurrentDisplay,profile,c,Log,owned.Reservation.Lease,browserCompatible:true),
+            return new BrowserDisplaySession(c=>VideoPipeline.StreamAsync(owned.Reservation.CurrentDisplay,profile,c,Log,
+                    owned.Reservation.Lease,browserCompatible:true,encoderOptions:CurrentEncoderOptions(),
+                    encoderSelected:snapshot=>ReportEncoderSelection(encoderGeneration,snapshot)),
                 allowTouch?owned.Input.Input:null,owned.Input.ReleaseInput,async()=>
                 {
+                    if(browserEncoderGenerations.TryRemove(id,out var currentGeneration))InvalidateEncoderSelection(currentGeneration);
+                    else InvalidateEncoderSelection(owned.EncoderGeneration);
                     browserDisplays.TryRemove(id,out _);
                     try
                     {
@@ -140,6 +147,8 @@ internal sealed partial class MainForm
         }
         catch(Exception ex)
         {
+            if(browserEncoderGenerations.TryRemove(id,out var currentGeneration))InvalidateEncoderSelection(currentGeneration);
+            else InvalidateEncoderSelection(encoderGeneration);
             MarkConnectionHealthAttention(ex.Message);
             Log("浏览器独立副屏准备失败："+ex.Message);
             browserDisplays.TryRemove(id,out _);
@@ -249,7 +258,7 @@ internal sealed partial class MainForm
             try
             {
                 current.Reservation.Guard.Renew(evaluation.DeadlineUtc);
-                if(now>evaluation.DeadlineUtc){Log("浏览器超过 20 秒没有显示进展，停止该设备。");await host.StopSessionAsync(item.Key);}
+                if(now>evaluation.DeadlineUtc){Log("浏览器超过首帧或后续呈现期限，停止该设备。");await host.StopSessionAsync(item.Key);}
             }
             catch(ObjectDisposedException){}
             catch(Exception ex)
@@ -270,6 +279,7 @@ internal sealed partial class MainForm
     async Task StopBrowserAsync()
     {
         var host=browserHost;browserHost=null;
+        foreach(var generation in browserEncoderGenerations.Values)InvalidateEncoderSelection(generation);
         try{if(host is not null)await host.DisposeAsync();}
         finally
         {
@@ -277,7 +287,7 @@ internal sealed partial class MainForm
             browserChoice=null;browserUri=null;browserStates.Clear();browserSessions.Items.Clear();browserQr.Image?.Dispose();browserQr.Image=null;browserQr.Visible=false;
             browserHint.Text=browserCleanupReservations.IsEmpty?"浏览器接入已关闭，副屏已回收。":"浏览器接入已关闭，副屏精确回收待重试。";
             if(!connectionHealth.Snapshot().Steps.Any(step=>step.State==ConnectionHealthState.Attention))StopConnectionHealth("浏览器接入已关闭并回收本次副屏");
-            if(!HasAnySessions&&connectionMode.SelectedIndex==1){status.Text="浏览器接入尚未开启";metrics.Text="本地 HTTPS + WebRTC · 单设备";}
+            if(!HasAnySessions){ClearEncoderSelectionIfIdle();if(connectionMode.SelectedIndex==1){status.Text="浏览器接入尚未开启";metrics.Text="本地 HTTPS + WebRTC · 单设备";}}
             UpdateBrowserButtons(!busy&&!closing);
             UpdateButtons();
         }
@@ -293,12 +303,14 @@ internal sealed partial class MainForm
         browserSessions.Visible=browserSessions.Items.Count>0;
         stopBrowserDevice.Visible=browserSessions.Visible;stopBrowser.Visible=browserHost is not null;
     }
-    sealed class BrowserOwnedDisplay(DisplaySessionReservation reservation,DesktopCapture input,ActiveDisplayPower power,TabletDisplayProfile profile)
+    sealed class BrowserOwnedDisplay(DisplaySessionReservation reservation,DesktopCapture input,ActiveDisplayPower power,
+        TabletDisplayProfile profile,EncoderSelectionGeneration encoderGeneration)
     {
         internal DisplaySessionReservation Reservation {get;}=reservation;
         internal DesktopCapture Input {get;}=input;
         internal ActiveDisplayPower Power {get;}=power;
         internal TabletDisplayProfile Profile {get;}=profile;
+        internal EncoderSelectionGeneration EncoderGeneration {get;}=encoderGeneration;
         internal SessionPresentationDeadline Deadline {get;}=CreateDeadline();
         static SessionPresentationDeadline CreateDeadline(){var value=new SessionPresentationDeadline();value.Reset(DateTime.UtcNow);return value;}
     }

@@ -1,0 +1,89 @@
+{
+  "schema": 1,
+  "release": "0.8.4-preview.1",
+  "purpose": "Human-reviewable corresponding-source requirements for the final E-drive 0.8.4 Preview 1 build. The archive hash is published externally to avoid a circular self-hash.",
+  "displayLimit": 1,
+  "helpers": [
+    {
+      "file": "ffmpeg.exe",
+      "license": "LGPL-2.1-or-later",
+      "encoders": [
+        "h264_nvenc",
+        "h264_qsv",
+        "h264_amf"
+      ],
+      "networkProtocols": false,
+      "sha256": "F47DA86A069F8F8EB30BCF42CE6137962691A9A1197386D262646A33D3D62659",
+      "sha256Status": "verified-final-e-drive-build"
+    },
+    {
+      "file": "ffmpeg-x264.exe",
+      "license": "GPL-2.0-or-later",
+      "encoders": [
+        "libx264"
+      ],
+      "networkProtocols": false,
+      "runtimePolicy": "explicit-user-authorization; effective-video-fps-at-most-30",
+      "sha256": "B4C34236895D986C4ED452949515768348972DF1DC2FE8B85E81FEFEEA663EBE",
+      "sha256Status": "verified-final-e-drive-build"
+    }
+  ],
+  "correspondingSources": [
+    {
+      "component": "FFmpeg",
+      "version": "7.0.2",
+      "licenseFiles": [
+        "COPYING.LGPLv2.1",
+        "COPYING.GPLv2"
+      ],
+      "required": true
+    },
+    {
+      "component": "nv-codec-headers",
+      "version": "12.2.72.0",
+      "license": "upstream-permissive-notices",
+      "required": true
+    },
+    {
+      "component": "oneVPL",
+      "version": "2.11.0",
+      "commit": "11a9bbda5b22ac1c544da59b4007bb57f737b487",
+      "license": "MIT",
+      "licenseFiles": [
+        "LICENSE",
+        "third-party-programs.txt"
+      ],
+      "required": true
+    },
+    {
+      "component": "AMF",
+      "version": "1.4.35",
+      "commit": "ba07d1b3c7c7ee0d846125cffc1d6d78a020c45a",
+      "license": "MIT-with-upstream-media-technology-notice",
+      "required": true
+    },
+    {
+      "component": "x264",
+      "version": "stable commit b35605ace3ddf7c1a5d67a2eb553f034aef41d55",
+      "license": "GPL-2.0-or-later",
+      "required": true,
+      "identityStatus": "pinned-git-commit-with-complete-source-in-bundle",
+      "sourceUrl": "https://code.videolan.org/videolan/x264.git"
+    }
+  ],
+  "requiredBuildEvidence": [
+    "TabLink high-resolution Windows wait patch",
+    "hardware and software configure commands",
+    "E-drive TEMP/TMP/TMPDIR build log evidence",
+    "encoder catalog checks",
+    "no-network-protocol checks",
+    "runtime exact-size and throughput probes",
+    "one-AUD-per-access-unit and SPS/PPS/IDR checks",
+    "all applicable license texts and notices"
+  ],
+  "sourceBundle": {
+    "file": "source-bundle.tar.gz",
+    "sha256": null,
+    "sha256Status": "published-in-component-SHA256SUMS-and-release-manifest; omitted-here-to-avoid-circular-self-hash"
+  }
+}

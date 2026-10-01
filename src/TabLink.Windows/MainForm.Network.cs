@@ -88,6 +88,8 @@ internal sealed partial class MainForm
         var choice=fresh.SingleOrDefault(x=>SameInterface(x,selected))??throw new IOException("所选线路已变化或已被排除，请刷新后重选。");
         await EnsureOwnedDisplayCleanupBeforeNewConnectionAsync();
         _=VideoPipeline.FindFfmpeg();
+        var encoderGeneration=BeginEncoderSelectionConnection();
+        primaryEncoderGeneration=encoderGeneration;
         try
         {
             BeginConnectionHealth(ConnectionHealthPath.NativeNetwork,$"选择线路 {choice.InterfaceAlias} · {choice.LocalAddress}");
@@ -100,7 +102,7 @@ internal sealed partial class MainForm
             try
             {
                 created=new FrameServer(options,(profile,ct)=>PrepareNetworkOnUiAsync(created!,profile,ct),
-                    NetworkVideo,touch.Checked?message=>capture?.Input(message):null,()=>capture?.ReleaseInput());
+                    ct=>NetworkVideo(encoderGeneration,ct),touch.Checked?message=>capture?.Input(message):null,()=>capture?.ReleaseInput());
             }
             catch{options.Dispose();throw;}
             server=created;
@@ -207,13 +209,14 @@ internal sealed partial class MainForm
         finally{preparingNetwork=false;}
     }
 
-    IAsyncEnumerable<VideoPacket> NetworkVideo(CancellationToken ct)
+    IAsyncEnumerable<VideoPacket> NetworkVideo(EncoderSelectionGeneration encoderGeneration,CancellationToken ct)
     {
         var display=networkDisplay??throw new IOException("网络副屏尚未准备好。");
         var profile=tabletProfile??throw new IOException("尚未收到平板屏幕参数。");
         var lease=displayGuard?.Lease??throw new IOException("副屏保护组件未启动。");
         var quality=videoQuality??throw new IOException("本次连接的画质控制器尚未准备好。");
-        return VideoPipeline.StreamAsync(display,profile,ct,Log,lease,quality:quality);
+        return VideoPipeline.StreamAsync(display,profile,ct,Log,lease,quality:quality,
+            encoderOptions:CurrentEncoderOptions(),encoderSelected:snapshot=>ReportEncoderSelection(encoderGeneration,snapshot));
     }
 
     async Task<bool> IsNetworkAvailableAsync()

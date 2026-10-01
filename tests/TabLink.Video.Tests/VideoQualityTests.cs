@@ -96,6 +96,25 @@ internal static class VideoQualityTests
         Check(timestamps[3] > timestamps[2] && timestamps[7] > timestamps[6],
             "media timestamp clock reset at an encoder plan boundary");
         results.Add("one media clock stays strictly increasing across simulated encoder-rate changes");
+
+        var preferenceRoot=Path.Combine(Directory.GetCurrentDirectory(),".tablink-video-preferences-"+Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(preferenceRoot);
+        try
+        {
+            var path=Path.Combine(preferenceRoot,"video-settings.json");
+            File.WriteAllText(path,"{\"schema\":1,\"preset\":\"Balanced\"}");
+            var store=new VideoQualityPreferences(path);
+            Check(store.Load()==new VideoPreferences(VideoQualityPreset.Balanced,VideoEncoderPreference.Automatic,false),
+                "schema 1 quality preference did not migrate safely");
+            var requested=new VideoPreferences(VideoQualityPreset.HighQuality,VideoEncoderPreference.Amf,true);
+            store.Save(requested);
+            Check(store.Load()==requested&&File.ReadAllText(path).Contains("\"Schema\": 2",StringComparison.Ordinal),
+                "schema 2 encoder/software preferences did not roundtrip atomically");
+            File.WriteAllText(path,"{\"schema\":2,\"preset\":\"Automatic\",\"encoder\":\"Unknown\",\"allowSoftwareFallback\":true}");
+            Check(store.Load()==VideoPreferences.Default,"unknown encoder preference did not fail closed");
+        }
+        finally{Directory.Delete(preferenceRoot,true);}
+        results.Add("video preference schema migrates quality-only settings and fails closed on unknown encoders");
         return results;
     }
 

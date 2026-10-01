@@ -78,6 +78,7 @@ try {
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\PresentationProgress.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\SubmissionProgress.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\VideoAccessUnit.java'),
+        (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\AvcConfiguration.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\VideoFrameQueue.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\FrameRateMeter.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\RenderClock.java'),
@@ -96,6 +97,7 @@ try {
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\UpdateStateMachine.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\QrCodeDecoder.java'),
         (Join-Path $projectDirectory 'tests\ProtocolSmokeTest.java'),
+        (Join-Path $projectDirectory 'tests\AvcConfigurationTest.java'),
         (Join-Path $projectDirectory 'tests\VideoFrameQueueTest.java'),
         (Join-Path $projectDirectory 'tests\KeyFrameRequestControllerTest.java'),
         (Join-Path $projectDirectory 'tests\PendingDecoderRefreshTest.java'),
@@ -131,6 +133,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Protocol test compilation failed.' }
     & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.ProtocolSmokeTest
     if ($LASTEXITCODE -ne 0) { throw 'Protocol or coordinate test failed.' }
+    & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.AvcConfigurationTest
+    if ($LASTEXITCODE -ne 0) { throw 'AVC configuration test failed.' }
     & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.VideoFrameQueueTest
     if ($LASTEXITCODE -ne 0) { throw 'Bounded video input queue test failed.' }
     & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.KeyFrameRequestControllerTest
@@ -168,7 +172,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Android build or lint failed.' }
     $artifactDirectory = Join-Path $projectDirectory 'artifacts'
     New-Item -ItemType Directory -Force -Path $artifactDirectory | Out-Null
-    $apk = Join-Path $artifactDirectory $(if ($ReleasePreview) { 'TabLink-android-0.8.3-preview.apk' } else { 'TabLink-android-0.8.3-debug.apk' })
+    $apk = Join-Path $artifactDirectory $(if ($ReleasePreview) { 'TabLink-android-0.8.4-preview.apk' } else { 'TabLink-android-0.8.4-debug.apk' })
     $builtApk = if ($ReleasePreview) { 'app\build\outputs\apk\release\app-release.apk' } else { 'app\build\outputs\apk\debug\app-debug.apk' }
     Copy-Item -LiteralPath (Join-Path $projectDirectory $builtApk) -Destination $apk -Force
     & (Join-Path $JavaHome 'bin\java.exe') -jar (Join-Path $AndroidSdk 'build-tools\35.0.0\lib\apksigner.jar') verify --verbose --min-sdk-version 23 $apk

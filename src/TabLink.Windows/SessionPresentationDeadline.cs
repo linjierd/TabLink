@@ -3,7 +3,14 @@ namespace TabLink.Windows;
 /// <summary>Local capture recovery never counts as a tablet presentation acknowledgement.</summary>
 internal sealed class SessionPresentationDeadline
 {
-    bool initialized, recoveryGrantedForProgress, desktopWasUnavailable;
+    // Encoder discovery is a single bounded startup transaction. Keep its
+    // budget below the first-presentation deadline so cleanup always remains
+    // owned by the session rather than racing the display watchdog.
+    internal static readonly TimeSpan EncoderProbeBudget = TimeSpan.FromSeconds(30);
+    internal static readonly TimeSpan InitialPresentationTimeout = TimeSpan.FromSeconds(45);
+    internal static readonly TimeSpan ProgressTimeout = TimeSpan.FromSeconds(20);
+
+    bool initialized, hasPresentedFrame, recoveryGrantedForProgress, desktopWasUnavailable;
     internal DateTime LastProgressUtc { get; private set; }
     internal DateTime RecoveryDeadlineUtc { get; private set; }
 
@@ -12,7 +19,7 @@ internal sealed class SessionPresentationDeadline
         RequireUtc(startedUtc);
         LastProgressUtc = startedUtc;
         RecoveryDeadlineUtc = DateTime.MinValue;
-        recoveryGrantedForProgress = desktopWasUnavailable = false;
+        hasPresentedFrame = recoveryGrantedForProgress = desktopWasUnavailable = false;
         initialized = true;
     }
 
@@ -25,6 +32,7 @@ internal sealed class SessionPresentationDeadline
         {
             RequireUtc(presented);
             LastProgressUtc = presented;
+            hasPresentedFrame = true;
             recoveryGrantedForProgress = false;
             RecoveryDeadlineUtc = DateTime.MinValue;
         }
@@ -32,23 +40,25 @@ internal sealed class SessionPresentationDeadline
         else if (inputDesktop.IsAvailable && desktopWasUnavailable)
         {
             desktopWasUnavailable = false;
-            RecoveryDeadlineUtc = nowUtc.AddSeconds(20);
+            RecoveryDeadlineUtc = nowUtc.Add(ProgressTimeout);
             recoveryGrantedForProgress = true;
         }
         // A capture restart gets one bounded opportunity per actual-ACK progress episode.
         // Paused/running transitions alone must never create an indefinitely renewable lease.
         if (hostCapturePaused && !inputDesktop.IsUnavailable && !recoveryGrantedForProgress)
         {
-            RecoveryDeadlineUtc = nowUtc.AddSeconds(20);
+            RecoveryDeadlineUtc = nowUtc.Add(ProgressTimeout);
             recoveryGrantedForProgress = true;
         }
-        var deadline = LastProgressUtc.AddSeconds(20);
+        var deadline = LastProgressUtc.Add(hasPresentedFrame ? ProgressTimeout : InitialPresentationTimeout);
         if (RecoveryDeadlineUtc > deadline) deadline = RecoveryDeadlineUtc;
         // Only confirmed local desktop unavailability permits an open-ended capture pause.
         // The independent watcher performs its own local probe before accepting that pause.
-        if (inputDesktop.IsUnavailable) deadline = nowUtc.AddSeconds(20);
+        if (inputDesktop.IsUnavailable) deadline = nowUtc.Add(ProgressTimeout);
         return new(deadline, inputDesktop.IsUnavailable || hostCapturePaused);
     }
+
+    internal static bool HasSafeEncoderProbeBudget => EncoderProbeBudget < InitialPresentationTimeout;
 
     static void RequireUtc(DateTime value)
     {

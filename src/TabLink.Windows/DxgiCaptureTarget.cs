@@ -4,7 +4,11 @@ using System.Runtime.InteropServices;
 namespace TabLink.Windows;
 
 internal sealed record DxgiOutputIdentity(int AdapterIndex, int OutputIndex, string AdapterName,
-    uint AdapterLuidLow, int AdapterLuidHigh, string DeviceName, Rectangle Bounds, bool Attached, int Rotation);
+    uint AdapterLuidLow, int AdapterLuidHigh, string DeviceName, Rectangle Bounds, bool Attached, int Rotation,
+    uint VendorId = 0, uint DeviceId = 0);
+
+internal sealed record DxgiAdapterIdentity(int AdapterIndex, string AdapterName, uint VendorId, uint DeviceId,
+    uint SubsystemId, uint Revision, uint AdapterLuidLow, int AdapterLuidHigh);
 
 // Read-only DXGI discovery, using the same EnumAdapters / EnumOutputs ordering
 // as FFmpeg 7.0.2. A Windows DISPLAY number is never treated as a DXGI index.
@@ -39,11 +43,43 @@ internal static class DxgiCaptureTarget
                             Check(Method<GetOutputDescription>(output, 7)(output, out var item), "读取 DXGI 输出身份");
                             outputs.Add(new((int)adapterIndex, (int)outputIndex, description.Description,
                                 description.LuidLow, description.LuidHigh, item.DeviceName,
-                                Rectangle.FromLTRB(item.Left, item.Top, item.Right, item.Bottom), item.Attached, item.Rotation));
+                                Rectangle.FromLTRB(item.Left, item.Top, item.Right, item.Bottom), item.Attached, item.Rotation,
+                                description.VendorId, description.DeviceId));
                         }
                         finally { Marshal.Release(output); }
                         if (outputIndex == 127) throw new IOException("DXGI 输出数量超过安全枚举上限");
                     }
+                }
+                finally { Marshal.Release(adapter); }
+            }
+            throw new IOException("DXGI 显卡数量超过安全枚举上限");
+        }
+        finally { Marshal.Release(factory); }
+    }
+
+    // Enumerates adapters even when they currently own no display output. This
+    // matters on hybrid laptops where an Intel or AMD encoder can be available
+    // while the active desktop output is attached to a different GPU.
+    internal static IReadOnlyList<DxgiAdapterIdentity> ReadAdapters()
+    {
+        if (IntPtr.Size != 8 || Marshal.SizeOf<AdapterDescription>() != 304)
+            throw new IOException("DXGI 结构大小不匹配，未读取 GPU 编码器身份");
+        var iid = new Guid("770aae78-f26f-4dba-a829-253c83d1b387");
+        Check(CreateDXGIFactory1(ref iid, out var factory), "创建 DXGI 枚举器");
+        var adapters = new List<DxgiAdapterIdentity>();
+        try
+        {
+            for (uint adapterIndex = 0; adapterIndex < 64; adapterIndex++)
+            {
+                var result = Method<EnumerateObject>(factory, 7)(factory, adapterIndex, out var adapter);
+                if (result == NotFound) return adapters;
+                Check(result, "枚举 DXGI 显卡");
+                try
+                {
+                    Check(Method<GetAdapterDescription>(adapter, 8)(adapter, out var description), "读取 DXGI 显卡身份");
+                    adapters.Add(new((int)adapterIndex, description.Description, description.VendorId,
+                        description.DeviceId, description.SubsystemId, description.Revision,
+                        description.LuidLow, description.LuidHigh));
                 }
                 finally { Marshal.Release(adapter); }
             }

@@ -7,13 +7,11 @@ import android.media.MediaFormat;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
-import android.util.Base64;
 import android.view.Surface;
 import org.json.JSONException;
 import org.json.JSONObject;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -69,33 +67,8 @@ public final class VideoDecoder implements AutoCloseable {
             this.width = width; this.height = height; this.fps = fps; this.sps = sps; this.pps = pps;
         }
         public static Configuration parse(byte[] bytes) throws IOException {
-            if (bytes.length > 131072) throw new IOException("H.264 configuration is too large");
-            try {
-                JSONObject json = new JSONObject(new String(bytes, StandardCharsets.UTF_8));
-                if (!"video/avc".equals(json.getString("codec"))) throw new IOException("Unsupported video codec");
-                int width = json.getInt("width"), height = json.getInt("height");
-                float fps = (float) json.getDouble("fps");
-                if (width <= 0 || height <= 0 || width > 8192 || height > 8192
-                        || (long) width * height > 16000000 || !Float.isFinite(fps) || fps < 1 || fps > 240)
-                    throw new IOException("H.264 dimensions or frame rate are invalid");
-                byte[] sps = normalizeCsd(Base64.decode(json.getString("csd0"), Base64.DEFAULT), 7);
-                byte[] pps = normalizeCsd(Base64.decode(json.getString("csd1"), Base64.DEFAULT), 8);
-                return new Configuration(width, height, fps, sps, pps);
-            } catch (JSONException | IllegalArgumentException problem) {
-                throw new IOException("Invalid H.264 configuration", problem);
-            }
-        }
-        private static byte[] normalizeCsd(byte[] data, int type) throws IOException {
-            if (data.length < 4 || data.length > 65536 || !VideoAccessUnit.containsNal(data, type))
-                throw new IOException("H.264 parameter set is missing");
-            if (data[0] == 0 && data[1] == 0 && data[2] == 1) {
-                byte[] fourByteStart = new byte[data.length + 1];
-                System.arraycopy(data, 0, fourByteStart, 1, data.length);
-                return fourByteStart;
-            }
-            if (data[0] != 0 || data[1] != 0 || data[2] != 0 || data[3] != 1)
-                throw new IOException("H.264 parameter set must use Annex-B");
-            return data;
+            AvcConfiguration parsed = AvcConfiguration.parse(bytes);
+            return new Configuration(parsed.width, parsed.height, parsed.fps, parsed.sps, parsed.pps);
         }
     }
 

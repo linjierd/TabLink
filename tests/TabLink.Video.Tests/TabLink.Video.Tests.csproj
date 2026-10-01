@@ -11,11 +11,16 @@
     <Compile Include="../../src/TabLink.Windows/DisplayRelocation.cs" Link="DisplayRelocation.cs" />
     <Compile Include="../../src/TabLink.Windows/ProfileMode.cs" Link="ProfileMode.cs" />
     <Compile Include="../../src/TabLink.Windows/InputDesktopAvailability.cs" Link="InputDesktopAvailability.cs" />
+    <Compile Include="../../src/TabLink.Windows/SessionPresentationDeadline.cs" Link="SessionPresentationDeadline.cs" />
+    <Compile Include="../../src/TabLink.Windows/EncoderSelectionGenerationGate.cs" Link="EncoderSelectionGenerationGate.cs" />
     <Compile Include="../../src/TabLink.Windows/CaptureRecovery.cs" Link="CaptureRecovery.cs" />
     <Compile Include="../../src/TabLink.Windows/FrameServer.cs" Link="FrameServer.cs" />
     <Compile Include="../../src/TabLink.Windows/NetworkSessionOptions.cs" Link="NetworkSessionOptions.cs" />
     <Compile Include="../../src/TabLink.Windows/VideoPipeline.cs" Link="VideoPipeline.cs" />
     <Compile Include="../../src/TabLink.Windows/VideoQuality.cs" Link="VideoQuality.cs" />
+    <Compile Include="../../src/TabLink.Windows/VideoEncoderSelection.cs" Link="VideoEncoderSelection.cs" />
+    <Compile Include="../../src/TabLink.Windows/FfmpegEncoderRuntime.cs" Link="FfmpegEncoderRuntime.cs" />
+    <Compile Include="../../src/TabLink.Windows/DisplayAdapterDriverCatalog.cs" Link="DisplayAdapterDriverCatalog.cs" />
     <Compile Include="../../src/TabLink.Windows/SelfTests.cs" Link="SelfTests.cs" />
     <ProjectReference Include="../../src/TabLink.Core/TabLink.Core.csproj" />
   </ItemGroup>

@@ -138,21 +138,45 @@ try
     var reduced=new RTCPCompoundPacket(new byte[]{0x81,206,0,2,0,0,0,0,0,0,0,0});
     Check(reduced.Feedback is {} feedback&&BrowserRtcSession.ContainsKeyFrameRequest(feedback.GetBytes()),"Reduced-size browser PLI needs no SDES reserialisation");
     Check(!BrowserRtcSession.ContainsKeyFrameRequest(new byte[]{0x81,206,0xff,0xff}),"Malformed RTCP does not request frames");
+    var requested60=BrowserProfile.Parse(JsonSerializer.Serialize(new{width=1080,height=1920,rotation=0,activeModeId=1,
+        refreshRate=60,nativeWidth=1080,nativeHeight=1920,
+        supportedModes=new[]{new{width=1080,height=1920,refreshRate=60,modeId=1}}}));
+    var software30=BrowserMediaParameters.Negotiate(requested60,1080,1920,30);
+    Check(software30.FramesPerSecond==30&&software30.RtpTimestampStep==3000&&requested60.RequestedRefreshRate==60,
+        "60 Hz virtual display negotiates an actual 30 fps software media cadence and matching RTP timestamp step");
+    var hardware60=BrowserMediaParameters.Negotiate(requested60,1080,1920,60);
+    Check(hardware60.RtpTimestampStep==1500,"60 fps hardware media uses its actual RTP timestamp step");
+    bool mismatchedFpsRejected=false;
+    try{BrowserMediaParameters.Negotiate(requested60,1080,1920,45);}catch(InvalidDataException){mismatchedFpsRejected=true;}
+    Check(mismatchedFpsRejected,"browser media negotiation rejects unadvertised encoder frame rates");
 }
 finally {await host.DisposeAsync();await host.DisposeAsync();}
 Check(disposed==3,"Host disposal is idempotent");
+int softwareDisposed=0;
+await using(var softwareHost=new BrowserHost(IPAddress.Loopback,(id,p,ct)=>Task.FromResult(
+    new BrowserDisplaySession(token=>Video(token,p.Width,p.Height,30),null,()=>{},()=>
+    {Interlocked.Increment(ref softwareDisposed);return ValueTask.CompletedTask;})),1,FreePort(),storage))
+{
+    await softwareHost.StartAsync();
+    await using var softwareClient=await TestClient.Open(softwareHost,caPublic,TestClient.Token(softwareHost.CreatePairing()),
+        width:1080,height:1920,fps:60);
+    await softwareClient.Negotiate();
+    await Eventually(()=>softwareClient.ReceivedFrames>=3,
+        "60 Hz browser display stays connected while actual software media runs at 30 fps",12000);
+}
+Check(softwareDisposed==1,"30 fps browser software-media session releases its sole display");
 Console.WriteLine($"PASS total={results.Count}; real browser rendering / physical displays not claimed");
 
 static int FreePort(){var listener=new TcpListener(IPAddress.Loopback,0);listener.Start();var port=((IPEndPoint)listener.LocalEndpoint).Port;listener.Stop();return port;}
-async IAsyncEnumerable<VideoPacket> Video([EnumeratorCancellation]CancellationToken ct)
+async IAsyncEnumerable<VideoPacket> Video([EnumeratorCancellation]CancellationToken ct,int width=1280,int height=720,int fps=30)
 {
     byte[] sps=[0,0,0,1,0x67,0x42,0xe0,0x2a],pps=[0,0,0,1,0x68,0xce,0x06,0xe2];
-    var config=JsonSerializer.SerializeToUtf8Bytes(new{width=1280,height=720,fps=30,csd0=Convert.ToBase64String(sps),csd1=Convert.ToBase64String(pps)});
+    var config=JsonSerializer.SerializeToUtf8Bytes(new{width,height,fps,csd0=Convert.ToBase64String(sps),csd1=Convert.ToBase64String(pps)});
     yield return new(0x20,config,false);
     bool wasPaused=false;
     while(true)
     {
-        await Task.Delay(33,ct);
+        await Task.Delay(TimeSpan.FromSeconds(1d/fps),ct);
         if(pause!=wasPaused){wasPaused=pause;yield return new(0x02,[],false,pause);}
         if(pause)continue;
         // Transport fixture only: non-decodable IDR bytes exercise packetisation,
@@ -182,12 +206,16 @@ sealed class TestClient : IAsyncDisposable
         chain.ChainPolicy.CustomTrustStore.Add(ca);chain.ChainPolicy.RevocationMode=X509RevocationMode.NoCheck;
         return chain.Build(certificate);
     }
-    public static async Task<TestClient> Open(BrowserHost host,X509Certificate2 ca,string token,bool invalidProfile=false)
+    public static async Task<TestClient> Open(BrowserHost host,X509Certificate2 ca,string token,bool invalidProfile=false,
+        int width=1280,int height=720,int fps=30)
     {
         var client=new TestClient();client.Socket.Options.SetRequestHeader("Origin",host.BaseUri);
         client.Socket.Options.RemoteCertificateValidationCallback=(_,cert,_,error)=>Trusted((X509Certificate2)cert!,ca,error);
         await client.Socket.ConnectAsync(new Uri(host.BaseUri.Replace("https:","wss:")+"/signal"),client.lifetime.Token);
-        await client.Send(new{type="hello",token,profile=new{width=invalidProfile?240:1280,height=720,rotation=1,activeModeId=1,refreshRate=30,nativeWidth=1280,nativeHeight=720,supportedModes=new[]{new{width=1280,height=720,refreshRate=30,modeId=1}}}});
+        var reportedWidth=invalidProfile?240:width;
+        await client.Send(new{type="hello",token,profile=new{width=reportedWidth,height,rotation=width<height?0:1,
+            activeModeId=1,refreshRate=fps,nativeWidth=reportedWidth,nativeHeight=height,
+            supportedModes=new[]{new{width=reportedWidth,height,refreshRate=fps,modeId=1}}}});
         return client;
     }
     public async Task Negotiate()

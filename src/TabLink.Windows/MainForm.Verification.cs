@@ -13,6 +13,7 @@ internal sealed partial class MainForm
             ("device-settings",1,-1),("diagnostics-log",2,-1)
         };
         foreach(var view in views)RenderView(directory,view.Name,view.Tab,view.Mode,new Size(1100,900));
+        foreach(var view in views)RenderView(directory,"default-"+view.Name,view.Tab,view.Mode,new Size(960,680));
         foreach(var view in views)RenderView(directory,"compact-"+view.Name,view.Tab,view.Mode,new Size(760,640));
     }
     static void RenderView(string directory,string name,int tab,int mode,Size size)

@@ -3,6 +3,34 @@ using System.Drawing;
 using System.Text.Json;
 using TabLink.Windows;
 
+if(args.Length==9&&args[0]=="--encoder-runtime-probe")
+{
+    var hardware=Path.GetFullPath(args[1]);
+    var software=args[2]=="-"?null:Path.GetFullPath(args[2]);
+    var preference=Enum.Parse<VideoEncoderPreference>(args[3],ignoreCase:true);
+    var allowSoftware=bool.Parse(args[4]);
+    var width=int.Parse(args[5]);var height=int.Parse(args[6]);var fps=int.Parse(args[7]);var browser=bool.Parse(args[8]);
+    using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(30));
+    var paths=new FfmpegEncoderPaths(hardware,software);
+    var options=new VideoEncoderSelectionOptions(preference,allowSoftware,null);
+    var catalog=await FfmpegEncoderRuntime.ReadCatalogAsync(paths,options,timeout.Token);
+    var probe=new FfmpegEncoderCapabilityProbe(paths,width,height,fps,browser);
+    VideoEncoderSelection selection;
+    try{selection=await VideoEncoderSelector.SelectAsync(catalog,options,probe,timeout.Token);}
+    catch(VideoEncoderSelectionException error)
+    {
+        Console.Error.WriteLine(JsonSerializer.Serialize(new{error=error.Message,
+            attempts=error.Attempts.Select(item=>new{backend=item.Backend.ToString(),item.Compiled,
+                item.ProbeAttempted,item.Available,item.Detail})},new JsonSerializerOptions{WriteIndented=true}));
+        Environment.ExitCode=1;return;
+    }
+    Console.WriteLine(JsonSerializer.Serialize(new{backend=selection.Backend.ToString(),selection.CodecName,
+        effectiveFps=probe.EffectiveFps(selection.Backend),attempts=selection.Attempts.Select(item=>new{
+            backend=item.Backend.ToString(),item.Compiled,item.ProbeAttempted,item.Available,item.Detail})},
+        new JsonSerializerOptions{WriteIndented=true}));
+    return;
+}
+
 if(args.Length==2&&args[0]=="--stream-throughput")
 {
     await StreamThroughputProbe.RunAsync(args[1]);
@@ -106,6 +134,9 @@ var results = new List<string>();
 void Check(bool value, string message) { if (!value) throw new InvalidOperationException(message); }
 void Pass(string message) => results.Add("PASS " + message);
 foreach (var result in VideoQualityTests.Run()) Pass(result);
+foreach (var result in await VideoEncoderSelectionTests.RunAsync()) Pass(result);
+foreach (var result in await H264BackendArgumentTests.RunAsync()) Pass(result);
+foreach (var result in EncoderSelectionGenerationGateTests.Run()) Pass(result);
 byte[] Join(params byte[][] chunks) => chunks.SelectMany(x => x).ToArray();
 byte[] aud = [0,0,0,1,9,0xf0], sps = [0,0,0,1,0x67,0x42,0,0x1f], pps = [0,0,1,0x68,0xab,0xcd];
 byte[] idr = [0,0,1,0x65,0x88,0,0,3,1,0x90], predicted = [0,0,0,1,0x41,0x88,0x90];
