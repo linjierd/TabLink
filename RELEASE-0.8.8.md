@@ -1,6 +1,6 @@
 # TabLink 0.8.8 Preview 1：可信设备与跨线路重连
 
-发布日期：待发布
+发布日期：2026-10-02
 
 TabLink 0.8.8 Preview 1 把原生 Android 网络连接从“每次会话保存并重用 bearer 链接”改为长期设备身份。第一次扫描二维码只登记一次 Android 公钥；二维码 bearer 只有五分钟有效期且只能成功使用一次。以后每条 TCP 连接都必须固定电脑证书并完成新的签名挑战。电脑 IPv4 变化，或平板在 Wi-Fi 与 USB 网络共享之间切换时，可以寻找同一台已登记电脑并重新认证，无需为了地址变化重复扫码。
 
@@ -42,12 +42,26 @@ TabLink 0.8.8 Preview 1 把原生 Android 网络连接从“每次会话保存�
 - 持久电脑证书由当前 Windows 用户的 DPAPI 保护。删除受保护信任目录、证书损坏或改用无法解密该 PFX 的 Windows 身份，会形成新的电脑身份，原 Android 信任需要重新登记。
 - 设备名称只是界面标签；授权依据始终是已登记 P-256 公钥及其 `deviceId`。局域网中的发现响应也不构成授权。
 - 自动发现只服务于同一 IPv4 子网。网络广播被阻止时，用户仍可在目标线路生成新二维码；这会创建新的登记流程，而不会绕过固定证书。
-- W202DS 首次登记、Android/Windows 应用进程无扫码重连、90 Hz 呈现和连续两轮精确 VDD 卸载已经通过。整台电脑重启、Wi-Fi/USB 网络共享迁移、撤销即时生效，以及最终公共构建/发布资产仍以 [验证记录](VERIFICATION-0.8.8.md) 为准。标为“待验证”的项目不是已经通过的发布声明。
+- W202DS 首次登记、Android/Windows 应用进程无扫码重连、90 Hz 呈现和连续两轮精确 VDD 卸载已经通过；干净提交公共构建、GitHub Release 和公开回下载复核也已完成。同一登记 token 的实机重放拒绝、二维码轮换、逐次挑战值、整台电脑重启、Wi-Fi/USB 网络共享迁移及活动连接中的撤销即时生效仍以 [验证记录](VERIFICATION-0.8.8.md) 为准。标为“待验证”的项目不是已经通过的发布声明。
 
 ## 安装
 
-计划中的 Windows 公共 ZIP 为 self-contained x64 包。完整解压后运行 `TabLink.exe`；程序会请求管理员权限，用于按连接生命周期维护唯一虚拟显示设备和受保护信任状态。计划中的 Android 预览 APK 为 `versionName 0.8.8`、`versionCode 20`，可在签名连续时覆盖安装并删除旧 bearer 配对记录。
+Windows 公共包为 `TabLink-Windows-x64-0.8.8-preview.1.zip`，是 self-contained x64 包。完整解压后运行 `TabLink.exe`；程序会请求管理员权限，用于按连接生命周期维护唯一虚拟显示设备和受保护信任状态。Android 预览包为 `TabLink-Android-0.8.8-preview.1.apk`，其 `versionName` 为 `0.8.8`、`versionCode` 为 `20`，可在签名连续时覆盖安装并删除旧 bearer 配对记录。
 
-公共构建拒绝组合使用 `-PublicRelease -SkipAndroid`，不能发布只构建 Windows 而跳过 Android 身份门禁的包。Android `-ReleasePreview` 要求已有签名身份，其证书 SHA-256 必须精确为 `b0035ffe0539e43ded2f5c40e3b7e4d4edfb5d8f8063459faca911edc7500554`；密钥缺失或签名不匹配时构建失败，不会临时生成新的预览签名。构建脚本还必须核对包名 `com.tablink.client`、`versionCode 20` 和 `versionName 0.8.8`。这些是发布门禁；是否已经在最终候选和 GitHub 资产上通过，以 [验证记录](VERIFICATION-0.8.8.md) 中的实际结果为准。
+公共构建拒绝组合使用 `-PublicRelease -SkipAndroid`，不能发布只构建 Windows 而跳过 Android 身份门禁的包。Android `-ReleasePreview` 要求已有签名身份，其证书 SHA-256 必须精确为 `b0035ffe0539e43ded2f5c40e3b7e4d4edfb5d8f8063459faca911edc7500554`；密钥缺失或签名不匹配时构建失败，不会临时生成新的预览签名。构建脚本还必须核对包名 `com.tablink.client`、`versionCode 20` 和 `versionName 0.8.8`。这些门禁已在提交 `7c20a72c5d77cd454a4115d4a763d668f002f329` 的最终公共构建和 GitHub 回下载副本上通过，实际结果见 [验证记录](VERIFICATION-0.8.8.md)。
 
 最终资产文件名、字节数、SHA-256 与下载复核记录放在 GitHub Release 外层 `SHA256SUMS.txt` 和发布记录中。包内 [VERIFICATION-0.8.8.md](VERIFICATION-0.8.8.md) 记录构建门禁、APK/Windows 身份和 W202DS 实机范围，但不自引用其所属 ZIP 的最终外层哈希；发布后在 `main` 补充的下载证据属于 post-release 记录，不改变已发布 tag 或资产。
+
+## 发布结果（post-release）
+
+- GitHub Release：[TabLink 0.8.8 Preview 1](https://github.com/linjierd/TabLink/releases/tag/v0.8.8-preview.1)，标记为 `prerelease=true`；annotated tag `v0.8.8-preview.1` 指向提交 `7c20a72c5d77cd454a4115d4a763d668f002f329`。
+- 发布提交的 [GitHub Actions run 36891751228](https://github.com/linjierd/TabLink/actions/runs/36891751228) 已完成并成功；Windows 项目编译和 managed tests 均为 `success`。该 workflow 不覆盖 Android 构建、公共打包和 Release 回下载，后两项由下列独立复核补足。
+
+| 公开资产 | 字节数 | SHA-256 |
+| --- | ---: | --- |
+| `TabLink-Windows-x64-0.8.8-preview.1.zip` | 97,277,498 | `BC33511C2481AB09CC7F4AF725E7AA29F3C7318C0C65FCD9113AB614240C22C2` |
+| `TabLink-Android-0.8.8-preview.1.apk` | 344,075 | `C2CEA0B404B0B624E77AE9CB67B6F7F9B19CB4483A1FD39E853823361945AFD7` |
+| `TabLink-FFmpeg-7.0.2-corresponding-source.tar.gz` | 28,919,316 | `FD7977F53EDD262D55C49F200EB5F54B1B12F5FFA547770380448708D75EA6F2` |
+| `SHA256SUMS.txt` | 326 | `960EBAC583853F35C1B11BDA325C86A771C42F02F505F3F77CB6F481BAD185E1` |
+
+四项资产已从公开 Release URL 重新下载到 E 盘独立验证目录并重新计算哈希。Windows ZIP 的 462 个文件与最终公共构建逐文件一致，且没有重复条目、缺失文件、额外文件、越界路径或内容哈希差异。正式 HTTPS `stable` 清单也已使用仓库固定 P-256 公钥重新验签；其 `releaseId` 仍为 `tablink-0.8.0`，Windows 与 Android 平台版本都仍为 `0.8.0`，本预览版没有推进稳定频道。

@@ -1,6 +1,6 @@
 # TabLink 0.8.8 Preview 1 验证记录
 
-验证日期：2026-10-02（Asia/Shanghai，离线候选与 W202DS 核心路径已通过；公共发布进行中）
+验证日期：2026-10-02（Asia/Shanghai，离线门禁、W202DS 核心路径、公共发布与公开回下载复核已通过；一次性 token/二维码轮换/新挑战、物理线路迁移、活动撤销和整机重启仍待实机验证）
 
 本文只记录 0.8.8 的持久电脑身份、Android Keystore 设备身份、一次性登记、新挑战认证、局域网地址发现、跨 IP / Wi-Fi 与 USB 网络共享重连、撤销和认证前显示隔离。0.8.7 的受保护 USB 清理队列及更早版本的 90 fps 实机测量只作为回归背景，不能代替本版验证。
 
@@ -24,9 +24,9 @@
 | Windows Release 编译，浏览器功能禁用 | 0 个警告、0 个错误 | `EnableBrowserReceiver=false`，覆盖公共包组合。 |
 | `TabLink.TrustedPairing.Tests` | 81 条断言通过 | 包含双端 transcript 固定向量、严格 discovery 解析、每 IP 合法请求限速、256 地址上限及 SocketException 可取消恢复。 |
 | `TabLink.Transport.Tests` | 完整套件通过 | 覆盖一次登记、持久 host ID、新挑战签名重连、五分钟边界拒绝、显式轮换后旧 token 拒绝、新 token 仅一次、旧签名重放拒绝和撤销拒绝；全部断言显示准备之前失败关闭。 |
-| 其余 Windows 回归 | 全部通过 | Core 46；ADB locator 22；Browser 37；驱动配置 93；分配快照 30；单屏清理 22 场景 / 96 断言；稳定显示身份 40；显示生命周期 192；连接健康 13 场景 / 45；诊断 14 场景 / 94；USB lease 48；USB recovery 135；更新 17 场景 / 119；编码器、传输自检与其他套件全部通过。最终公共构建仍须从干净提交重跑同一套门禁。 |
+| 其余 Windows 回归 | 全部通过 | Core 46；ADB locator 22；Browser 37；驱动配置 93；分配快照 30；单屏清理 22 场景 / 96 断言；稳定显示身份 40；显示生命周期 192；连接健康 13 场景 / 45；诊断 14 场景 / 94；USB lease 48；USB recovery 135；更新 17 场景 / 119；编码器、传输自检与其他套件全部通过。最终公共构建已从干净提交 `7c20a72c5d77cd454a4115d4a763d668f002f329` 重跑同一套门禁并通过。 |
 | Android 最终 debug 构建 | JVM 全套、`assembleDebug`、`lintDebug`、APK v1/v2 签名全部通过 | `artifacts/v0.8.8-local-final-20261001-232713/android/TabLink.apk`，553,114 字节，SHA-256 `3304DF2D4B815B4AAE8FE034AF9D1EE5D7D51111F9EA55558C885E9091EE4706`。新增首次/替换外部深链确认、活动连接抗外部 Intent 中断、忘记可信电脑失败回滚与不确定状态清理、多候选发现测试均通过。 |
-| Android Release Preview 构建 | `assembleRelease`、`lintRelease`、v1/v2 签名、签名身份和包身份门禁全部通过 | 最新源码随后单独执行 `android/build.ps1 -ReleasePreview`；本地 APK 为 344,031 字节，SHA-256 `2871A577572BCBAB9B0E833743216DF7B1BBAF3AC27BB5B3427DEC759B5DFAAA`。最终公开 APK 的字节数与 SHA-256 仍只以干净提交的公共构建和 GitHub 下载副本为准。 |
+| Android Release Preview 构建 | `assembleRelease`、`lintRelease`、v1/v2 签名、签名身份和包身份门禁全部通过 | 干净发布提交生成的最终公共 APK 为 344,075 字节，SHA-256 `C2CEA0B404B0B624E77AE9CB67B6F7F9B19CB4483A1FD39E853823361945AFD7`；本表只记录构建侧证据，GitHub 回下载结果另见“公共构建与发布”一节。 |
 | 跨平台 transcript | 双端固定 SHA-256 `1F57A15130EE260C4242840D79E543CFA0843976E42B0989C628D250E305AFB9` 通过 | 只验证规范字节，不代替 Android Keystore 实机签名。 |
 | 发布入口门禁 | `-PublicRelease -SkipAndroid` 按预期立即失败 | 实际错误明确要求公共包从同一干净提交重建、lint、识别并验证 Android APK。 |
 
@@ -44,7 +44,7 @@
 - [x] `apksigner --print-certs` 得到既有签名证书 SHA-256 `b0035ffe0539e43ded2f5c40e3b7e4d4edfb5d8f8063459faca911edc7500554`；构建脚本对密钥缺失或签名不符失败关闭。
 - [x] `aapt` 已核对包名 `com.tablink.client`、`versionName 0.8.8`、`versionCode 20`；本地 Release Preview APK 的 v1/v2 签名与 SHA-256 已核对。
 - [x] `git diff --check` 无空白错误；当前只见仓库既有 LF/CRLF 转换提示。
-- [ ] 提交后仍须从干净发布提交执行 `-PublicRelease` 并生成公共资产清单；未提交候选的 ProductVersion 仍引用上一个提交，因此不得直接发布。
+- [x] 已从干净发布提交 `7c20a72c5d77cd454a4115d4a763d668f002f329` 执行完整 `-PublicRelease`；`TabLink.exe` 的 FileVersion 为 `0.8.8.0`，ProductVersion 为 `0.8.8+7c20a72c5d77cd454a4115d4a763d668f002f329`，公共资产清单已生成并复核。
 
 ## W202DS 实机验证：核心路径已通过
 
@@ -62,19 +62,26 @@
 - [ ] 尚未在活动连接中撤销当前设备并验证后续自动重连拒绝。
 - [ ] 尚未执行整台电脑重启后的可信重连；本轮只验证了 Windows 应用进程重启和 Android 应用进程重启。
 
-## 公共构建与发布：待验证
+## 公共构建与发布：已完成
 
-当前没有 0.8.8 公共构建或 GitHub Release 可以据此声明成功。发布前必须完成：
+- [x] `-PublicRelease -SkipAndroid` 在构建入口按预期立即失败；随后从干净发布提交 `7c20a72c5d77cd454a4115d4a763d668f002f329` 执行不跳过 Android 的完整 `-PublicRelease`。Windows FileVersion 为 `0.8.8.0`，ProductVersion 为 `0.8.8+7c20a72c5d77cd454a4115d4a763d668f002f329`。
+- [x] 最终 APK 的固定签名证书 SHA-256 为 `b0035ffe0539e43ded2f5c40e3b7e4d4edfb5d8f8063459faca911edc7500554`，包名为 `com.tablink.client`、`versionCode 20`、`versionName 0.8.8`，v1/v2 签名通过。
+- [x] GitHub [TabLink 0.8.8 Preview 1](https://github.com/linjierd/TabLink/releases/tag/v0.8.8-preview.1) 已作为预发行版发布；annotated tag `v0.8.8-preview.1` 精确指向同一发布提交。
+- [x] 发布提交对应的 [GitHub Actions run 36891751228](https://github.com/linjierd/TabLink/actions/runs/36891751228) 为 `completed / success`，`windows-managed-tests`、`Build Windows projects` 与 `Run managed tests` 均为 `success`。该 workflow 只覆盖 Windows managed CI，不代替 Android、公共打包和下载复核。
 
-- [ ] 确认 `-PublicRelease -SkipAndroid` 在构建入口立即失败；随后从干净发布提交执行不跳过 Android 的 `-PublicRelease`，记录提交 SHA、Windows FileVersion/ProductVersion、Android 身份和构建日志。
-- [ ] 在公共构建日志与最终 APK 上再次确认固定签名 SHA-256、包名 `com.tablink.client`、`versionCode 20`、`versionName 0.8.8`；任何缺失或不匹配都必须阻止发布。
-- [ ] 核对 Windows self-contained x64 ZIP、Android preview APK、源码/许可包和 `SHA256SUMS.txt` 的文件名、字节数与 SHA-256。
-- [ ] 从 GitHub Release 实际下载全部公开资产，并对下载副本重新计算哈希、检查 ZIP 内容、Windows 版本和 APK 签名/身份。
-- [ ] 确认 tag、GitHub Actions、Release 页面和交付目录均指向同一发布提交，不混用本地未提交候选。
-- [ ] 再次从正式 HTTPS 地址下载并验签稳定清单，确认 releaseId 和平台版本仍为 **0.8.0**；0.8.8 Preview 1 不得推进 `stable`。
+| 公开资产 | 字节数 | SHA-256 |
+| --- | ---: | --- |
+| `TabLink-Windows-x64-0.8.8-preview.1.zip` | 97,277,498 | `BC33511C2481AB09CC7F4AF725E7AA29F3C7318C0C65FCD9113AB614240C22C2` |
+| `TabLink-Android-0.8.8-preview.1.apk` | 344,075 | `C2CEA0B404B0B624E77AE9CB67B6F7F9B19CB4483A1FD39E853823361945AFD7` |
+| `TabLink-FFmpeg-7.0.2-corresponding-source.tar.gz` | 28,919,316 | `FD7977F53EDD262D55C49F200EB5F54B1B12F5FFA547770380448708D75EA6F2` |
+| `SHA256SUMS.txt` | 326 | `960EBAC583853F35C1B11BDA325C86A771C42F02F505F3F77CB6F481BAD185E1` |
+
+- [x] 四项资产已从 GitHub Release 公开 URL 下载到独立 E 盘目录并重新计算哈希，结果与发布前资产及 GitHub 页面 digest 一致。Windows ZIP 有 462 个文件；与最终公共构建逐文件比对后，重复、越界、缺失、额外和内容哈希差异均为 0。公开 APK 与实机已安装候选具有同一 SHA-256，因此沿用已通过的包身份和签名结论。
+- [x] 三个交付目录 `E:\My\Documents\ChatGPT\日常\TabLink\dist\TabLink`、`E:\My\Desktop\output\tablink` 和 `E:\OneDrive\Desktop\TabLink` 均已同步为最终公共构建；每个目录包含 462 个文件，全部预期文件逐项哈希通过，`TabLink.exe` SHA-256 均为 `4310D8D78084A14AD6A6C5089F784AEE10AEBCD14F4C7346289BECA16E6021B7`。
+- [x] 已从正式 HTTPS 地址重新下载稳定清单并使用固定 P-256 公钥按 ECDSA/SHA-256 验签。清单 `releaseId` 为 `tablink-0.8.0`，Windows 与 Android 平台版本均为 `0.8.0`，rollout 为 100%；0.8.8 Preview 1 没有推进 `stable`。
 
 公共 ZIP 的最终外层哈希不能写回该 ZIP 内的本文，否则会形成自引用并改变资产。最终资产级文件名、大小、SHA-256 和 GitHub 下载复核以 Release 外层 `SHA256SUMS.txt` 与发布记录为准；发布后在 `main` 补写的 post-release 证据不改变发布 tag，也不表示 tag 内的本文包含自身 ZIP 的最终哈希。
 
 ## 当前结论
 
-0.8.8 的本地离线源码门禁和 W202DS 核心实机路径已经通过，包括一次登记、Android Keystore 签名重连、Windows 应用重启后的信任延续、单副屏约束、1920 × 1200 / 90 Hz 呈现，以及连续两轮正常停止后的精确 VDD 卸载。线路迁移、活动撤销、整机重启、干净最终提交公共构建和 GitHub 下载后复核仍待完成，因此当前是已通过核心实机门禁的发布候选，尚不能称为公共发布完成。
+0.8.8 的本地离线源码门禁、W202DS 核心实机路径、干净发布提交公共构建、GitHub 预发行和公开回下载复核已经通过，包括一次登记、Android Keystore 签名重连、Windows 应用重启后的信任延续、单副屏约束、1920 × 1200 / 90 Hz 呈现、连续两轮正常停止后的精确 VDD 卸载，以及 462 个 Windows 包内文件的逐项一致性。当前可以称为 **0.8.8 Preview 1 公共预发行完成**。同一登记 token 的实机重放拒绝、两枚二维码轮换、逐次挑战值、Wi-Fi/USB 网络共享线路迁移、活动连接中的撤销即时生效和整台电脑重启后的可信重连仍是明确未通过的实机边界。

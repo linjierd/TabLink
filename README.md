@@ -3,7 +3,17 @@
 [![CI](https://github.com/linjierd/TabLink/actions/workflows/ci.yml/badge.svg)](https://github.com/linjierd/TabLink/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/TabLink%20code-MIT-blue.svg)](LICENSE)
 
-Windows 电脑端当前候选版为 **0.8.8 Preview 1**。首次扫码现在只用于登记可信设备：电脑保存持久 TLS 证书与主机身份，Android 使用不可导出的 Keystore P-256 私钥；以后每次连接都用新的 32 字节挑战和设备签名认证。注册二维码只能使用一次且生成后 5 分钟失效；已有可信设备时，后台自动监听不会主动公开二维码，需要添加设备时由用户点击“生成新配对二维码”。局域网发现只提供当前 IPv4 与端口提示，仍必须通过固定电脑证书和签名挑战，因而可在电脑地址变化或 Wi-Fi 与 USB 网络共享之间切换后重新连接。旧版保存的 bearer `lastLink` 会被删除，长期信任不再依赖持久 token。认证及屏幕参数校验完成前不会准备虚拟显示设备，全局仍只允许一块 TabLink 副屏。见 [0.8.8 发布说明](RELEASE-0.8.8.md) 与 [0.8.8 验证记录](VERIFICATION-0.8.8.md)。Android 预览版本为 **0.8.8 / build 20**。协议主版本仍为 v1；已签名的公网稳定自动更新频道继续保持 **0.8.0**，不会仅因 GitHub 预览包而自动切换。0.8.0 的签名更新设计见 [0.8.0 发布说明](RELEASE-0.8.0.md)、[自动更新设计与发布说明](AUTO-UPDATE.md) 及 [0.8.0 验证记录](VERIFICATION-0.8.0.md)。
+Windows 电脑端当前预发行版为 **0.8.8 Preview 1**。首次扫码现在只用于登记可信设备：电脑保存持久 TLS 证书与主机身份，Android 使用不可导出的 Keystore P-256 私钥；以后每次连接都用新的 32 字节挑战和设备签名认证。注册二维码只能使用一次且生成后 5 分钟失效；已有可信设备时，后台自动监听不会主动公开二维码，需要添加设备时由用户点击“生成新配对二维码”。局域网发现只提供当前 IPv4 与端口提示，仍必须通过固定电脑证书和签名挑战，因而可在电脑地址变化或 Wi-Fi 与 USB 网络共享之间切换后重新连接。旧版保存的 bearer `lastLink` 会被删除，长期信任不再依赖持久 token。认证及屏幕参数校验完成前不会准备虚拟显示设备，全局仍只允许一块 TabLink 副屏。见 [0.8.8 发布说明](RELEASE-0.8.8.md) 与 [0.8.8 验证记录](VERIFICATION-0.8.8.md)。Android 预览版本为 **0.8.8 / build 20**。协议主版本仍为 v1；已签名的公网稳定自动更新频道继续保持 **0.8.0**，不会仅因 GitHub 预览包而自动切换。0.8.0 的签名更新设计见 [0.8.0 发布说明](RELEASE-0.8.0.md)、[自动更新设计与发布说明](AUTO-UPDATE.md) 及 [0.8.0 验证记录](VERIFICATION-0.8.0.md)。
+
+## 下载 0.8.8 Preview 1
+
+- [Windows x64 完整包](https://github.com/linjierd/TabLink/releases/download/v0.8.8-preview.1/TabLink-Windows-x64-0.8.8-preview.1.zip)
+- [Android APK](https://github.com/linjierd/TabLink/releases/download/v0.8.8-preview.1/TabLink-Android-0.8.8-preview.1.apk)
+- [FFmpeg 7.0.2 对应源码](https://github.com/linjierd/TabLink/releases/download/v0.8.8-preview.1/TabLink-FFmpeg-7.0.2-corresponding-source.tar.gz)
+- [SHA-256 校验文件](https://github.com/linjierd/TabLink/releases/download/v0.8.8-preview.1/SHA256SUMS.txt)
+- [完整 Release 页面与发布说明](https://github.com/linjierd/TabLink/releases/tag/v0.8.8-preview.1)
+
+这是预发行版本。Windows ZIP 完整解压后运行 `TabLink.exe`；Android 安装上面的 APK。三个二进制资产都应先用 `SHA256SUMS.txt` 核对，稳定自动更新频道仍保持在 0.8.0。
 
 以下保留既有功能说明和历史记录；旧版运行条件、ADB 外置说明及旧帧率结果以新版说明为准，不能作为 0.8.8 的验证结果。
 
