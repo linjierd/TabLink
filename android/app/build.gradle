@@ -16,8 +16,8 @@ android {
         applicationId 'com.tablink.client'
         minSdk 23
         targetSdk 35
-        versionCode 18
-        versionName '0.8.6'
+        versionCode 19
+        versionName '0.8.7'
         buildConfigField 'String', 'UPDATE_MANIFEST_URL', quotedBuildString(stableManifestUrl)
         buildConfigField 'String', 'UPDATE_PUBLIC_KEY_SPKI', '\"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEXlJPucXJJzRwjf1p/46Uuebom2dMFvSSiN4wdwxVVtbb9bdaIGnru39akKRRd7BaTlUaEk2Thmb/MpqNPYNu4A==\"'
     }

@@ -24,7 +24,7 @@ internal sealed partial class MainForm
             updateCoordinator.ReadyChanged += OnUpdateReadyChanged;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or FormatException)
-        { Log("自动更新配置未启用：" + ex.Message); }
+        { Log("自动更新配置未启用：" + SafeError(ex)); }
     }
 
     void BeginAutomaticUpdateChecks() => updateCoordinator?.Start(lifetime.Token);

@@ -298,6 +298,41 @@ await Run("connection failure after driver preparation removes the temporary dev
     Check(!driver.DevicePresent, "failed connection leaves no virtual display device");
 });
 
+await Run("watcher startup failure exposes exact cleanup and permits immediate retry", async () =>
+{
+    var driver = new FakeSingleDisplayDriverController();
+    var managed = new DisplaySessionAllocator(driver);
+    SessionGuard.StartupFailuresRemaining = 1;
+    await Reject<IOException>(() => managed.AcquireAsync(Guid.NewGuid(), profile),
+        "published guard fails to start its watcher");
+    Check(SessionGuard.MarkerCount == 0 && SessionGuard.OwnedDisposeAttempts == 1,
+        "allocator disposes the exact recovery guard and retires its marker");
+    Check(driver.Events.SequenceEqual(["ensure", "remove"]) && !driver.DevicePresent,
+        "completed recovery removes the temporary driver before the failure escapes");
+    var replacement = await managed.AcquireAsync(Guid.NewGuid(), profile);
+    Check(driver.Events.SequenceEqual(["ensure", "remove", "ensure"]),
+        "the same process can prepare a replacement immediately after watcher startup rollback");
+    await replacement.DisposeAsync();
+});
+
+await Run("failed watcher rollback stays pending and is retried before reinstall", async () =>
+{
+    var driver = new FakeSingleDisplayDriverController();
+    var managed = new DisplaySessionAllocator(driver);
+    SessionGuard.StartupFailuresRemaining = 1;
+    SessionGuard.StartupRecoveryFailuresRemaining = 1;
+    await Reject<AggregateException>(() => managed.AcquireAsync(Guid.NewGuid(), profile),
+        "watcher start and first exact cleanup both fail");
+    Check(SessionGuard.MarkerCount == 1 && driver.Events.SequenceEqual(["ensure"]) && driver.DevicePresent,
+        "failed cleanup retains the exact marker and does not remove a still-owned driver");
+    var replacement = await managed.AcquireAsync(Guid.NewGuid(), profile);
+    Check(SessionGuard.MarkerCount == 1 && SessionGuard.OwnedDisposeAttempts >= 2,
+        "next acquisition retries the retained guard before publishing its replacement marker");
+    Check(driver.Events.Take(3).SequenceEqual(["ensure", "remove", "ensure"]),
+        "pending guard cleanup and old driver removal precede new driver preparation");
+    await replacement.DisposeAsync();
+});
+
 await Run("cancellation observed after helper completion still removes the device", async () =>
 {
     using var cancel = new CancellationTokenSource();

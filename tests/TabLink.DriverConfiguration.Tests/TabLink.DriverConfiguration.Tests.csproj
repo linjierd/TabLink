@@ -4,5 +4,7 @@
     <Compile Include="../../src/TabLink.DriverSetup/DisplayConfigurationXml.cs" Link="DisplayConfigurationXml.cs" />
     <Compile Include="../../src/TabLink.DriverSetup/DisplayConfigurationActivity.cs" Link="DisplayConfigurationActivity.cs" />
     <Compile Include="../../src/TabLink.DriverSetup/DriverOperationLock.cs" Link="DriverOperationLock.cs" />
+    <Compile Include="../../src/TabLink.DriverSetup/DriverLifecycleHandoff.cs" Link="DriverLifecycleHandoff.cs" />
+    <Compile Include="../../src/TabLink.Windows/WindowsUpdatePathPolicy.cs" Link="WindowsUpdatePathPolicy.cs" />
   </ItemGroup>
 </Project>

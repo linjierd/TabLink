@@ -10,11 +10,15 @@ internal sealed class SessionGuard : IDisposable
 {
     internal static string Folder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TabLink");
     internal static string LastDisplayPath => Path.Combine(Folder, "last-display.json");
-    internal static string LeaseFolder => Path.Combine(Folder, "display-leases");
+    internal static string RememberedFolder => Path.Combine(Folder, "display-layouts");
+    internal static string LeaseFolder => DisplayLeaseProtectedStorage.LeaseFolder;
+    internal static string PendingReverseFolder => UsbReverseProtectedStorage.QueueFolder;
     internal static string LeasePath(DisplayLease lease) => Path.Combine(LeaseFolder, VirtualDisplayManager.GetTargetStorageKey(lease) + ".json");
-    internal static string RememberedPath(DisplayLease lease) => Path.Combine(LeaseFolder, VirtualDisplayManager.GetTargetStorageKey(lease) + ".last.json");
-    static readonly string LeaseMutex = @"Local\TabLink.DisplayLease." + Process.GetCurrentProcess().SessionId;
+    internal static string RememberedPath(DisplayLease lease) => Path.Combine(RememberedFolder, VirtualDisplayManager.GetTargetStorageKey(lease) + ".last.json");
+    internal static string LegacyRememberedPath(DisplayLease lease) => Path.Combine(Folder, "display-leases",
+        VirtualDisplayManager.GetTargetStorageKey(lease) + ".last.json");
     readonly string path;
+    readonly string pendingReverseFolder;
     readonly DisplayLease lease;
     DisplayLease? rememberedLease;
     readonly long ownerStartTicks;
@@ -26,7 +30,8 @@ internal sealed class SessionGuard : IDisposable
 
     // Reconstitute an already-published lease without launching a watcher. The
     // isolated lifecycle harness supplies temporary state and a fake adapter.
-    internal SessionGuard(DisplayLease lease, string ownershipPath, long ownerStartTicks)
+    internal SessionGuard(DisplayLease lease, string ownershipPath, long ownerStartTicks,
+        string? pendingReverseFolder = null)
     {
         ArgumentNullException.ThrowIfNull(lease);
         ArgumentException.ThrowIfNullOrWhiteSpace(ownershipPath);
@@ -35,60 +40,151 @@ internal sealed class SessionGuard : IDisposable
         this.lease = lease;
         rememberedLease = lease;
         path = ownershipPath;
+        this.pendingReverseFolder = pendingReverseFolder ?? PendingReverseFolder;
         this.ownerStartTicks = ownerStartTicks;
     }
 
     internal SessionGuard(DisplayLease lease, bool requireUnowned = false)
+        : this(lease, requireUnowned, GuardStartupEnvironment.Local)
+    {
+    }
+
+    // The injected launcher keeps the isolated lifecycle tests from starting a
+    // child copy of themselves. Production always uses the sealed local value.
+    internal SessionGuard(DisplayLease lease, bool requireUnowned, GuardStartupEnvironment startup)
     {
         ArgumentNullException.ThrowIfNull(lease);
+        ArgumentNullException.ThrowIfNull(startup);
         if (lease.LeaseId == Guid.Empty) throw new IOException("副屏会话标识无效");
         this.lease = lease;
         rememberedLease = lease;
-        Directory.CreateDirectory(LeaseFolder);
+        pendingReverseFolder = PendingReverseFolder;
+        DisplayLeaseProtectedStorage.EnsureLeaseFolder();
         using var owner = Process.GetCurrentProcess();
         ownerStartTicks = owner.StartTime.ToUniversalTime().Ticks;
         path = LeasePath(lease);
-        WithLeaseLock(() =>
+        var state = new WatchState(lease, Environment.ProcessId, ownerStartTicks, DateTime.UtcNow.AddSeconds(25));
+        var markerPublished = false;
+        try
         {
-            if (requireUnowned && File.Exists(path) && File.Exists(MarkerPath(path)))
+            WithLeaseLock(() =>
             {
-                var ownerId = ReadMarker(path);
-                if (ownerId != Guid.Empty)
+                if (requireUnowned && File.Exists(MarkerPath(path)))
                 {
-                    var existing = ReadState(path, ownerId);
-                    if (!existing.StopRequested && OwnerIsRunning(existing))
-                        throw new IOException("此虚拟显示目标仍由另一个连接占用。");
+                    var ownerId = ReadMarker(path);
+                    if (ownerId != Guid.Empty)
+                    {
+                        // Marker selects the authoritative generation. A process
+                        // may have crashed after overwriting current but before
+                        // switching marker; fall back to marker's immutable
+                        // bootstrap instead of rejecting before stale cleanup.
+                        var existing = ReadAuthoritativeState(path, ownerId);
+                        if (!existing.StopRequested && OwnerIsRunning(existing))
+                            throw new IOException("此虚拟显示目标仍由另一个连接占用。");
+                        if (File.Exists(path))
+                        {
+                            var current = ReadState(path);
+                            if (current.Lease.LeaseId != ownerId && OwnerIsRunning(current))
+                                throw new IOException("此虚拟显示目标存在仍由活动进程持有的未提交 generation。");
+                        }
+                    }
                 }
-            }
-            CleanupPreviousOwner(path);
-            RetireLegacyOwnership(lease);
-            var state = new WatchState(lease, Environment.ProcessId, ownerStartTicks, DateTime.UtcNow.AddSeconds(25));
-            try
-            {
+                CleanupPreviousOwner(path);
+                startup.RetireLegacyOwnership(lease);
                 // The immutable bootstrap lets a watcher recover even if its
                 // first read of the renewable JSON encounters corruption.
                 WriteAtomic(BootstrapPath(path, lease.LeaseId), state);
-                WriteAtomic(RememberedPath(lease), lease);
+                startup.PersistRememberedLayout(lease);
                 WriteAtomic(path, state);
                 WriteAtomic(MarkerPath(path), lease.LeaseId);
-                var start = new ProcessStartInfo(Environment.ProcessPath ?? throw new IOException("无法定位 TabLink 程序"))
-                { UseShellExecute = false, CreateNoWindow = true };
-                start.ArgumentList.Add("--watch-display");
-                start.ArgumentList.Add(path);
-                start.ArgumentList.Add(lease.LeaseId.ToString());
-                using var watcher = Process.Start(start) ?? throw new IOException("无法启动副屏保护程序");
-            }
-            catch (Exception startError)
+                markerPublished = true;
+                return 0;
+            });
+
+            // Do not hold the machine-wide display file lock while waiting for
+            // readiness: the child must acquire that same lock to validate the
+            // protected files and enter its first loop iteration.
+            var start = new ProcessStartInfo(Environment.ProcessPath ?? throw new IOException("无法定位 TabLink 程序"))
+            { UseShellExecute = false, CreateNoWindow = true };
+            start.ArgumentList.Add("--watch-display");
+            start.ArgumentList.Add(path);
+            start.ArgumentList.Add(lease.LeaseId.ToString("D"));
+            startup.StartWatcher(start, Environment.ProcessId, ownerStartTicks);
+        }
+        catch (Exception startError)
+        {
+            stopRequested = true;
+            if (!markerPublished &&
+                startError is DisplayLeaseProtectedStorage.ManagedWriteCommittedException committed &&
+                Path.GetFullPath(committed.CommittedPath).Equals(
+                    Path.GetFullPath(MarkerPath(path)), StringComparison.OrdinalIgnoreCase))
             {
-                stopRequested = true;
-                // Constructor failure otherwise leaves no object for the caller
-                // to dispose. The caller selected this exact lease before entry.
-                var rollback = VirtualDisplayManager.Detach(lease);
-                SaveDiagnostic("display-guard-start-error.json", new { timestamp = DateTimeOffset.Now, error = startError.Message, rollback });
-                throw new IOException("无法启动副屏保护，已尝试收回副屏。" + rollback.Message, startError);
+                // The atomic replace completed before ACL post-verification
+                // failed. Preserve exact cleanup authority even if a second
+                // metadata read also fails; never forget a visible marker.
+                markerPublished = true;
             }
-            return 0;
-        });
+
+            var ownsMarker = markerPublished;
+            DisplayChangeResult? rollback = null;
+            Exception? rollbackError = null;
+            try
+            {
+                WithLeaseLock(() =>
+                {
+                    if (markerPublished)
+                    {
+                        try { ownsMarker = ReadMarker(path) == lease.LeaseId; }
+                        catch (Exception ex) when (IsStorageFailure(ex))
+                        {
+                            // The exact marker was committed while this process
+                            // held the protected machine-wide lock. A transient
+                            // read failure cannot erase that authority proof.
+                            ownsMarker = true;
+                        }
+                    }
+                    if (ownsMarker)
+                    {
+                        try { WriteAtomic(path, state with { DeadlineUtc = DateTime.UtcNow, StopRequested = true }); }
+                        catch (Exception ex) when (IsStorageFailure(ex)) { }
+                    }
+                    // If our marker was superseded, another exact owner now has
+                    // authority and this failed constructor must not detach it.
+                    if (ownsMarker || !markerPublished)
+                    {
+                        try { rollback = VirtualDisplayManager.Detach(lease); }
+                        catch (Exception ex) { rollbackError = ex; }
+                    }
+                    if (rollback?.Success == true && ownsMarker)
+                    {
+                        if (ReadMarker(path) != lease.LeaseId)
+                            throw new IOException("副屏保护启动失败后所有权标记已经变化，未覆盖新的会话。");
+                        WriteAtomic(MarkerPath(path), Guid.Empty);
+                        cleanupComplete = true;
+                        ownsMarker = false;
+                    }
+                    return 0;
+                });
+            }
+            catch (Exception ex) { rollbackError = ex; }
+
+            SaveDiagnostic("display-guard-start-error.json", new
+            { timestamp = DateTimeOffset.Now, error = startError.Message, rollback, rollbackError = rollbackError?.Message });
+            if (ownsMarker)
+            {
+                // The constructor cannot return this object, so expose a
+                // reconstituted exact guard to the allocator. Its existing
+                // PendingCleanup path can retry Dispose without broadening
+                // authority or losing the committed marker.
+                var recovery = new SessionGuard(lease, path, ownerStartTicks, pendingReverseFolder)
+                { stopRequested = true };
+                throw new GuardStartupFailureException(
+                    "无法启动副屏保护，显示回滚仍需重试。" + (rollback?.Message ?? rollbackError?.Message),
+                    startError, recovery);
+            }
+            throw new IOException("无法启动副屏保护，已尝试收回副屏。" +
+                (rollback?.Message ?? rollbackError?.Message), startError);
+        }
     }
 
     internal void Renew(DateTime deadlineUtc)
@@ -122,6 +218,7 @@ internal sealed class SessionGuard : IDisposable
 
     internal static DisplayLease CaptureDetachedLease(int width, int height, int refreshRate)
     {
+        DisplayLeaseProtectedStorage.EnsureLeaseFolder();
         return WithLeaseLock(() =>
         {
             var fresh = VirtualDisplayManager.CaptureDetachedLease(width, height, refreshRate);
@@ -133,7 +230,9 @@ internal sealed class SessionGuard : IDisposable
     {
         try
         {
+            DisplayLeaseProtectedStorage.EnsureLeaseFolder();
             var rememberedPath = RememberedPath(fresh);
+            if (!File.Exists(rememberedPath)) rememberedPath = LegacyRememberedPath(fresh); // Read-only 0.8.6 migration.
             if (!File.Exists(rememberedPath)) rememberedPath = LastDisplayPath; // Read-only single-display migration.
             if (!File.Exists(rememberedPath)) return fresh;
             var remembered = JsonSerializer.Deserialize<DisplayLease>(File.ReadAllText(rememberedPath));
@@ -148,6 +247,28 @@ internal sealed class SessionGuard : IDisposable
 
     internal void AttachReverse(UsbReverseLease receipt)
         => ReplaceReverse(null, receipt);
+
+    internal void RetainReverseForCleanup(UsbReverseLease receipt)
+    {
+        ValidateReverseReceipt(receipt);
+        WithLeaseLock(() =>
+        {
+            if (stopRequested || ReadMarker(path) != lease.LeaseId)
+                throw new IOException("副屏会话已结束，无法保存 USB 待清理记录");
+            var state = ReadState(path, lease.LeaseId);
+            if (state.OwnerPid != Environment.ProcessId || state.OwnerStartUtcTicks != ownerStartTicks ||
+                JsonSerializer.Serialize(state.Lease) != JsonSerializer.Serialize(lease) ||
+                reverseLease != receipt || state.ReverseLease != receipt)
+                throw new IOException("USB 待清理记录不属于当前副屏会话");
+            PendingQueue().RequirePending(receipt, UsbReverseQueueState.Owned);
+            return 0;
+        });
+    }
+
+    PendingUsbReverseCleanupQueue PendingQueue() =>
+        pendingReverseFolder.Equals(PendingReverseFolder, StringComparison.OrdinalIgnoreCase)
+            ? UsbReverseProtectedStorage.OpenQueue()
+            : new PendingUsbReverseCleanupQueue(pendingReverseFolder);
 
     /// <summary>
     /// Atomically retires or replaces the exact reverse receipt published for
@@ -188,7 +309,8 @@ internal sealed class SessionGuard : IDisposable
     {
         if (receipt is not null && (receipt.SchemaVersion != UsbReverseLease.CurrentSchemaVersion ||
             receipt.Id == Guid.Empty || !receipt.Endpoint.IsValid
-            || receipt.OwnerPid != Environment.ProcessId || receipt.OwnerStartUtcTicks != ownerStartTicks))
+            || receipt.OwnerPid != Environment.ProcessId || receipt.OwnerStartUtcTicks != ownerStartTicks ||
+            !string.Equals(receipt.OwnerUserSid, UsbReverseLease.CurrentUserSid(), StringComparison.Ordinal)))
             throw new IOException("USB 通道记录不属于当前连接进程");
     }
 
@@ -225,9 +347,15 @@ internal sealed class SessionGuard : IDisposable
 
     internal static SessionGuard? RestorePrevious()
     {
+        DisplayLeaseProtectedStorage.EnsureLeaseFolder();
         return WithLeaseLock(() =>
         {
-            var saved = Directory.Exists(LeaseFolder) ? Directory.GetFiles(LeaseFolder, "*.last.json") : [];
+            var saved = Directory.Exists(RememberedFolder) ? Directory.GetFiles(RememberedFolder, "*.last.json") : [];
+            if (saved.Length == 0)
+            {
+                var legacyFolder = Path.Combine(Folder, "display-leases");
+                saved = Directory.Exists(legacyFolder) ? Directory.GetFiles(legacyFolder, "*.last.json") : [];
+            }
             if (saved.Length > 1) throw new IOException("有多个副屏恢复记录，请为设备选择明确的显示目标。");
             var previousPath = saved.Length == 1 ? saved[0] : LastDisplayPath;
             if (!File.Exists(previousPath)) return null;
@@ -236,7 +364,25 @@ internal sealed class SessionGuard : IDisposable
             var lease = previous with { LeaseId = Guid.NewGuid() };
             // Publish fresh ownership and start crash protection BEFORE enabling
             // the saved output. The shared lock excludes an expired old watcher.
-            var guard = new SessionGuard(lease);
+            SessionGuard guard;
+            try { guard = new SessionGuard(lease); }
+            catch (GuardStartupFailureException startupFailure)
+            {
+                // RestorePrevious has no allocator reservation that can retain a
+                // constructor recovery guard. Attempt the same exact cleanup
+                // here while the re-entrant machine-wide lease lock is held.
+                // If cleanup still fails, preserve the retryable guard on the
+                // exception rather than losing the published ownership marker.
+                try { startupFailure.RecoveryGuard.Dispose(); }
+                catch (Exception rollbackError)
+                {
+                    throw new GuardStartupFailureException(
+                        "无法启动副屏恢复保护，自动收回也未完成：" + rollbackError.Message,
+                        new AggregateException(startupFailure, rollbackError),
+                        startupFailure.RecoveryGuard);
+                }
+                throw;
+            }
             try
             {
                 var result = VirtualDisplayManager.Restore(lease);
@@ -255,13 +401,44 @@ internal sealed class SessionGuard : IDisposable
         });
     }
 
-    internal static Task<int> WatchAsync(string file, string expectedLeaseId, Func<Task>? afterOwnerExitDetach = null)
+    internal static Task<int> WatchAsync(string file, string expectedLeaseId,
+        Func<Task>? afterOwnerExitDetach = null,
+        DisplayWatcherHandshake.ChildContext? handshake = null)
     {
-        if (!Guid.TryParse(expectedLeaseId, out var id) || id == Guid.Empty || !IsAllowedWatchPath(file))
+        try
+        {
+            DisplayLeaseProtectedStorage.VerifyLeaseFolder();
+            if (!Guid.TryParse(expectedLeaseId, out var id) || id == Guid.Empty || !IsAllowedWatchPath(file))
+                return Task.FromResult(2);
+            DisplayLeaseProtectedStorage.VerifyWatcherFiles(file, id);
+            var environment = afterOwnerExitDetach is null ? WatchEnvironment.Local : WatchEnvironment.Local with
+            { AfterOwnerExitDetach = afterOwnerExitDetach };
+            if (handshake is not null)
+            {
+                environment = environment with
+                {
+                    OwnerStatus = state => handshake.ObserveOwner(state.OwnerPid, state.OwnerStartUtcTicks) switch
+                    {
+                        DisplayWatcherHandshake.OwnerObservation.VerifiedRunning => OwnerLiveness.VerifiedRunning,
+                        DisplayWatcherHandshake.OwnerObservation.Exited => OwnerLiveness.Exited,
+                        _ => OwnerLiveness.Unverified
+                    },
+                    OnVerifiedLoopEntry = state =>
+                    {
+                        handshake.ConfirmProtectedStateValidated(file, id,
+                            state.OwnerPid, state.OwnerStartUtcTicks);
+                        handshake.SignalReadyAfterLoopEntry();
+                    }
+                };
+            }
+            return WatchOwnedAsync(file, id, environment);
+        }
+        catch (Exception ex) when (IsStorageFailure(ex) || ex is ArgumentException or InvalidOperationException
+                                   or System.Security.SecurityException)
+        {
+            SaveDiagnostic("display-watchdog-storage-error.json", new { timestamp = DateTimeOffset.Now, error = ex.Message });
             return Task.FromResult(2);
-        var environment = afterOwnerExitDetach is null ? WatchEnvironment.Local : WatchEnvironment.Local with
-        { AfterOwnerExitDetach = afterOwnerExitDetach };
-        return WatchOwnedAsync(file, id, environment);
+        }
     }
 
     internal static bool IsAllowedWatchPath(string file)
@@ -269,7 +446,6 @@ internal sealed class SessionGuard : IDisposable
         try
         {
             var full = Path.GetFullPath(file);
-            if (full.Equals(Path.Combine(Folder, "active-display-lease.json"), StringComparison.OrdinalIgnoreCase)) return true;
             if (!string.Equals(Path.GetDirectoryName(full), LeaseFolder, StringComparison.OrdinalIgnoreCase)) return false;
             var name = Path.GetFileName(full);
             return name.Length == 69 && name.EndsWith(".json", StringComparison.Ordinal) &&
@@ -288,8 +464,8 @@ internal sealed class SessionGuard : IDisposable
         var desktopWasUnavailable = false;
         var recoveryDeadline = DateTime.MinValue;
         var displayDetached = false;
-        var reverseCleanupDeferred = false;
-        UsbReverseLease? confirmedCleanedReverse = null;
+        var reverseQueued = false;
+        var loopEntryConfirmed = false;
         while (true)
         {
             try
@@ -306,6 +482,7 @@ internal sealed class SessionGuard : IDisposable
                         !Path.GetFullPath(file).Equals(LeasePath(initial.Lease), StringComparison.OrdinalIgnoreCase))
                         throw new InvalidDataException("副屏保护文件不属于记录中的显示目标。");
                     var unreadable = false;
+                    var currentVerified = false;
                     try
                     {
                         var current = ReadState(file, expectedLeaseId, now);
@@ -313,6 +490,7 @@ internal sealed class SessionGuard : IDisposable
                             JsonSerializer.Serialize(current.Lease) != JsonSerializer.Serialize(initial.Lease))
                             throw new InvalidDataException("副屏保护记录中的设备或进程身份发生变化");
                         last = current;
+                        currentVerified = true;
                     }
                     catch (Exception ex) when (IsStorageFailure(ex))
                     {
@@ -320,6 +498,15 @@ internal sealed class SessionGuard : IDisposable
                         last ??= initial;
                     }
                     var owner = environment.OwnerStatus(last);
+                    if (!loopEntryConfirmed && environment.OnVerifiedLoopEntry is not null)
+                    {
+                        if (!currentVerified)
+                            throw new InvalidDataException("副屏保护 current 尚未通过首次完整验证。");
+                        if (owner != OwnerLiveness.VerifiedRunning)
+                            throw new IOException("副屏所有者未能在保护进程就绪前通过精确身份验证。");
+                        environment.OnVerifiedLoopEntry(last);
+                        loopEntryConfirmed = true;
+                    }
                     var running = owner != OwnerLiveness.Exited;
                     var desktop = environment.InputDesktop();
                     var deadline = unreadable ? last.DeadlineUtc.AddSeconds(5) : last.DeadlineUtc;
@@ -360,58 +547,14 @@ internal sealed class SessionGuard : IDisposable
                     }
                     if (!running)
                     {
-                        if (confirmedCleanedReverse is null && !reverseCleanupDeferred)
+                        if (!reverseQueued)
                         {
-                            // The bootstrap is the crash-cleanup authority. A
-                            // transient read/JSON failure is not evidence that
-                            // no receipt exists, so let it escape to the outer
-                            // retry loop instead of retiring the marker.
-                            var receipt = ReadReverseReceiptForWatcher(file, last);
-                            if (receipt is not null)
-                            {
-                                if (receipt.SchemaVersion != UsbReverseLease.CurrentSchemaVersion || !receipt.Endpoint.IsValid)
-                                {
-                                    // Receipts written before per-session
-                                    // endpoints existed cannot authorize any
-                                    // ADB removal. Preserve that receipt for
-                                    // diagnosis, but do not let it block exact
-                                    // reclamation of the independently owned
-                                    // virtual display.
-                                    reverseCleanupDeferred = true;
-                                    SaveDiagnostic("usb-reverse-legacy-receipt.json", new
-                                    { timestamp = DateTimeOffset.Now, reason = "missing-session-endpoint", receipt.Id });
-                                }
-                                else
-                                {
-                                    var cleanup = CleanupReverse(receipt, "watcher-host-exited");
-                                    if (cleanup?.Complete == true)
-                                        confirmedCleanedReverse = receipt;
-                                    else
-                                        // USB cleanup is secondary to exact
-                                        // display/driver reclamation. Preserve
-                                        // the receipt and diagnostic for the
-                                        // next owner-recovery pass, but never
-                                        // strand the VDD because a tablet is
-                                        // offline, excluded, changed, or now
-                                        // owns a conflicting mapping.
-                                        reverseCleanupDeferred = true;
-                                }
-                            }
-                        }
-                        if (confirmedCleanedReverse is not null)
-                        {
-                            // Removed/AlreadyAbsent are the only results that
-                            // consume crash-cleanup authority. Write the
-                            // immutable bootstrap first: if the renewable write
-                            // then fails, the next loop retries it without ever
-                            // rerunning cleanup against a future look-alike.
-                            var clearedInitial = initial with { ReverseLease = null };
-                            var clearedLast = last with { ReverseLease = null };
-                            WriteAtomic(BootstrapPath(file, expectedLeaseId), clearedInitial);
-                            WriteAtomic(file, clearedLast);
-                            initial = clearedInitial;
-                            last = clearedLast;
-                            confirmedCleanedReverse = null;
+                            // The machine-protected queue is the only cleanup
+                            // authority. LocalAppData may be unreadable or from
+                            // an older release; neither can delay exact display
+                            // and driver reclamation. Process the protected
+                            // queue only after the display ownership lock exits.
+                            reverseQueued = true;
                         }
                     }
                     if (displayDetached)
@@ -444,6 +587,17 @@ internal sealed class SessionGuard : IDisposable
                             return 1;
                         }
                     }
+                    if (outcome == 0 && detachedAfterOwnerExit && reverseQueued)
+                    {
+                        try { environment.ProcessPendingReverse?.Invoke(); }
+                        catch (Exception ex)
+                        {
+                            // The display and driver are already reclaimed. Keep
+                            // the durable receipt for a later bounded retry.
+                            SaveDiagnostic("usb-reverse-pending-error.json", new
+                            { timestamp = DateTimeOffset.Now, reason = "watcher-post-display", error = ex.Message });
+                        }
+                    }
                     return outcome;
                 }
             }
@@ -465,12 +619,27 @@ internal sealed class SessionGuard : IDisposable
 
     static WatchState ReadState(string file, Guid expectedId, DateTime? nowUtc = null)
     {
+        var state = ReadState(file, nowUtc);
+        if (state.Lease.LeaseId != expectedId)
+            throw new InvalidDataException("副屏保护记录无效或会话不匹配");
+        return state;
+    }
+
+    static WatchState ReadState(string file, DateTime? nowUtc = null)
+    {
         var state = JsonSerializer.Deserialize<WatchState>(File.ReadAllText(file));
-        if (state?.Lease is null || state.Lease.LeaseId != expectedId || state.OwnerPid <= 0 ||
+        if (state?.Lease is null || state.Lease.LeaseId == Guid.Empty || state.OwnerPid <= 0 ||
             state.OwnerStartUtcTicks <= 0 || state.DeadlineUtc.Kind != DateTimeKind.Utc ||
             state.DeadlineUtc > (nowUtc ?? DateTime.UtcNow).AddMinutes(1))
             throw new InvalidDataException("副屏保护记录无效或会话不匹配");
         return state;
+    }
+
+    static WatchState ReadAuthoritativeState(string file, Guid expectedId, DateTime? nowUtc = null)
+    {
+        try { return ReadState(file, expectedId, nowUtc); }
+        catch (Exception ex) when (IsStorageFailure(ex))
+        { return ReadState(BootstrapPath(file, expectedId), expectedId, nowUtc); }
     }
 
     static Guid ReadMarker(string file)
@@ -496,8 +665,9 @@ internal sealed class SessionGuard : IDisposable
         catch (System.ComponentModel.Win32Exception) { return OwnerLiveness.Unverified; }
     }
 
-    static void CleanupPreviousOwner(string file)
+    internal static void CleanupPreviousOwner(string file)
     {
+        Guid? legacyReceiptId = null;
         try
         {
             if (!File.Exists(MarkerPath(file))) return;
@@ -509,19 +679,27 @@ internal sealed class SessionGuard : IDisposable
                 id = JsonSerializer.Deserialize<WatchState>(File.ReadAllText(file))?.Lease?.LeaseId ?? Guid.Empty;
                 if (id == Guid.Empty) return;
             }
-            WatchState previous;
-            try { previous = ReadState(file, id); }
-            catch (Exception ex) when (IsStorageFailure(ex)) { previous = ReadState(BootstrapPath(file, id), id); }
+            var previous = ReadAuthoritativeState(file, id);
             if (OwnerIsRunning(previous)) return;
-            var receipt = FindReverseReceipt(file, previous);
-            if (receipt is not null) CleanupReverse(receipt, "before-new-owner");
+            var legacyReceipt = previous.ReverseLease;
+            if (legacyReceipt is not null && legacyReceipt.OwnerPid == previous.OwnerPid &&
+                legacyReceipt.OwnerStartUtcTicks == previous.OwnerStartUtcTicks)
+                legacyReceiptId = legacyReceipt.Id;
         }
         catch (Exception ex) when (IsStorageFailure(ex))
         {
             // No valid receipt means no authority to remove any mapping. The
             // normal no-rebind connect operation will also reject an occupied port.
             SaveDiagnostic("usb-reverse-recovery-error.json", new { timestamp = DateTimeOffset.Now, error = ex.Message });
+            return;
         }
+
+        if (legacyReceiptId is { } receiptId)
+            // 0.8.6 and earlier wrote this file below user-writable LocalAppData.
+            // It can explain an orphan but can never be promoted into elevated
+            // ADB removal authority. ADB restart/device reconnect retires it.
+            SaveDiagnostic("usb-reverse-untrusted-legacy.json", new
+            { timestamp = DateTimeOffset.Now, reason = "legacy-localappdata-receipt", Id = receiptId });
     }
 
     static void RetireLegacyOwnership(DisplayLease next)
@@ -533,67 +711,16 @@ internal sealed class SessionGuard : IDisposable
         var previous = ReadState(oldPath, id);
         if (VirtualDisplayManager.GetTargetStorageKey(previous.Lease) != VirtualDisplayManager.GetTargetStorageKey(next)) return;
         if (OwnerIsRunning(previous)) throw new IOException("此虚拟屏仍由旧版连接占用，请先停止该连接。");
+        // Legacy LocalAppData is user-writable and remains read-only. It can
+        // conservatively veto a new allocation while its recorded owner is
+        // alive, but it never authorizes cleanup and we never rewrite it.
         CleanupPreviousOwner(oldPath);
-        WriteAtomic(MarkerPath(oldPath), Guid.Empty);
-    }
-
-    static UsbReverseLease? FindReverseReceipt(string file, WatchState state)
-    {
-        UsbReverseLease? receipt = null;
-        try
-        {
-            var backup = ReadState(BootstrapPath(file, state.Lease.LeaseId), state.Lease.LeaseId);
-            if (backup.OwnerPid == state.OwnerPid && backup.OwnerStartUtcTicks == state.OwnerStartUtcTicks &&
-                JsonSerializer.Serialize(backup.Lease) == JsonSerializer.Serialize(state.Lease))
-                receipt = backup.ReverseLease;
-        }
-        catch (Exception ex) when (IsStorageFailure(ex)) { }
-        return receipt is not null && receipt.OwnerPid == state.OwnerPid && receipt.OwnerStartUtcTicks == state.OwnerStartUtcTicks
-            ? receipt : null;
-    }
-
-    static UsbReverseLease? ReadReverseReceiptForWatcher(string file, WatchState state)
-    {
-        var backup = ReadState(BootstrapPath(file, state.Lease.LeaseId), state.Lease.LeaseId);
-        if (backup.OwnerPid != state.OwnerPid || backup.OwnerStartUtcTicks != state.OwnerStartUtcTicks ||
-            JsonSerializer.Serialize(backup.Lease) != JsonSerializer.Serialize(state.Lease))
-            throw new InvalidDataException("副屏保护初始记录中的设备或进程身份发生变化");
-        var receipt = backup.ReverseLease;
-        if (receipt is not null && (receipt.OwnerPid != state.OwnerPid || receipt.OwnerStartUtcTicks != state.OwnerStartUtcTicks))
-            throw new InvalidDataException("USB 通道记录不属于副屏保护记录中的连接进程");
-        return receipt;
-    }
-
-    static UsbReverseCleanupResult? CleanupReverse(UsbReverseLease receipt, string reason)
-    {
-        try
-        {
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(6));
-            // Keep this thread's Mutex while asynchronous ADB work runs on the
-            // pool; never block the UI synchronization context's continuations.
-            var result = Task.Run(() => UsbReverseLease.CleanupAfterOwnerExitAsync(receipt, timeout.Token)).GetAwaiter().GetResult();
-            SaveDiagnostic("usb-reverse-recovery.json", new { timestamp = DateTimeOffset.Now, reason, receipt.Id, result });
-            return result;
-        }
-        catch (Exception ex) when (IsStorageFailure(ex) || ex is OperationCanceledException or TimeoutException)
-        {
-            SaveDiagnostic("usb-reverse-recovery-error.json", new { timestamp = DateTimeOffset.Now, reason, receipt.Id, error = ex.Message });
-            return null;
-        }
     }
 
     static T WithLeaseLock<T>(Func<T> action)
     {
-        using var mutex = new Mutex(false, LeaseMutex);
-        var locked = false;
-        try
-        {
-            try { locked = mutex.WaitOne(TimeSpan.FromSeconds(8)); }
-            catch (AbandonedMutexException) { locked = true; }
-            if (!locked) throw new TimeoutException("另一个副屏会话操作尚未完成");
-            return action();
-        }
-        finally { if (locked) mutex.ReleaseMutex(); }
+        using var leaseLock = DisplayLeaseProtectedStorage.AcquireLock();
+        return action();
     }
 
     static bool IsStorageFailure(Exception ex) => ex is IOException or InvalidDataException or UnauthorizedAccessException or JsonException;
@@ -625,10 +752,18 @@ internal sealed class SessionGuard : IDisposable
 
     static void WriteAtomic<T>(string file, T value)
     {
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(value, new JsonSerializerOptions { WriteIndented = true });
+        if (DisplayLeaseProtectedStorage.IsManagedFile(file))
+        {
+            DisplayLeaseProtectedStorage.WriteManagedFileAtomically(file, bytes);
+            return;
+        }
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(file))
+            ?? throw new InvalidDataException("显示布局目录无效。"));
         var temp = file + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            File.WriteAllText(temp, JsonSerializer.Serialize(value, new JsonSerializerOptions { WriteIndented = true }));
+            File.WriteAllBytes(temp, bytes);
             File.Move(temp, file, true);
         }
         finally
@@ -641,10 +776,31 @@ internal sealed class SessionGuard : IDisposable
     internal enum OwnerLiveness { Exited, VerifiedRunning, Unverified }
 
     internal sealed record WatchEnvironment(Func<DateTime> UtcNow, Func<WatchState, OwnerLiveness> OwnerStatus,
-        Func<InputDesktopStatus> InputDesktop, Func<Task> Delay, Func<Task>? AfterOwnerExitDetach = null)
+        Func<InputDesktopStatus> InputDesktop, Func<Task> Delay, Func<Task>? AfterOwnerExitDetach = null,
+        Action<UsbReverseLease>? RetainPendingReverse = null, Action? ProcessPendingReverse = null,
+        Action<WatchState>? OnVerifiedLoopEntry = null)
     {
         internal static WatchEnvironment Local { get; } = new(() => DateTime.UtcNow, ReadOwnerStatus,
-            InputDesktopAvailability.Query, () => Task.Delay(2000));
+            InputDesktopAvailability.Query, () => Task.Delay(2000),
+            ProcessPendingReverse: () => UsbReverseCleanupCoordinator.Shared.ProcessPendingBlocking("watcher-owner-exited"));
+    }
+
+    internal sealed record GuardStartupEnvironment(
+        Action<ProcessStartInfo, int, long> StartWatcher,
+        Action<DisplayLease> RetireLegacyOwnership,
+        Action<DisplayLease> PersistRememberedLayout)
+    {
+        internal static GuardStartupEnvironment Local { get; } = new(
+            (start, ownerPid, ownerStartTicks) =>
+                DisplayWatcherHandshake.StartAndWait(start, ownerPid, ownerStartTicks),
+            SessionGuard.RetireLegacyOwnership,
+            lease => WriteAtomic(RememberedPath(lease), lease));
+    }
+
+    internal sealed class GuardStartupFailureException(string message, Exception innerException,
+        SessionGuard recoveryGuard) : IOException(message, innerException)
+    {
+        internal SessionGuard RecoveryGuard { get; } = recoveryGuard;
     }
 
     internal sealed record WatchState(DisplayLease Lease, int OwnerPid, long OwnerStartUtcTicks, DateTime DeadlineUtc,

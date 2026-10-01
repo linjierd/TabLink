@@ -16,15 +16,40 @@ public interface IAdbProcessRunner
 
 public sealed class AdbProcessRunner : IAdbProcessRunner
 {
-    public async Task<AdbCommandResult> RunAsync(string executable, IReadOnlyList<string> arguments, TimeSpan timeout, CancellationToken cancellationToken)
+    internal static ProcessStartInfo CreateStartInfo(string executable,
+        IReadOnlyList<string> arguments)
     {
-        cancellationToken.ThrowIfCancellationRequested();
         var start = new ProcessStartInfo(executable)
         {
             UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardOutput = true, RedirectStandardError = true
         };
+        var executableDirectory = Path.GetDirectoryName(executable);
+        if (!string.IsNullOrWhiteSpace(executableDirectory))
+            start.WorkingDirectory = executableDirectory;
+        foreach (var name in start.Environment.Keys.Where(name =>
+                     name.StartsWith("ADB_", StringComparison.OrdinalIgnoreCase) ||
+                     name.StartsWith("ANDROID_ADB_", StringComparison.OrdinalIgnoreCase) ||
+                     name.Equals("ANDROID_SERIAL", StringComparison.OrdinalIgnoreCase)).ToArray())
+            start.Environment.Remove(name);
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
+        return start;
+    }
+
+    public async Task<AdbCommandResult> RunAsync(string executable, IReadOnlyList<string> arguments, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        try { return await RunCoreAsync(executable, arguments, timeout, cancellationToken).ConfigureAwait(false); }
+        catch (OperationCanceledException) { throw; }
+        catch (AdbExecutionException) { throw; }
+        catch (Exception ex) when (SafeErrorSummary.IsExecutionFailure(ex))
+        { throw new AdbExecutionException(ex); }
+    }
+
+    static async Task<AdbCommandResult> RunCoreAsync(string executable, IReadOnlyList<string> arguments,
+        TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var start = CreateStartInfo(executable, arguments);
         using var process = new Process { StartInfo = start };
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(timeout);
@@ -114,12 +139,7 @@ public sealed class AdbClient
                 TimeSpan.FromSeconds(15), mutationDeadline.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (mutationDeadline.IsCancellationRequested)
-        { throw new TimeoutException("The bounded ADB reverse mutation did not complete within 15 seconds."); }
-        catch (AdbCommandException ex)
-        {
-            throw new AdbCommandException(ex.ExitCode, ex.StandardError, ex.StandardOutput,
-                "Cannot reserve the assigned TabLink USB endpoint without replacing an existing mapping. If an old mapping exists, inspect and explicitly remove it before retrying.");
-        }
+        { throw new AdbExecutionException(new TimeoutException("The bounded ADB reverse mutation did not complete within 15 seconds.")); }
     }
 
     /// <summary>
@@ -134,15 +154,65 @@ public sealed class AdbClient
         => await ReserveRandomReverseEndpointAsync(device, AdbReverseEndpoint.CreateRandom, cancellationToken)
             .ConfigureAwait(false);
 
-    internal async Task<AdbReverseEndpoint> ReserveRandomReverseEndpointAsync(
+    /// <summary>
+    /// Chooses a random endpoint while excluding endpoints whose earlier
+    /// cleanup receipts are still pending. The exclusion snapshot is checked
+    /// before any ADB inspection, so a retained endpoint is never observed,
+    /// rebound, or otherwise touched by the new session.
+    /// </summary>
+    public async Task<AdbReverseEndpoint> ReserveRandomReverseEndpointAsync(
+        ApprovedUsbDevice device, IReadOnlySet<AdbReverseEndpoint> reservedEndpoints,
+        CancellationToken cancellationToken = default)
+        => await ReserveRandomReverseEndpointAsync(device, AdbReverseEndpoint.CreateRandom,
+            SnapshotCandidatePredicate(reservedEndpoints), cancellationToken).ConfigureAwait(false);
+
+    /// <summary>
+    /// Selects and inspects an unused random endpoint without mutating ADB. The
+    /// caller can durably publish a non-removal intent before separately using
+    /// ReversePortAsync and promoting that intent after definite success.
+    /// </summary>
+    public async Task<AdbReverseEndpoint> SelectRandomUnusedReverseEndpointAsync(
+        ApprovedUsbDevice device, IReadOnlySet<AdbReverseEndpoint> reservedEndpoints,
+        CancellationToken cancellationToken = default)
+        => await SelectRandomUnusedReverseEndpointAsync(device, AdbReverseEndpoint.CreateRandom,
+            SnapshotCandidatePredicate(reservedEndpoints), cancellationToken).ConfigureAwait(false);
+
+    internal async Task<AdbReverseEndpoint> SelectRandomUnusedReverseEndpointAsync(
         ApprovedUsbDevice device, Func<AdbReverseEndpoint> nextEndpoint,
+        Func<AdbReverseEndpoint, bool> isCandidateAvailable,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(nextEndpoint);
+        ArgumentNullException.ThrowIfNull(isCandidateAvailable);
         for (var attempt = 0; attempt < MaximumEndpointReservationAttempts; attempt++)
         {
             var candidate = nextEndpoint();
             candidate.Validate();
+            if (!isCandidateAvailable(candidate)) continue;
+            var state = await InspectReversePortAsync(device, candidate, cancellationToken).ConfigureAwait(false);
+            if (state.Status == AdbReversePortStatus.Missing) return candidate;
+        }
+        throw new IOException("Unable to find an unused per-session USB endpoint after bounded random attempts.");
+    }
+
+    internal async Task<AdbReverseEndpoint> ReserveRandomReverseEndpointAsync(
+        ApprovedUsbDevice device, Func<AdbReverseEndpoint> nextEndpoint,
+        CancellationToken cancellationToken = default)
+        => await ReserveRandomReverseEndpointAsync(device, nextEndpoint, static _ => true, cancellationToken)
+            .ConfigureAwait(false);
+
+    internal async Task<AdbReverseEndpoint> ReserveRandomReverseEndpointAsync(
+        ApprovedUsbDevice device, Func<AdbReverseEndpoint> nextEndpoint,
+        Func<AdbReverseEndpoint, bool> isCandidateAvailable,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(nextEndpoint);
+        ArgumentNullException.ThrowIfNull(isCandidateAvailable);
+        for (var attempt = 0; attempt < MaximumEndpointReservationAttempts; attempt++)
+        {
+            var candidate = nextEndpoint();
+            candidate.Validate();
+            if (!isCandidateAvailable(candidate)) continue;
             var state = await InspectReversePortAsync(device, candidate, cancellationToken).ConfigureAwait(false);
             if (state.Status != AdbReversePortStatus.Missing) continue;
             // A race after inspection is intentionally surfaced by
@@ -151,6 +221,15 @@ public sealed class AdbClient
             return candidate;
         }
         throw new IOException("Unable to find an unused per-session USB endpoint after bounded random attempts.");
+    }
+
+    private static Func<AdbReverseEndpoint, bool> SnapshotCandidatePredicate(
+        IReadOnlySet<AdbReverseEndpoint> reservedEndpoints)
+    {
+        ArgumentNullException.ThrowIfNull(reservedEndpoints);
+        var snapshot = new HashSet<AdbReverseEndpoint>(reservedEndpoints);
+        foreach (var endpoint in snapshot) endpoint.Validate();
+        return candidate => !snapshot.Contains(candidate);
     }
 
     /// <summary>
@@ -175,7 +254,8 @@ public sealed class AdbClient
         endpoint.Validate();
         var listed = await TargetAsync(device, ["reverse", "--list"],
             TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
-        return new(ParseReversePortStatus(listed.StandardOutput, endpoint));
+        try { return new(ParseReversePortStatus(listed.StandardOutput, endpoint)); }
+        catch (InvalidDataException ex) { throw new AdbResponseException(ex); }
     }
 
     /// <summary>
@@ -231,7 +311,9 @@ public sealed class AdbClient
         }
         var marker=result.StandardOutput.IndexOf("json=",StringComparison.Ordinal);
         if(marker<0)throw new IOException("无法从 APK 读取平板屏幕信息，请先安装交付目录中的新版安卓客户端。");
-        return TabletDisplayProfile.Parse(result.StandardOutput[(marker+5)..].Trim());
+        try { return TabletDisplayProfile.Parse(result.StandardOutput[(marker+5)..].Trim()); }
+        catch(Exception ex) when(ex is InvalidDataException or System.Text.Json.JsonException or NotSupportedException or ArgumentException)
+        { throw new AdbResponseException(ex); }
     }
 
     public Task InstallApkAsync(ApprovedUsbDevice device, string apkPath, CancellationToken cancellationToken = default)
@@ -275,8 +357,7 @@ public sealed class AdbClient
             args.AddRange(command);
             var result = await RunCheckedAsync(args, timeout, cancellationToken).ConfigureAwait(false);
             if (validateLaunchOutput && HasAndroidLaunchFailure(result))
-                throw new AdbCommandException(result.ExitCode, result.StandardError, result.StandardOutput,
-                    "Android could not launch the TabLink app. Check that the client APK is installed on the approved tablet.");
+                throw new AdbCommandException(result.ExitCode, result.StandardError, result.StandardOutput);
             return result;
         }
         finally { _commands.Release(); }
@@ -292,7 +373,13 @@ public sealed class AdbClient
 
     private async Task<AdbCommandResult> RunCheckedAsync(IReadOnlyList<string> arguments, TimeSpan timeout, CancellationToken cancellationToken)
     {
-        var result = await _runner.RunAsync(_adbPath, arguments, timeout, cancellationToken).ConfigureAwait(false);
+        AdbCommandResult result;
+        try { result = await _runner.RunAsync(_adbPath, arguments, timeout, cancellationToken).ConfigureAwait(false); }
+        catch (OperationCanceledException) { throw; }
+        catch (AdbCommandException) { throw; }
+        catch (AdbExecutionException) { throw; }
+        catch (Exception ex) when (SafeErrorSummary.IsExecutionFailure(ex))
+        { throw new AdbExecutionException(ex); }
         if (result.ExitCode != 0) throw new AdbCommandException(result.ExitCode, result.StandardError, result.StandardOutput);
         return result;
     }
@@ -303,7 +390,7 @@ public sealed class AdbCommandException : IOException
     public int ExitCode { get; }
     public string StandardError { get; }
     public string StandardOutput { get; }
-    public AdbCommandException(int exitCode, string standardError, string standardOutput, string? context = null)
-        : base($"{(string.IsNullOrWhiteSpace(context) ? "adb command failed." : context)} Exit code {exitCode}: {(string.IsNullOrWhiteSpace(standardError) ? standardOutput : standardError).Trim()}")
+    public AdbCommandException(int exitCode, string standardError, string standardOutput)
+        : base($"ADB command failed ({nameof(AdbCommandException)}, exit code {exitCode}).")
         => (ExitCode, StandardError, StandardOutput) = (exitCode, standardError, standardOutput);
 }

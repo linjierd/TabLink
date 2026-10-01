@@ -7,7 +7,7 @@
     <Nullable>enable</Nullable>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>TabLink</AssemblyName>
-    <Version>0.8.6</Version>
+    <Version>0.8.7</Version>
     <Authors>张林杰（Jey / @linjierd）</Authors>
     <Company>张林杰（Jey / @linjierd）</Company>
     <Product>TabLink</Product>
@@ -20,6 +20,12 @@
     <DefineConstants Condition="'$(EnableBrowserReceiver)' != 'true'">$(DefineConstants);TABLINK_NO_BROWSER</DefineConstants>
   </PropertyGroup>
   <ItemGroup><ProjectReference Include="../TabLink.Core/TabLink.Core.csproj" /></ItemGroup>
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>TabLink.AdbLocator.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+  <ItemGroup><Compile Include="../TabLink.DriverSetup/DriverLifecycleHandoff.cs" Link="DisplaySafety/DriverLifecycleHandoff.cs" /></ItemGroup>
   <ItemGroup><ProjectReference Include="../TabLink.Updater/TabLink.Updater.csproj" ReferenceOutputAssembly="false" /></ItemGroup>
   <ItemGroup><PackageReference Include="QRCoder" Version="1.6.0" /></ItemGroup>
   <ItemGroup>

@@ -9,12 +9,15 @@ namespace TabLink.DriverSetup;
 
 internal static partial class DriverInstaller
 {
-    private static readonly SecurityIdentifier SystemSid = new(WellKnownSidType.LocalSystemSid, null);
-    private static readonly SecurityIdentifier AdministratorsSid = new(WellKnownSidType.BuiltinAdministratorsSid, null);
+    private static readonly SecurityIdentifier SystemSid = DriverLifecycleSecurityPolicy.SystemSid;
+    private static readonly SecurityIdentifier AdministratorsSid = DriverLifecycleSecurityPolicy.AdministratorsSid;
     private static readonly SecurityIdentifier UsersSid = new(WellKnownSidType.BuiltinUsersSid, null);
-    private static string LifecycleRoot => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "TabLink");
+    private static string ProgramDataRoot => Path.GetFullPath(
+        Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData));
+    private static string LifecycleRoot => Path.Combine(ProgramDataRoot, "TabLink");
     private static string LifecycleDirectory => Path.Combine(LifecycleRoot, "DriverLifecycle");
+    internal static string DisplayLeaseRoot => Path.Combine(LifecycleRoot, "DisplayLeases");
+    private static string DisplayLeaseLockPath => Path.Combine(DisplayLeaseRoot, ".display-lease.lock");
     private static string InstanceReceiptPath => Path.Combine(LifecycleDirectory, "owned-display.json");
     private static string ExpectedPackageMarker => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
         string.Join("\n", ExpectedHashes.OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
@@ -22,6 +25,60 @@ internal static partial class DriverInstaller
 
     private sealed record DeviceOwnershipReceipt(int SchemaVersion, string HardwareId, string InstanceId,
         Guid Generation, string PackageMarker, DateTimeOffset CreatedUtc, string State);
+
+    internal static IDisposable AcquireDisplayLeaseMutationLock()
+    {
+        VerifyDisplayLeaseParentNamespace();
+        EnsureProtectedDirectory(LifecycleRoot);
+        EnsureProtectedDirectory(DisplayLeaseRoot);
+        if (!File.Exists(DisplayLeaseLockPath))
+        {
+            try
+            {
+                using var created = new FileInfo(DisplayLeaseLockPath).Create(
+                    FileMode.CreateNew, FileSystemRights.FullControl, FileShare.None, 1,
+                    FileOptions.WriteThrough, CreateProtectedFileSecurity());
+                created.Flush(flushToDisk: true);
+            }
+            catch (IOException) when (File.Exists(DisplayLeaseLockPath)) { }
+        }
+        VerifyDisplayLeaseProtectedNamespace();
+        var deadline = DateTime.UtcNow.AddSeconds(8);
+        while (true)
+        {
+            try
+            {
+                return new FileStream(DisplayLeaseLockPath, FileMode.Open, FileAccess.ReadWrite,
+                    FileShare.None, 1, FileOptions.None);
+            }
+            catch (IOException) when (DateTime.UtcNow < deadline) { Thread.Sleep(50); }
+        }
+    }
+
+    internal static void VerifyDisplayLeaseProtectedNamespace()
+    {
+        VerifyDisplayLeaseParentNamespace();
+        VerifyProtectedDirectory(LifecycleRoot);
+        VerifyProtectedDirectory(DisplayLeaseRoot);
+        VerifyProtectedFile(DisplayLeaseLockPath);
+    }
+
+    internal static void VerifyDisplayLeaseStateFile(string path)
+    {
+        var full = Path.GetFullPath(path);
+        if (!string.Equals(Path.GetDirectoryName(full), DisplayLeaseRoot, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("显示租约状态文件越过受保护目录边界。");
+        VerifyProtectedFile(full);
+    }
+
+    private static void VerifyDisplayLeaseParentNamespace()
+    {
+        if (string.IsNullOrWhiteSpace(ProgramDataRoot) ||
+            ProgramDataRoot.Equals(Path.GetPathRoot(ProgramDataRoot), StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("ProgramData 路径无效，不能创建显示租约保护目录。");
+        TabLink.Windows.WindowsUpdatePathPolicy.VerifySafeNamespaceChain(
+            ProgramDataRoot, "显示租约保护父路径");
+    }
 
     private static string? ReadOwnedInstanceReceipt()
     {
@@ -87,7 +144,7 @@ internal static partial class DriverInstaller
     {
         if (File.Exists(path)) throw new IOException("驱动生命周期目录路径被文件占用。");
         if (!Directory.Exists(path)) new DirectoryInfo(path).Create(CreateProtectedDirectorySecurity());
-        else VerifyProtectedDirectory(path);
+        VerifyProtectedDirectory(path);
     }
 
     private static void VerifyProtectedDirectoryChain()
@@ -97,27 +154,10 @@ internal static partial class DriverInstaller
     }
 
     private static DirectorySecurity CreateProtectedDirectorySecurity()
-    {
-        var security = new DirectorySecurity();
-        security.SetAccessRuleProtection(true, false);
-        security.SetOwner(AdministratorsSid);
-        const InheritanceFlags inheritance = InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit;
-        security.AddAccessRule(new FileSystemAccessRule(SystemSid, FileSystemRights.FullControl, inheritance,
-            PropagationFlags.None, AccessControlType.Allow));
-        security.AddAccessRule(new FileSystemAccessRule(AdministratorsSid, FileSystemRights.FullControl, inheritance,
-            PropagationFlags.None, AccessControlType.Allow));
-        return security;
-    }
+        => DriverLifecycleSecurityPolicy.CreateDirectorySecurity();
 
     private static FileSecurity CreateProtectedFileSecurity()
-    {
-        var security = new FileSecurity();
-        security.SetAccessRuleProtection(true, false);
-        security.SetOwner(AdministratorsSid);
-        security.AddAccessRule(new FileSystemAccessRule(SystemSid, FileSystemRights.FullControl, AccessControlType.Allow));
-        security.AddAccessRule(new FileSystemAccessRule(AdministratorsSid, FileSystemRights.FullControl, AccessControlType.Allow));
-        return security;
-    }
+        => DriverLifecycleSecurityPolicy.CreateFileSecurity();
 
     private static void VerifyProtectedDirectory(string path)
     {
@@ -137,21 +177,7 @@ internal static partial class DriverInstaller
 
     private static void VerifyRules(FileSystemSecurity security, string path, bool directory)
     {
-        var owner = security.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
-        if (owner is null || !owner.Equals(AdministratorsSid) && !owner.Equals(SystemSid))
-            throw new UnauthorizedAccessException("驱动生命周期路径所有者不受信任：" + path);
-        var required = new HashSet<SecurityIdentifier> { SystemSid, AdministratorsSid };
-        var rules = security.GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>().ToArray();
-        foreach (var rule in rules)
-        {
-            if (rule.IdentityReference is not SecurityIdentifier sid || rule.IsInherited ||
-                rule.AccessControlType != AccessControlType.Allow || !required.Remove(sid) ||
-                (rule.FileSystemRights & FileSystemRights.FullControl) != FileSystemRights.FullControl ||
-                directory && (rule.InheritanceFlags & (InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit)) !=
-                    (InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit))
-                throw new UnauthorizedAccessException("驱动生命周期路径 ACL 不符合仅 SYSTEM/Administrators 可写要求：" + path);
-        }
-        if (required.Count != 0 || rules.Length != 2)
+        if (!DriverLifecycleSecurityPolicy.HasExactProtectedAcl(security, directory))
             throw new UnauthorizedAccessException("驱动生命周期路径 ACL 缺少受信任主体或包含额外规则：" + path);
     }
 

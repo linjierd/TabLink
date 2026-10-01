@@ -102,7 +102,7 @@ internal sealed partial class MainForm
             MarkHealthAuthenticationStarted("等待浏览器使用当前单次二维码完成认证与屏幕参数上报");
             CreateBrowserPairing();SetStatus("浏览器接入已开启，等待设备扫码");metrics.Text=$"{choice.InterfaceAlias} · 本地 HTTPS + WebRTC · 单设备";
         }
-        catch(Exception ex){MarkConnectionHealthAttention(ex.Message);await StopBrowserAsync();throw;}
+        catch(Exception ex){MarkConnectionHealthAttention(SafeError(ex));await StopBrowserAsync();throw;}
     }
 
     async Task<BrowserDisplaySession> PrepareBrowserAsync(Guid id,TabletDisplayProfile profile,bool allowTouch,CancellationToken ct)
@@ -132,7 +132,7 @@ internal sealed partial class MainForm
                     browserDisplays.TryRemove(id,out _);
                     try
                     {
-                        try{owned.Input.Dispose();}catch(Exception inputError){Log("浏览器画面输入清理需要检查："+inputError.Message);}
+                        try{owned.Input.Dispose();}catch(Exception inputError){Log("浏览器画面输入清理需要检查："+SafeError(inputError));}
                         await owned.Reservation.DisposeAsync();
                         browserCleanupReservations.TryRemove(id,out _);
                     }
@@ -142,18 +142,18 @@ internal sealed partial class MainForm
                         var detail=OwnedDisplayCleanupFailureDetail(ex);MarkOwnedDisplayCleanupAttention(detail);Log(detail);
                         throw;
                     }
-                    finally{try{owned.Power.Dispose();}catch(Exception powerError){Log("浏览器电源请求清理需要检查："+powerError.Message);}}
+                    finally{try{owned.Power.Dispose();}catch(Exception powerError){Log("浏览器电源请求清理需要检查："+SafeError(powerError));}}
                 });
         }
         catch(Exception ex)
         {
             if(browserEncoderGenerations.TryRemove(id,out var currentGeneration))InvalidateEncoderSelection(currentGeneration);
             else InvalidateEncoderSelection(encoderGeneration);
-            MarkConnectionHealthAttention(ex.Message);
-            Log("浏览器独立副屏准备失败："+ex.Message);
+            MarkConnectionHealthAttention(SafeError(ex));
+            Log("浏览器独立副屏准备失败："+SafeError(ex));
             browserDisplays.TryRemove(id,out _);
-            try{captureInput?.Dispose();}catch(Exception inputError){Log("浏览器准备失败后的画面输入清理需要检查："+inputError.Message);}
-            try{powerRequest?.Dispose();}catch(Exception powerError){Log("浏览器准备失败后的电源请求清理需要检查："+powerError.Message);}
+            try{captureInput?.Dispose();}catch(Exception inputError){Log("浏览器准备失败后的画面输入清理需要检查："+SafeError(inputError));}
+            try{powerRequest?.Dispose();}catch(Exception powerError){Log("浏览器准备失败后的电源请求清理需要检查："+SafeError(powerError));}
             if(reservation is not null)
             {
                 try{await reservation.DisposeAsync();browserCleanupReservations.TryRemove(id,out _);}
@@ -266,8 +266,8 @@ internal sealed partial class MainForm
             catch(ObjectDisposedException){}
             catch(Exception ex)
             {
-                Log("此浏览器副屏检查失败："+ex.Message);
-                try{await host.StopSessionAsync(item.Key);}catch(Exception cleanup){Log("该浏览器回收需要检查："+cleanup.Message);}
+                Log("此浏览器副屏检查失败："+SafeError(ex));
+                try{await host.StopSessionAsync(item.Key);}catch(Exception cleanup){Log("该浏览器回收需要检查："+SafeError(cleanup));}
             }
         }
         var previous=(browserSessions.SelectedItem as BrowserSessionRow)?.Status.Id;
@@ -286,7 +286,7 @@ internal sealed partial class MainForm
         try{if(host is not null)await host.DisposeAsync();}
         finally
         {
-            foreach(var rule in browserRules.ToArray())try{await rule.DisposeAsync();browserRules.Remove(rule);}catch(Exception ex){Log("浏览器防火墙规则清理失败："+ex.Message);}
+            foreach(var rule in browserRules.ToArray())try{await rule.DisposeAsync();browserRules.Remove(rule);}catch(Exception ex){Log("浏览器防火墙规则清理失败："+SafeError(ex));}
             browserChoice=null;browserUri=null;browserStates.Clear();browserSessions.Items.Clear();browserQr.Image?.Dispose();browserQr.Image=null;browserQr.Visible=false;
             browserHint.Text=browserCleanupReservations.IsEmpty?"浏览器接入已关闭，副屏已回收。":"浏览器接入已关闭，副屏精确回收待重试。";
             if(!connectionHealth.Snapshot().Steps.Any(step=>step.State==ConnectionHealthState.Attention))StopConnectionHealth("浏览器接入已关闭并回收本次副屏");

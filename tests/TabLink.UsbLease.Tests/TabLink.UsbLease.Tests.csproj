@@ -10,5 +10,8 @@
     <ProjectReference Include="../../src/TabLink.Core/TabLink.Core.csproj" />
     <Compile Include="../../src/TabLink.Windows/UsbReverseLease.cs" Link="UsbReverseLease.cs" />
     <Compile Include="../../src/TabLink.Windows/UsbInventory.cs" Link="UsbInventory.cs" />
+    <Compile Include="../../src/TabLink.Windows/PendingUsbReverseCleanupQueue.cs" Link="PendingUsbReverseCleanupQueue.cs" />
+    <Compile Include="../../src/TabLink.Windows/UsbReverseMutationGate.cs" Link="UsbReverseMutationGate.cs" />
+    <Compile Include="../../src/TabLink.Windows/UsbReverseCleanupCoordinator.cs" Link="UsbReverseCleanupCoordinator.cs" />
   </ItemGroup>
 </Project>

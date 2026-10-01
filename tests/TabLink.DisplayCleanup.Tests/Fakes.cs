@@ -147,8 +147,16 @@ internal static class VirtualDisplayManager
 
 internal sealed class SessionGuard : IDisposable
 {
+    internal sealed class GuardStartupFailureException(SessionGuard recoveryGuard)
+        : IOException("Injected startup failure")
+    {
+        internal SessionGuard RecoveryGuard { get; } = recoveryGuard;
+    }
     static readonly Dictionary<string, Guid> markers = new();
     internal static HashSet<string> AlwaysFailTargets { get; } = [];
+    internal static int StartupFailuresRemaining { get; set; }
+    internal static int StartupRecoveryFailuresRemaining { get; set; }
+    internal static int MarkerCount => markers.Count;
     internal static int OwnedDisposeAttempts { get; private set; }
     internal static int Created { get; private set; }
     internal int FailuresRemaining { get; set; }
@@ -165,9 +173,24 @@ internal sealed class SessionGuard : IDisposable
             throw new IOException("Guard ownership has not been released.");
         markers[lease.TargetIdentity] = lease.LeaseId;
         Created++;
+        if (StartupFailuresRemaining > 0)
+        {
+            StartupFailuresRemaining--;
+            var recovery = new SessionGuard(lease, recoveryOnly: 0)
+            { FailuresRemaining = StartupRecoveryFailuresRemaining };
+            StartupRecoveryFailuresRemaining = 0;
+            throw new GuardStartupFailureException(recovery);
+        }
+    }
+    SessionGuard(DisplayLease lease, byte recoveryOnly)
+    {
+        Lease = lease;
     }
     internal static void Reset()
-    { markers.Clear(); AlwaysFailTargets.Clear(); OwnedDisposeAttempts = 0; Created = 0; }
+    {
+        markers.Clear(); AlwaysFailTargets.Clear(); OwnedDisposeAttempts = 0; Created = 0;
+        StartupFailuresRemaining = 0; StartupRecoveryFailuresRemaining = 0;
+    }
     internal static DisplayLease ReuseRememberedPosition(DisplayLease lease) => lease;
     internal void CompleteWatcherCleanup()
     {

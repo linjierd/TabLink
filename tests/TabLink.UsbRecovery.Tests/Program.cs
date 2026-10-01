@@ -18,6 +18,7 @@ internal static class Program
         await TestAsync("existing unowned mapping is terminal", ExistingUnownedMappingFailsClosedAsync);
         await TestAsync("conflicting and malformed mappings retire ownership without mutation", ConflictAndMalformedMappingsFailClosedAsync);
         await TestAsync("empty and offline inventories are retryable", AbsentAndOfflineDevicesAreRetryableAsync);
+        await TestAsync("recovery detail redacts fake ADB stderr, path and serial markers", SensitiveAdbFailuresAreRedactedAsync);
         await TestAsync("identity and exclusion changes fail closed", IdentityAndExclusionChangesFailClosedAsync);
         await TestAsync("stop cancels blocked inspection without rebind or launch", StopCancelsBlockedInspectionAsync);
         await TestAsync("stop drains an in-flight reverse mutation through receipt publication", StopDrainsInFlightReverseMutationAsync);
@@ -151,7 +152,8 @@ internal static class Program
         Check(result.Status == UsbRecoveryExecutionStatus.TerminalFailure, "unowned existing route is terminal");
         Check(result.RouteStatus == AdbReversePortStatus.Existing, "unowned route status is preserved");
         Check(!result.ClientLaunchIssued && context.Runner.LaunchCount == 0, "unowned route never launches");
-        Check(context.Runner.ReverseCreateCount == 0 && callbacks == 0, "unowned route is never mutated or claimed");
+        Check(context.Runner.ReverseCreateCount == 0 && callbacks == 1,
+            "unowned route is never mutated or claimed and any prepared intent is terminally revoked");
     }
 
     static async Task ConflictAndMalformedMappingsFailClosedAsync()
@@ -196,6 +198,25 @@ internal static class Program
             Check(callbacks == 0 && context.Runner.TargetCalls.Count == 0,
                 "absent/offline device has no targeted command or ownership callback");
         }
+    }
+
+    static async Task SensitiveAdbFailuresAreRedactedAsync()
+    {
+        const string marker = "SENSITIVE-RECOVERY-MARKER serial=TABLINK_RECOVERY_TEST_001 path=C:\\Users\\Private\\adb.exe";
+        var context = CreateContext(mapping: "", reverseListExitCode: 91, reverseListError: marker);
+        var runner = new UsbSessionRecoveryAttemptRunner(context.Client, context.Approved, Endpoint, OriginalToken,
+            () => true, () => false, () => true, () => { }, () => { }, NoDelay);
+        var result = await runner.RunAsync(TimeSpan.FromSeconds(10), () => true, CancellationToken.None);
+
+        Check(result.Status == UsbRecoveryExecutionStatus.RetryableFailure,
+            "nonzero ADB inspection remains a retryable recovery failure");
+        Check(result.Detail.Contains(nameof(AdbCommandException), StringComparison.Ordinal) &&
+              result.Detail.Contains("91", StringComparison.Ordinal),
+            "recovery detail preserves only the ADB error type and exit code");
+        Check(!result.Detail.Contains(marker, StringComparison.Ordinal) &&
+              !result.Detail.Contains(OriginalSerial, StringComparison.Ordinal) &&
+              !result.Detail.Contains("C:\\Users\\Private", StringComparison.OrdinalIgnoreCase),
+            "recovery detail excludes raw stderr, serial and ADB path markers before MainForm can log it");
     }
 
     static async Task IdentityAndExclusionChangesFailClosedAsync()
@@ -368,7 +389,8 @@ internal static class Program
         return Task.CompletedTask;
     }
 
-    static TestContext CreateContext(string mapping, string deviceState = "device", string? deviceListing = null)
+    static TestContext CreateContext(string mapping, string deviceState = "device", string? deviceListing = null,
+        int reverseListExitCode = 0, string? reverseListError = null)
     {
         var settings = new DevicePolicySettings { ExcludedDevices = [] };
         var policy = new DevicePolicy(settings);
@@ -377,6 +399,8 @@ internal static class Program
         var fake = new OfflineAdbRunner(OriginalSerial)
         {
             ReverseListOutput = mapping,
+            ReverseListExitCode = reverseListExitCode,
+            ReverseListError = reverseListError ?? "",
             DeviceState = deviceState,
             DevicesStandardOutput = deviceListing
         };
@@ -435,6 +459,8 @@ internal static class Program
         int launchCount;
 
         public string ReverseListOutput { get; init; } = "";
+        public int ReverseListExitCode { get; init; }
+        public string ReverseListError { get; init; } = "";
         public string DeviceState { get; init; } = "device";
         public string? DevicesStandardOutput { get; init; }
         public bool BlockInspection { get; set; }
@@ -469,7 +495,7 @@ internal static class Program
                 InspectionEntered.TrySetResult(true);
                 if (BlockInspection)
                     await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-                return new AdbCommandResult(0, ReverseListOutput, "");
+                return new AdbCommandResult(ReverseListExitCode, ReverseListOutput, ReverseListError);
             }
             if (call.SequenceEqual(Target("reverse", "--no-rebind", "tcp:54321", "tcp:27183")))
             {

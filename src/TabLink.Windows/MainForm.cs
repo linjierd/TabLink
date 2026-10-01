@@ -15,14 +15,19 @@ internal sealed partial class MainForm : Form
     DesktopCapture? capture;
     FrameServer? server;
     readonly string? requestedSerial;
+    readonly bool verificationMode;
     DateTime sessionStartedUtc;
     readonly SessionPresentationDeadline presentationDeadline=new();
     readonly UsbSessionRecoveryGate usbSessionRecovery=new();
     readonly UsbSessionSetupBarrier usbSessionSetup=new();
     CancellationTokenSource? usbRecoveryCancellation;
     Task<UsbRecoveryExecution>? usbRecoveryTask;
+    Task<UsbReverseCleanupPass>? pendingUsbCleanupTask;
+    DateTime nextPendingUsbCleanupUtc=DateTime.MinValue;
     AdbReverseEndpoint? reverseEndpoint;
     UsbReverseLease? reverseReceipt;
+    UsbReverseQueueState? reverseReceiptState;
+    bool reverseAttached;
     SecondScreenWelcome? welcome;
     SessionGuard? displayGuard;
     DisplaySessionReservation? primaryReservation;
@@ -82,6 +87,7 @@ internal sealed partial class MainForm : Form
     public MainForm(string? requestedSerial=null,EventWaitHandle? activationRequest=null,string? requestedNetwork=null,bool diagnosticPairing=false,EventWaitHandle? exitRequest=null,bool verification=false)
     {
         this.requestedSerial=requestedSerial;
+        verificationMode=verification;
         this.diagnosticPairing=diagnosticPairing;
         Text="TabLink · 平板副屏"; AutoScaleMode=AutoScaleMode.Dpi; Size=new Size(960,680); MinimumSize=new Size(760,640);
         StartPosition=FormStartPosition.CenterScreen; Font=new Font("Microsoft YaHei UI",10); BackColor=Color.FromArgb(244,247,251); ForeColor=ink;
@@ -105,7 +111,7 @@ internal sealed partial class MainForm : Form
         activationTimer.Start();
         if(!verification)
         {
-            try {settings=store.Load();if(!File.Exists(store.Path))store.Save(settings);} catch(Exception ex) when(ex is SettingsLoadException or IOException or UnauthorizedAccessException) {settingsValid=false; Log("配置读取失败，连接已禁用。请保留配置文件并修复："+store.Path);Log(ex.InnerException?.Message??ex.Message);}
+            try {settings=store.Load();if(!File.Exists(store.Path))store.Save(settings);} catch(Exception ex) when(ex is SettingsLoadException or IOException or UnauthorizedAccessException) {settingsValid=false; Log("配置读取失败，连接已禁用。请保留配置文件并修复："+store.Path);Log(SafeError(ex.InnerException??ex));}
             policy=new DevicePolicy(settings);LoadRules();LocateAdb();
         }
         else
@@ -124,6 +130,11 @@ internal sealed partial class MainForm : Form
         {
             if(verification)return;
             BeginAutomaticUpdateChecks();
+            try
+            {
+                await RetryPendingUsbCleanupAsync("application-start",force:true);
+            }
+            catch(Exception ex){Log("USB 待清理队列需要处理："+SafeError(ex));}
             await GuardAsync(RefreshNetworksAsync);monitor.Start();
             if(requestedNetwork is not null)
             {
@@ -189,9 +200,9 @@ internal sealed partial class MainForm : Form
             }
         }
         closing=true;monitor.Stop();activationTimer.Stop();lifetime.Cancel();UpdateButtons();
-        if(networkStartTask is {} opening)try{await opening;}catch(Exception ex){Log("网络启动已结束："+ex.Message);}
-        if(additionalStartTask is {} extraOpening)try{await extraOpening;}catch(Exception ex){Log("设备启动已结束："+ex.Message);}
-        if(browserStartTask is {} browserOpening)try{await browserOpening;}catch(Exception ex){Log("浏览器启动已结束："+ex.Message);}
+        if(networkStartTask is {} opening)try{await opening;}catch(Exception ex){Log("网络启动已结束："+SafeError(ex));}
+        if(additionalStartTask is {} extraOpening)try{await extraOpening;}catch(Exception ex){Log("设备启动已结束："+SafeError(ex));}
+        if(browserStartTask is {} browserOpening)try{await browserOpening;}catch(Exception ex){Log("浏览器启动已结束："+SafeError(ex));}
         try{await StopAllAsync();if(!requireReadyUpdater&&updateCoordinator is not null)await updateCoordinator.TryLaunchReadyUpdaterAsync();}
         finally{tray.Visible=false;Close();}
     }
@@ -283,7 +294,7 @@ internal sealed partial class MainForm : Form
     {
         try{Process.Start(new ProcessStartInfo(address){UseShellExecute=true});}
         catch(Exception ex) when(ex is InvalidOperationException or System.ComponentModel.Win32Exception or System.Security.SecurityException)
-        {Log("无法打开链接："+ex.Message);SetStatus("无法打开链接，请手动访问 "+address);}
+        {Log("无法打开链接："+SafeError(ex));SetStatus("无法打开链接，请手动访问 "+address);}
     }
     void ShowConnectionMode()
     {
@@ -351,7 +362,7 @@ internal sealed partial class MainForm : Form
     {
         try{qualityPreferences.Save(new(selectedQuality,selectedEncoder,allowSoftwareFallback));}
         catch(Exception ex) when(ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
-        {Log("视频偏好暂时无法保存："+ex.Message);}
+        {Log("视频偏好暂时无法保存："+SafeError(ex));}
     }
 
     VideoEncoderSelectionOptions CurrentEncoderOptions()=>new(selectedEncoder,allowSoftwareFallback,null);
@@ -440,15 +451,25 @@ internal sealed partial class MainForm : Form
     void SetStatus(string message){if(IsDisposed)return;if(InvokeRequired){BeginInvoke(()=>SetStatus(message));return;}status.Text=message;Log(message);}
     void LocateAdb()
     {
-        var path=AdbLocator.FindAdbPath(settings.AdbPath);
-        adb=path is null?null:new AdbClient(path,policy,UsbInventory.ReadAsync);
-        adbPath.Text=path is null?"未找到 adb.exe。请选择已安装的 Android SDK platform-tools 中的 adb.exe。":path;
+        try
+        {
+            var protectedPath=TrustedBundledAdb.LocateStageAndGetVerifiedPath(settings.AdbPath);
+            adb=protectedPath is null?null:new AdbClient(protectedPath,policy,UsbInventory.ReadAsync);
+            adbPath.Text=protectedPath is null
+                ?"未找到与固定 SHA-256 匹配的 Android Platform-Tools。Wi-Fi 模式仍可使用；USB 调试兼容模式可选择官方 r37 adb.exe。"
+                :"ADB 三件套已通过固定 SHA-256 校验，并从受保护的 ProgramData 副本运行。";
+        }
+        catch(Exception ex) when(TrustedBundledAdb.IsTrustStorageFailure(ex))
+        {
+            adb=null;
+            adbPath.Text="找到的 ADB 未能通过固定 SHA-256 校验或无法复制到受保护目录；未执行该文件。Wi-Fi 模式仍可使用。";
+        }
     }
     void BrowseAdb()
     {
         using var dialog=new OpenFileDialog{Filter="Android Debug Bridge|adb.exe",Title="选择 Android 官方平台工具 adb.exe"};
         if(dialog.ShowDialog(this)!=DialogResult.OK)return;
-        try{settings.AdbPath=dialog.FileName;store.Save(settings);LocateAdb();Log("已更新 Android 平台工具位置。");UpdateButtons();}catch(Exception ex){ShowError(ex);}
+        try{_=TrustedBundledAdb.StageAndGetVerifiedPath(dialog.FileName);settings.AdbPath=dialog.FileName;store.Save(settings);LocateAdb();Log("Android 平台工具已通过固定校验并复制到受保护目录。");UpdateButtons();}catch(Exception ex){ShowError(ex,adbOperation:true);}
     }
     async Task RefreshAsync()
     {
@@ -488,10 +509,11 @@ internal sealed partial class MainForm : Form
         if(usbSessionSetup.InFlight||usbRecoveryTask is {IsCompleted:false}||usbRecoveryCancellation is not null)
             throw new InvalidOperationException("上一条 USB 恢复任务尚未完全结束。");
         await EnsureOwnedDisplayCleanupBeforeNewConnectionAsync();
-        BeginConnectionHealth(ConnectionHealthPath.AdbCompatibility,$"手动选择设备 {device.Device.Serial}");
+        BeginConnectionHealth(ConnectionHealthPath.AdbCompatibility,"手动选择了一台已列出的 USB 设备");
         // Establish tablet authorization before bringing back a previously
         // detached virtual screen. A missing tablet must not leave a phantom.
         approved=await adb.ApproveAsync(device.Device,lifetime.Token);
+        await RetryPendingUsbCleanupAsync("before-usb-connect",force:true);
         var encoderGeneration=BeginEncoderSelectionConnection();
         primaryEncoderGeneration=encoderGeneration;
         try
@@ -499,6 +521,8 @@ internal sealed partial class MainForm : Form
             usbRecoveryCancellation=CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
             reverseEndpoint=null;
             reverseReceipt=null;
+            reverseReceiptState=null;
+            reverseAttached=false;
             MarkHealthRouteReady("USB 身份与 ADB 授权已核验，准备本机反向通道");
             MarkHealthAuthenticationStarted("正在从明确选中的客户端读取屏幕参数");
             SetStatus("正在从 APK 读取平板屏幕参数…");
@@ -534,15 +558,39 @@ internal sealed partial class MainForm : Form
             var setupGuard=displayGuard??throw new IOException("副屏保护组件未启动");
             await usbSessionSetup.RunAsync(async ct=>
             {
-                var endpoint=await setupAdb.ReserveRandomReverseEndpointAsync(setupTarget,ct);
-                // Publish direct cleanup authority immediately after definite
-                // --no-rebind success. Stop drains this entire operation before
-                // reading these fields, including when cancellation raced the
-                // successful command response.
-                reverseEndpoint=endpoint;reverseCreated=true;
-                var receipt=UsbReverseLease.Created(setupTarget,endpoint);
-                setupGuard.AttachReverse(receipt);
-                reverseReceipt=receipt;
+                var endpoint=await UsbReverseCleanupCoordinator.Shared.RunMutationAsync(async(reserved,mutationCt)=>
+                {
+                    var selected=await setupAdb.SelectRandomUnusedReverseEndpointAsync(setupTarget,reserved,mutationCt);
+                    var receipt=UsbReverseLease.Created(setupTarget,selected);
+                    UsbReverseCleanupCoordinator.Shared.PrepareActiveMutation(receipt);
+                    reverseEndpoint=selected;
+                    reverseReceipt=receipt;
+                    reverseReceiptState=UsbReverseQueueState.Prepared;
+                    try
+                    {
+                        await setupAdb.ReversePortAsync(setupTarget,selected,mutationCt);
+                    }
+                    catch(AdbCommandException)
+                    {
+                        UsbReverseCleanupCoordinator.Shared.CompleteActiveMutation(receipt);
+                        reverseEndpoint=null;reverseReceipt=null;reverseReceiptState=null;
+                        throw;
+                    }
+                    catch(OperationCanceledException) when(mutationCt.IsCancellationRequested)
+                    {
+                        UsbReverseCleanupCoordinator.Shared.CompleteActiveMutation(receipt);
+                        reverseEndpoint=null;reverseReceipt=null;reverseReceiptState=null;
+                        throw;
+                    }
+                    // Only definite --no-rebind success upgrades the prepared
+                    // record into authority to remove this exact mapping.
+                    UsbReverseCleanupCoordinator.Shared.ActivateActiveMutation(receipt);
+                    reverseReceiptState=UsbReverseQueueState.Owned;
+                    reverseCreated=true;
+                    setupGuard.AttachReverse(receipt);
+                    reverseAttached=true;
+                    return selected;
+                },ct);
                 // Stop may have arrived while the bounded --no-rebind command
                 // was in flight. Ownership is now published, so skip a late
                 // Android launch and let Stop perform the exact cleanup.
@@ -552,7 +600,7 @@ internal sealed partial class MainForm : Form
             },setupCancellation.Token);
             UpdateButtons();
         }
-        catch(Exception ex){MarkConnectionHealthAttention(ex.Message);await StopAsync();throw;}
+        catch(Exception ex){MarkConnectionHealthAttention(SafeError(ex));await StopAsync();throw;}
     }
 
     async Task<VirtualDisplayInfo> PrepareDisplayAsync(TabletDisplayProfile profile,CancellationToken cancellationToken=default)
@@ -637,7 +685,7 @@ internal sealed partial class MainForm : Form
     }
 
     static string OwnedDisplayCleanupFailureDetail(Exception ex) =>
-        "收回并卸载本次拥有的虚拟副屏失败："+ex;
+        "收回并卸载本次拥有的虚拟副屏失败："+SafeError(ex);
 
     async Task AdaptDisplayAsync(FrameServer source,TabletDisplayProfile profile)
     {
@@ -671,12 +719,12 @@ internal sealed partial class MainForm : Form
         recoveryCancellation?.Cancel();
         try{await usbSessionSetup.DrainAsync();}
         catch(OperationCanceledException){Log("USB 初始连接已随停止操作结束。");}
-        catch(Exception ex){Log("USB 初始连接在停止前结束："+ex.Message);}
+        catch(Exception ex){Log("USB 初始连接在停止前结束："+SafeError(ex));}
         var recovery=usbRecoveryTask;
         if(recovery is {IsCompleted:false})
         {
             try{await recovery;}
-            catch(Exception ex){Log("USB 自动恢复已随停止操作结束："+ex.Message);}
+            catch(Exception ex){Log("USB 自动恢复已随停止操作结束："+SafeError(ex));}
         }
         if(ReferenceEquals(usbRecoveryTask,recovery))usbRecoveryTask=null;
         recoveryCancellation?.Dispose();
@@ -686,11 +734,11 @@ internal sealed partial class MainForm : Form
         if(networkPreparation is {IsCompleted:false} preparing)
         {
             server?.RequestReconnect();
-            try{await preparing;}catch(Exception ex){Log("网络屏幕准备已结束："+ex.Message);}
+            try{await preparing;}catch(Exception ex){Log("网络屏幕准备已结束："+SafeError(ex));}
         }
-        var running=server;var ownedCapture=capture;var ownedApproval=approved;var ownedAdb=adb;var ownedReverse=reverseCreated;var ownedEndpoint=reverseEndpoint;var ownedReceipt=reverseReceipt;var ownedGuard=displayGuard;var ownedReservation=primaryReservation;var ownedPower=activePower;var ownedFirewall=networkFirewall;
+        var running=server;var ownedCapture=capture;var ownedApproval=approved;var ownedAdb=adb;var ownedReverse=reverseCreated;var ownedEndpoint=reverseEndpoint;var ownedReceipt=reverseReceipt;var ownedReceiptState=reverseReceiptState;var ownedReverseAttached=reverseAttached;var ownedGuard=displayGuard;var ownedReservation=primaryReservation;var ownedPower=activePower;var ownedFirewall=networkFirewall;
         var displayCollected=true;
-        server=null;capture=null;approved=null;reverseCreated=false;reverseEndpoint=null;reverseReceipt=null;
+        server=null;capture=null;approved=null;reverseCreated=false;reverseEndpoint=null;reverseReceipt=null;reverseReceiptState=null;reverseAttached=false;
         displayGuard=null;
         primaryReservation=null;primaryTargetKey=null;
         activePower=null;
@@ -707,31 +755,73 @@ internal sealed partial class MainForm : Form
         try
         {
             try{if(running is not null)await running.DisposeAsync();}
-            catch(Exception ex){Log("画面服务结束时报告："+ex.Message);}
+            catch(Exception ex){Log("画面服务结束时报告："+SafeError(ex));}
             finally
             {
                 try { ownedCapture?.Dispose(); }
-                catch(Exception ex){Log("画面输入结束时报告："+ex.Message);}
+                catch(Exception ex){Log("画面输入结束时报告："+SafeError(ex));}
             }
-            if(ownedReverse&&ownedApproval is not null&&ownedAdb is not null&&ownedEndpoint is { } endpoint&&endpoint.IsValid)
+            var reverseCleanupComplete=false;
+            if(ownedReceipt is not null&&ownedReceiptState==UsbReverseQueueState.Prepared)
             {
                 try
                 {
-                    using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                    var mapping=await ownedAdb.InspectReversePortAsync(ownedApproval,endpoint,timeout.Token);
-                    if(mapping.Status==AdbReversePortStatus.Existing)
-                        await ownedAdb.RemoveReverseAsync(ownedApproval,endpoint,timeout.Token);
-                    else Log(mapping.Status==AdbReversePortStatus.Missing
-                        ?"本次 USB 转发已经不存在，无需清理。"
-                        :"本会话 USB 端点已不再是本次精确映射，保留它不作修改。");
+                    await UsbReverseCleanupCoordinator.Shared.RunMutationAsync((_,_)=>
+                    {
+                        UsbReverseCleanupCoordinator.Shared.CompleteActiveMutation(ownedReceipt);
+                        return Task.CompletedTask;
+                    });
+                    reverseCleanupComplete=true;
                 }
-                catch(Exception ex){Log("画面服务已关闭；设备离线或策略已变化，未能清理 USB 转发。"+ex.Message);}
+                catch(Exception ex){Log("未获得删除权限的 USB 绑定准备记录暂未封存："+SafeError(ex));}
+            }
+            else if(ownedReverse&&ownedReceiptState==UsbReverseQueueState.Owned&&ownedReceipt is not null&&ownedApproval is not null&&ownedAdb is not null&&ownedEndpoint is { } endpoint&&endpoint.IsValid)
+            {
+                try
+                {
+                    using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(8));
+                    reverseCleanupComplete=await UsbReverseCleanupCoordinator.Shared.RunMutationAsync(async(_,mutationCt)=>
+                    {
+                        var mapping=await ownedAdb.InspectReversePortAsync(ownedApproval,endpoint,mutationCt);
+                        if(mapping.Status==AdbReversePortStatus.Existing)
+                        {
+                            await ownedAdb.RemoveReverseAsync(ownedApproval,endpoint,mutationCt);
+                        }
+                        if(mapping.Status==AdbReversePortStatus.Missing)
+                        {
+                            Log("本次 USB 转发已经不存在，无需清理。");
+                        }
+                        else if(mapping.Status==AdbReversePortStatus.Conflicting)
+                            Log("本会话 USB 端点已经改指向其他映射；旧删除权限已永久封存，未修改当前映射。");
+                        else if(mapping.Status!=AdbReversePortStatus.Existing)
+                            return false;
+                        UsbReverseCleanupCoordinator.Shared.CompleteActiveMutation(ownedReceipt);
+                        return true;
+                    },timeout.Token);
+                }
+                catch(Exception ex){Log("画面服务已关闭；设备离线或策略已变化，未能清理 USB 转发。"+SafeError(ex));}
             }
             else if(ownedReverse)Log("本次 USB 转发缺少有效的会话端点记录，已保留现有映射。");
-            if(ownedReceipt is not null&&ownedGuard is not null)
+            if(ownedReceipt is not null)
             {
-                try{ownedGuard.ReplaceReverse(ownedReceipt,null);}
-                catch(Exception ex){Log("停止连接时无法持久注销旧 USB 所有权记录；后续清理仍会严格核验映射："+ex.Message);}
+                if(reverseCleanupComplete)
+                {
+                    if(ownedReverseAttached&&ownedGuard is not null)
+                    {
+                        try{ownedGuard.ReplaceReverse(ownedReceipt,null);}
+                        catch(Exception ex){Log("停止连接时无法清除显示引导记录中的旧 USB 收据；受保护删除权限已经封存："+SafeError(ex));}
+                    }
+                }
+                else if(ownedReceiptState==UsbReverseQueueState.Owned)
+                {
+                    try
+                    {
+                        if(ownedReverseAttached&&ownedGuard is not null)ownedGuard.RetainReverseForCleanup(ownedReceipt);
+                        UsbReverseCleanupCoordinator.Shared.MarkRetiredByThisProcess(ownedReceipt);
+                        nextPendingUsbCleanupUtc=DateTime.UtcNow.AddSeconds(10);
+                    }
+                    catch(Exception ex){Log("无法注销本进程的受保护 USB 删除权限；记录保持待核验状态："+SafeError(ex));}
+                }
             }
             try{if(ownedReservation is not null)await ownedReservation.DisposeAsync();else ownedGuard?.Dispose();}
             catch(Exception ex)
@@ -745,7 +835,7 @@ internal sealed partial class MainForm : Form
         }
         finally
         {
-            if(ownedFirewall is not null)try{await ownedFirewall.DisposeAsync();}catch(Exception ex){Log("清理本次防火墙规则失败："+ex.Message);}
+            if(ownedFirewall is not null)try{await ownedFirewall.DisposeAsync();}catch(Exception ex){Log("清理本次防火墙规则失败："+SafeError(ex));}
             ownedPower?.Dispose();
             stopping=false;
             Diagnostics.Save("session-health.json",()=>new{timestamp=DateTimeOffset.Now,pid=Environment.ProcessId,receiving=false,stopped=true,displays=VirtualDisplayManager.GetDisplays()},Log);
@@ -762,6 +852,7 @@ internal sealed partial class MainForm : Form
     async Task MonitorAsync()
     {
         await MonitorAdditionalAsync();
+        if(server is null&&!HasAdditionalSessions)await RetryPendingUsbCleanupAsync("background-retry");
         if(server is {} healthServer)RefreshPrimaryConnectionHealth(healthServer);
         if(monitoring||stopping||preparingNetwork||server is null)return;monitoring=true;
         var observedApproval=approved;var observedServer=server;
@@ -834,7 +925,9 @@ internal sealed partial class MainForm : Form
                             SetStatus($"USB 通道中断，正在自动恢复（{recovery.Number}/{UsbSessionRecoveryGate.MaximumAttempts}）…");
                             Log($"USB 自动恢复第 {recovery.Number} 次：重新唤起内置 ADB、核验同一设备并检查反向通道。");
                             var runner=CreateUsbRecoveryRunner(observedServer,observedApproval,observedAdb,recoveryCancellation);
-                            var task=runner.RunAsync(budget,()=>usbSessionRecovery.TryReserveLaunch(recovery),recoveryCancellation.Token);
+                            var task=UsbReverseCleanupCoordinator.Shared.RunMutationAsync((_,_)=>
+                                runner.RunAsync(budget,()=>usbSessionRecovery.TryReserveLaunch(recovery),recoveryCancellation.Token),
+                                recoveryCancellation.Token);
                             usbRecoveryTask=task;
                             UsbRecoveryExecution result;
                             try{result=await task;}
@@ -909,11 +1002,34 @@ internal sealed partial class MainForm : Form
                 var qualityText=qualitySnapshot is null?"":$" · {VideoQualitySessionName(qualitySnapshot.Preset)} · 目标 {qualitySnapshot.Plan.BitrateKbps/1000d:F1} Mbps";
                 var encoderText=encoderRuntime is null?"":$" · 编码 {encoderRuntime.Backend} / {encoderRuntime.EffectiveFps} fps";
                 metrics.Text=$"{progressText} · {tabletProfile?.Width} × {tabletProfile?.Height} · 屏幕 {server.ClientDisplayProfile?.RefreshRate??tabletProfile?.RefreshRate:F0} / 目标 {tabletProfile?.RequestedRefreshRate} Hz · 提交 {server.ClientSubmittedFps:F1} / 呈现 {server.ClientPresentedFps:F1} 帧/秒{qualityText}{encoderText}";
-                Diagnostics.Save("session-health.json",()=>new{timestamp=DateTimeOffset.Now,pid=Environment.ProcessId,serial=approved?.Serial,transport=networkChoice is null?"ADB":"TLS",networkInterface=networkChoice?.InterfaceAlias,receiving,capturePaused,inputDesktop,resumeDeadlineUtc,windowVisible=Visible,measuredPresentedFps=measuredFps,server.ClientSubmittedFps,server.ClientPresentedFps,server.ClientDecoder,targetProfile=tabletProfile,clientProfile=server.ClientDisplayProfile,server.FramesSent,server.PresentedFrames,server.PresentedWidth,server.PresentedHeight,server.LastPresentedUtc,server.SubmittedFrames,server.LastSubmittedUtc,server.HasRecentSubmission,server.HasRecentPresentation,server.HasRecentReceiverFeedback,receiverFeedback=feedback,videoQuality=qualitySnapshot,videoEncoder=encoderRuntime,sendPerformance,displays=VirtualDisplayManager.GetDisplays()},Log);
+                Diagnostics.Save("session-health.json",()=>new{timestamp=DateTimeOffset.Now,pid=Environment.ProcessId,transport=networkChoice is null?"ADB":"TLS",networkInterface=networkChoice?.InterfaceAlias,receiving,capturePaused,inputDesktop,resumeDeadlineUtc,windowVisible=Visible,measuredPresentedFps=measuredFps,server.ClientSubmittedFps,server.ClientPresentedFps,server.ClientDecoder,targetProfile=tabletProfile,clientProfile=server.ClientDisplayProfile,server.FramesSent,server.PresentedFrames,server.PresentedWidth,server.PresentedHeight,server.LastPresentedUtc,server.SubmittedFrames,server.LastSubmittedUtc,server.HasRecentSubmission,server.HasRecentPresentation,server.HasRecentReceiverFeedback,receiverFeedback=feedback,videoQuality=qualitySnapshot,videoEncoder=encoderRuntime,sendPerformance,displays=VirtualDisplayManager.GetDisplays()},Log);
                 RefreshPrimaryConnectionHealth(server);
             }
         }
-        catch(OperationCanceledException){}catch(Exception ex){if(ReferenceEquals(server,observedServer)&&ReferenceEquals(approved,observedApproval)){Log("连接监测失败："+ex.Message);await StopAsync();}}finally{monitoring=false;}
+        catch(OperationCanceledException){}catch(Exception ex){if(ReferenceEquals(server,observedServer)&&ReferenceEquals(approved,observedApproval)){Log("连接监测失败："+SafeError(ex));await StopAsync();}}finally{monitoring=false;}
+    }
+
+    async Task RetryPendingUsbCleanupAsync(string reason,bool force=false)
+    {
+        if(verificationMode||closing)return;
+        var now=DateTime.UtcNow;
+        if(!force&&now<nextPendingUsbCleanupUtc)return;
+        if(pendingUsbCleanupTask is {IsCompleted:false})return;
+        try
+        {
+            pendingUsbCleanupTask=UsbReverseCleanupCoordinator.Shared.ProcessPendingAsync(reason,lifetime.Token);
+            var result=await pendingUsbCleanupTask;
+            nextPendingUsbCleanupUtc=DateTime.UtcNow.Add(result.Deferred>0?TimeSpan.FromSeconds(30):TimeSpan.FromMinutes(5));
+            if(result.Completed>0)Log($"已安全完成 {result.Completed} 条历史 USB 通道清理。");
+        }
+        catch(OperationCanceledException) when(lifetime.IsCancellationRequested){}
+        catch(Exception ex)
+        {
+            nextPendingUsbCleanupUtc=DateTime.UtcNow.AddMinutes(1);
+            Log("USB 待清理队列重试已延期："+SafeError(ex));
+            if(force)throw;
+        }
+        finally{if(pendingUsbCleanupTask?.IsCompleted==true)pendingUsbCleanupTask=null;}
     }
 
     UsbSessionRecoveryAttemptRunner CreateUsbRecoveryRunner(FrameServer source,ApprovedUsbDevice target,
@@ -924,19 +1040,18 @@ internal sealed partial class MainForm : Form
         if(!endpoint.IsValid)throw new IOException("副屏会话的 USB 端点无效，不能恢复 USB 通道。");
         bool OwnsSession()=>ReferenceEquals(server,source)&&ReferenceEquals(approved,target)&&ReferenceEquals(displayGuard,guard)&&reverseEndpoint==endpoint;
         bool IsCurrent()=>OwnsSession()&&ReferenceEquals(usbRecoveryCancellation,recoveryCancellation)&&!closing;
-        bool HasOwnedMapping()=>OwnsSession()&&reverseCreated&&reverseReceipt is {Endpoint:var receiptEndpoint}&&receiptEndpoint==endpoint;
+        bool HasOwnedMapping()=>OwnsSession()&&reverseCreated&&reverseReceiptState==UsbReverseQueueState.Owned&&
+            reverseReceipt is {Endpoint:var receiptEndpoint}&&receiptEndpoint==endpoint;
         void RetireOwnedMapping()
         {
             if(!OwnsSession())throw new InvalidOperationException("USB 恢复不再属于当前副屏会话。");
             if(reverseReceipt is {} receipt)
             {
-                // Revoke in-process removal authority before touching storage.
-                // If persistence fails, Stop must still leave a conflicting or
-                // unknown mapping untouched; a later attempt may retry using
-                // the retained expected receipt.
-                reverseCreated=false;
-                guard.ReplaceReverse(receipt,null);
+                UsbReverseCleanupCoordinator.Shared.CompleteActiveMutation(receipt);
+                if(reverseAttached)guard.ReplaceReverse(receipt,null);
+                reverseCreated=false;reverseAttached=false;
                 reverseReceipt=null;
+                reverseReceiptState=null;
             }
             else if(reverseCreated)
             {
@@ -944,19 +1059,38 @@ internal sealed partial class MainForm : Form
                 throw new IOException("USB 映射存在，但本会话缺少可验证的所有权记录。");
             }
         }
+        void PrepareCreatedMapping()
+        {
+            if(!OwnsSession())throw new InvalidOperationException("USB 准备记录不再属于当前副屏会话。");
+            if(reverseReceipt is not null||reverseReceiptState is not null||reverseCreated)
+                throw new IOException("旧 USB 所有权记录尚未注销。");
+            var receipt=UsbReverseLease.Created(target,endpoint);
+            UsbReverseCleanupCoordinator.Shared.PrepareActiveMutation(receipt);
+            reverseReceipt=receipt;
+            reverseReceiptState=UsbReverseQueueState.Prepared;
+            reverseAttached=false;
+        }
         void PublishCreatedMapping()
         {
             if(!OwnsSession())throw new InvalidOperationException("新 USB 映射不再属于当前副屏会话。");
-            // Mark first so Stop, which cancels and drains this task before its
-            // final remove, cannot miss a mapping if receipt persistence fails.
+            if(reverseReceipt is not {} receipt||reverseReceiptState!=UsbReverseQueueState.Prepared)
+                throw new IOException("USB 映射创建成功，但缺少对应的准备记录。");
+            UsbReverseCleanupCoordinator.Shared.ActivateActiveMutation(receipt);
+            reverseReceiptState=UsbReverseQueueState.Owned;
             reverseCreated=true;
-            if(reverseReceipt is not null)throw new IOException("旧 USB 所有权记录尚未注销。");
-            var receipt=UsbReverseLease.Created(target,endpoint);
             guard.ReplaceReverse(null,receipt);
-            reverseReceipt=receipt;
+            reverseAttached=true;
+        }
+        void AbandonPreparedMapping()
+        {
+            if(!OwnsSession())throw new InvalidOperationException("USB 准备记录不再属于当前副屏会话。");
+            if(reverseReceipt is not {} receipt||reverseReceiptState!=UsbReverseQueueState.Prepared)
+                return;
+            UsbReverseCleanupCoordinator.Shared.CompleteActiveMutation(receipt);
+            reverseReceipt=null;reverseReceiptState=null;reverseCreated=false;reverseAttached=false;
         }
         return new(client,target,endpoint,source.Token,IsCurrent,()=>source.ClientConnected,HasOwnedMapping,
-            RetireOwnedMapping,PublishCreatedMapping);
+            RetireOwnedMapping,PrepareCreatedMapping,PublishCreatedMapping,AbandonPreparedMapping);
     }
     void LoadRules(){rules.Items.Clear();foreach(var rule in settings.ExcludedDevices)rules.Items.Add(new RuleChoice(rule));}
     async Task AddRuleAsync()
@@ -994,18 +1128,20 @@ internal sealed partial class MainForm : Form
         LoadRules();
         if(server is null)await RefreshNetworksAsync();
     }
-    async Task GuardAsync(Func<Task> action)
+    async Task GuardAsync(Func<Task> action,bool adbOperation=false)
     {
         if(busy||stopping)return;busy=true;UpdateButtons();
-        try{await action();}catch(OperationCanceledException)when(lifetime.IsCancellationRequested){}catch(Exception ex){ShowError(ex);}finally{busy=false;if(!IsDisposed)UpdateButtons();}
+        try{await action();}catch(OperationCanceledException)when(lifetime.IsCancellationRequested){}catch(Exception ex){ShowError(ex,adbOperation);}finally{busy=false;if(!IsDisposed)UpdateButtons();}
     }
-    void ShowError(Exception ex)
+    static string SafeError(Exception ex,bool adbOperation=false)=>SafeErrorSummary.ForUser(ex,adbOperation);
+    void ShowError(Exception ex,bool adbOperation=false)
     {
-        if(HasPendingOwnedDisplayCleanup)MarkOwnedDisplayCleanupAttention(OwnedDisplayCleanupFailureDetail(ex));
-        else MarkConnectionHealthAttention(ex.Message);
-        Log(ex.Message);status.Text="需要处理连接条件";
-        if(Visible&&WindowState!=FormWindowState.Minimized)MessageBox.Show(this,ex.Message,"TabLink",MessageBoxButtons.OK,MessageBoxIcon.Information);
-        else tray.ShowBalloonTip(5000,"TabLink 需要处理连接条件",ex.Message,ToolTipIcon.Info);
+        var summary=SafeError(ex,adbOperation);
+        if(HasPendingOwnedDisplayCleanup)MarkOwnedDisplayCleanupAttention("收回并卸载本次拥有的虚拟副屏失败："+summary);
+        else MarkConnectionHealthAttention(summary);
+        Log(summary);status.Text="需要处理连接条件";
+        if(Visible&&WindowState!=FormWindowState.Minimized)MessageBox.Show(this,summary,"TabLink",MessageBoxButtons.OK,MessageBoxIcon.Information);
+        else tray.ShowBalloonTip(5000,"TabLink 需要处理连接条件",summary,ToolTipIcon.Info);
     }
     void UpdateButtons()
     {

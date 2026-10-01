@@ -1,6 +1,8 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 using TabLink.Core;
+using TabLink.DriverSetup;
 
 namespace TabLink.Windows;
 
@@ -35,7 +37,7 @@ internal sealed class SingleDisplayDriverLifecycle : ISingleDisplayDriverControl
                 [profile.Width.ToString(System.Globalization.CultureInfo.InvariantCulture),
                  profile.Height.ToString(System.Globalization.CultureInfo.InvariantCulture),
                  profile.RequestedRefreshRate.ToString(System.Globalization.CultureInfo.InvariantCulture)],
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken, lease).ConfigureAwait(false);
         }
         catch (Exception original)
         {
@@ -48,7 +50,7 @@ internal sealed class SingleDisplayDriverLifecycle : ISingleDisplayDriverControl
             Exception? cleanupError = null;
             if (HelperMayHaveStarted(original))
             {
-                try { await RunHelperAsync("--remove-session-display-held", [], CancellationToken.None).ConfigureAwait(false); }
+                try { await RunHelperAsync("--remove-session-display-held", [], CancellationToken.None, lease).ConfigureAwait(false); }
                 catch (Exception cleanup) { cleanupError = cleanup; }
             }
             Exception? releaseError = null;
@@ -70,17 +72,17 @@ internal sealed class SingleDisplayDriverLifecycle : ISingleDisplayDriverControl
         lock (gate) lease = activeLease;
         if (lease is null)
         {
-            await RunHelperAsync("--remove-session-display", [], cancellationToken).ConfigureAwait(false);
+            await RunHelperAsync("--remove-session-display", [], cancellationToken, null).ConfigureAwait(false);
             return;
         }
 
         Exception? removalError = null;
         try
         {
-            // Transfer is deliberately avoided: the helper knows the caller
-            // already owns the named lifecycle mutex, and removal completes
-            // before this process releases it to a waiting connector.
-            await RunHelperAsync("--remove-session-display-held", [], cancellationToken).ConfigureAwait(false);
+            // Transfer is deliberately avoided: the helper consumes a
+            // protected one-time record bound to this host while this process
+            // keeps the named lifecycle mutex until removal completes.
+            await RunHelperAsync("--remove-session-display-held", [], cancellationToken, lease).ConfigureAwait(false);
         }
         catch (Exception ex) { removalError = ex; }
         Exception? releaseError = null;
@@ -104,7 +106,8 @@ internal sealed class SingleDisplayDriverLifecycle : ISingleDisplayDriverControl
         throw new IOException("异常退出后未能卸载受保护回执对应的虚拟显示设备。", last);
     }
 
-    private static async Task RunHelperAsync(string command, IReadOnlyList<string> values, CancellationToken cancellationToken)
+    private static async Task RunHelperAsync(string command, IReadOnlyList<string> values,
+        CancellationToken cancellationToken, CrossProcessMutexLease? lifecycleLease)
     {
         // Cancellation is checked before mutation. Once the helper starts, it
         // must be observed to completion: abandoning an in-flight PnP install
@@ -113,6 +116,30 @@ internal sealed class SingleDisplayDriverLifecycle : ISingleDisplayDriverControl
         var helper = VirtualDisplayManager.InstallerPath;
         if (!File.Exists(helper))
             throw new FileNotFoundException("缺少虚拟副屏管理组件，请使用完整的 TabLink 安装目录。", helper);
+        var isHeldCommand = command is "--prepare-single-display-held" or "--remove-session-display-held";
+        DriverLifecycleHandoffTicket? handoff = null;
+        if (isHeldCommand)
+        {
+            if (lifecycleLease is null || !lifecycleLease.IsHeld)
+                throw new DriverHelperNotStartedException("Windows host 未持有唯一显示生命周期锁，未发布 held helper 移交记录。");
+            try
+            {
+                handoff = DriverLifecycleHandoffTicket.CreateProduction(command, values);
+                handoff.Publish();
+            }
+            catch (Exception publishError)
+            {
+                Exception? cleanupError = null;
+                try { handoff?.CleanupExact(); }
+                catch (Exception cleanup) { cleanupError = cleanup; }
+                throw new DriverHelperNotStartedException("无法发布受保护的一次性驱动 helper 移交记录。",
+                    cleanupError is null ? publishError : new AggregateException(publishError, cleanupError));
+            }
+        }
+        else if (lifecycleLease is not null)
+        {
+            throw new DriverHelperNotStartedException("非 held helper 不能借用 Windows host 的显示生命周期锁。");
+        }
         var start = new ProcessStartInfo(helper)
         {
             UseShellExecute = false,
@@ -121,34 +148,66 @@ internal sealed class SingleDisplayDriverLifecycle : ISingleDisplayDriverControl
         };
         start.ArgumentList.Add(command);
         foreach (var value in values) start.ArgumentList.Add(value);
+        handoff?.Credentials.AppendTo(start.ArgumentList);
         start.ArgumentList.Add("--quiet");
-        Process process;
-        try { process = Process.Start(start) ?? throw new IOException("无法启动虚拟副屏管理组件。"); }
-        catch (Win32Exception ex) when (ex.NativeErrorCode is 740 or 1223)
+        Exception? operationError = null;
+        try
         {
-            throw new IOException(ex.NativeErrorCode == 1223
-                ? "Windows 管理员授权已取消，未安装虚拟副屏。"
-                : "TabLink 需要以管理员身份运行，才能按需安装和卸载虚拟副屏。", ex);
-        }
-        using (process)
-        {
-            await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
-            if (process.ExitCode != 0)
+            Process process;
+            try { process = Process.Start(start) ?? throw new IOException("无法启动虚拟副屏管理组件。"); }
+            catch (Win32Exception ex) when (ex.NativeErrorCode is 740 or 1223)
             {
-                var resultName = command.StartsWith("--prepare-single-display", StringComparison.Ordinal)
-                    ? "single-display-prepare-result.json" : "single-display-remove-result.json";
-                throw new IOException("虚拟副屏操作未完成。详情：" + Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TabLink", resultName));
+                throw new DriverHelperNotStartedException(ex.NativeErrorCode == 1223
+                    ? "Windows 管理员授权已取消，未安装虚拟副屏。"
+                    : "TabLink 需要以管理员身份运行，才能按需安装和卸载虚拟副屏。", ex);
+            }
+            catch (Exception ex)
+            {
+                throw new DriverHelperNotStartedException("无法启动虚拟副屏管理组件。", ex);
+            }
+            using (process)
+            {
+                await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
+                if (process.ExitCode != 0)
+                {
+                    var resultName = command.StartsWith("--prepare-single-display", StringComparison.Ordinal)
+                        ? "single-display-prepare-result.json" : "single-display-remove-result.json";
+                    throw new IOException("虚拟副屏操作未完成。详情：" + Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TabLink", resultName));
+                }
             }
         }
+        catch (Exception ex) { operationError = ex; }
+
+        Exception? handoffCleanupError = null;
+        try { handoff?.CleanupExact(); }
+        catch (Exception ex) { handoffCleanupError = ex; }
+        if (operationError is DriverHelperNotStartedException && handoffCleanupError is not null)
+            throw new DriverHelperNotStartedException("驱动 helper 未启动，且未能清理其精确的一次性移交记录。",
+                new AggregateException(operationError, handoffCleanupError));
+        if (operationError is not null && handoffCleanupError is not null)
+            throw new AggregateException("驱动 helper 操作及其一次性移交记录清理均未完成。", operationError, handoffCleanupError);
+        if (operationError is not null)
+        {
+            ExceptionDispatchInfo.Capture(operationError).Throw();
+            throw new InvalidOperationException("unreachable");
+        }
+        if (handoffCleanupError is not null)
+            throw new IOException("驱动 helper 已完成，但未能清理其精确的一次性移交记录。", handoffCleanupError);
     }
 
     private static bool HelperMayHaveStarted(Exception error) => error switch
     {
         FileNotFoundException => false,
+        DriverHelperNotStartedException => false,
         IOException { InnerException: Win32Exception { NativeErrorCode: 740 or 1223 } } => false,
         _ => true
     };
+
+    private sealed class DriverHelperNotStartedException : IOException
+    {
+        internal DriverHelperNotStartedException(string message, Exception? inner = null) : base(message, inner) { }
+    }
 
     private void ReleaseActiveLease(CrossProcessMutexLease expected)
     {
@@ -187,6 +246,8 @@ internal sealed class SingleDisplayDriverLifecycle : ISingleDisplayDriverControl
                 throw new IOException("无法取得唯一虚拟显示设备生命周期锁。", error);
             }
         }
+
+        internal bool IsHeld => acquired.IsSet && error is null && Volatile.Read(ref disposed) == 0 && owner.IsAlive;
 
         void Own(string name)
         {

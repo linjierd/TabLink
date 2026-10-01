@@ -3,9 +3,9 @@
 [![CI](https://github.com/linjierd/TabLink/actions/workflows/ci.yml/badge.svg)](https://github.com/linjierd/TabLink/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/TabLink%20code-MIT-blue.svg)](LICENSE)
 
-Windows 电脑端当前候选版为 **0.8.6 Preview 1**。它继续全局只允许一个扩展副屏，并为 ADB USB 兼容通道加入同会话自动恢复、每会话随机设备端口、停止竞态保护和更可靠的崩溃清理；ADB 服务重启或本次 reverse 映射丢失后，会重新核验同一台手动选择的设备、USB VID/PID 与排除规则，再用原令牌恢复原副屏。见 [0.8.6 发布说明](RELEASE-0.8.6.md) 与 [0.8.6 验证记录](VERIFICATION-0.8.6.md)。Android 公开预览 APK 同步为 **0.8.6 / build 18**，并继续兼容旧 Windows 客户端的默认 27183 端口。协议主版本仍为 v1；已签名的公网稳定自动更新频道继续保持 **0.8.0**，不会仅因 GitHub 预览包而自动切换。0.8.0 的签名更新设计见 [0.8.0 发布说明](RELEASE-0.8.0.md)、[自动更新设计与发布说明](AUTO-UPDATE.md) 及 [0.8.0 验证记录](VERIFICATION-0.8.0.md)。
+Windows 电脑端当前候选版为 **0.8.7 Preview 1**。它继续全局只允许一个扩展副屏，并把 ADB USB 兼容通道的随机 reverse 收据移入受保护的 ProgramData 持久队列：绑定前的 `Prepared` 记录不具备删除权限，只有精确 `--no-rebind` 明确成功后才提升为 `Owned`；离线设备记录会公平重试，且 USB 清理永远不能阻止唯一副屏和活动驱动回收。见 [0.8.7 发布说明](RELEASE-0.8.7.md) 与 [0.8.7 验证记录](VERIFICATION-0.8.7.md)。Android 公开预览 APK 同步为 **0.8.7 / build 19**，视频、输入和配对协议不变。协议主版本仍为 v1；已签名的公网稳定自动更新频道继续保持 **0.8.0**，不会仅因 GitHub 预览包而自动切换。0.8.0 的签名更新设计见 [0.8.0 发布说明](RELEASE-0.8.0.md)、[自动更新设计与发布说明](AUTO-UPDATE.md) 及 [0.8.0 验证记录](VERIFICATION-0.8.0.md)。
 
-以下保留既有功能说明和历史记录；旧版运行条件、ADB 外置说明及旧帧率结果以新版说明为准，不能作为 0.8.6 的验证结果。
+以下保留既有功能说明和历史记录；旧版运行条件、ADB 外置说明及旧帧率结果以新版说明为准，不能作为 0.8.7 的验证结果。
 
 TabLink 是 Windows + Android 扩展桌面应用。Windows 通过已签名的开源虚拟显示驱动提供独立桌面，发送 H.264 视频，Android 使用 MediaCodec 解码并回传显示进度与单指触控。支持同一局域网的 Wi-Fi、USB 网络共享和原有的 ADB USB 兼容通道。
 
@@ -47,7 +47,7 @@ TabLink 自有源码采用 [MIT License](LICENSE)。公开仓库只跟踪源码�
 
 ## 运行与使用
 
-已验证平台为 Windows 11 x64、中兴 W202DS 平板和 NVIDIA RTX 4060 Laptop GPU。GitHub Release 的 Windows x64 公共包为 self-contained，不需要另装 .NET；从源码运行或使用普通 framework-dependent 构建时需要 .NET 10 Desktop Runtime。0.8.6 会在每次新连接开始前实际探测可用 H.264 后端；当前 NVIDIA 主机的 Auto 路径已选择 NVENC。QSV 已编入 helper，但本机没有可用的 Intel MFX 实现；AMF 已编入 helper，但本机没有 AMD AMF 运行库。两者都明确失败并保持强制后端不变，仍需在相应 Intel / AMD 电脑上做实机验证。APK 支持 Android 6.0 / API 23 及以上，实际解码能力和刷新率由设备决定。
+已验证平台为 Windows 11 x64、中兴 W202DS 平板和 NVIDIA RTX 4060 Laptop GPU。GitHub Release 的 Windows x64 公共包为 self-contained，不需要另装 .NET；从源码运行或使用普通 framework-dependent 构建时需要 .NET 10 Desktop Runtime。0.8.7 会在每次新连接开始前实际探测可用 H.264 后端；当前 NVIDIA 主机的 Auto 路径已选择 NVENC。QSV 已编入 helper，但本机没有可用的 Intel MFX 实现；AMF 已编入 helper，但本机没有 AMD AMF 运行库。两者都明确失败并保持强制后端不变，仍需在相应 Intel / AMD 电脑上做实机验证。APK 支持 Android 6.0 / API 23 及以上，实际解码能力和刷新率由设备决定。
 
 ### 正式版自动更新
 
@@ -74,12 +74,12 @@ USB 网络共享本身可能向 Windows 提供上网网关和 DNS，因此系统
 
 1. 退出 ExtensoDesk 的 USB 后台，避免它再次切换平板或 F50 Pro 的 USB 模式。
 2. 用数据线连接平板，开启“开发者选项 → USB 调试”，首次连接在平板允许此电脑。
-3. 打开完整交付目录中的 `TabLink.exe`，在 Windows 管理员授权窗口中选择“是”，然后点击“刷新设备”。0.5.1 起电脑端启动需要管理员权限；取消授权则不启动。找不到 ADB 时，选择 Android SDK `platform-tools/adb.exe`。
+3. 打开完整交付目录中的 `TabLink.exe`，在 Windows 管理员授权窗口中选择“是”，然后点击“刷新设备”。0.5.1 起电脑端启动需要管理员权限；取消授权则不启动。ADB 兼容模式只接受 Google 官方 **SDK Platform-Tools r37.0.0 for Windows** 的 `adb.exe`、`AdbWinApi.dll`、`AdbWinUsbApi.dll` 固定哈希三件套；首次执行刷新、安装或连接等交互操作前选择完整 `platform-tools\adb.exe`。TabLink 核验三件套后复制到受保护的 `%ProgramData%\TabLink\Adb\sha256-<清单哈希>\`，后续管理员 ADB 操作不从用户路径、环境变量或 `PATH` 启动。
 4. 选中平板，点击“安装安卓客户端”，将交付包 `android/TabLink.apk` 安装到这台设备。旧版客户端需更新，0.4 提供原生屏幕参数与 H.264 解码。
 5. 点击连接后，程序在已确认目标设备及其屏幕参数后检查唯一的 TabLink 虚拟显示设备。设备不存在时，程序先把 TabLink 所有的驱动配置收敛为一个输出并写入所需模式，再安装虚拟显示设备；安装或核验失败时停止连接并说明原因，不会改用主屏或其他远程软件的虚拟屏。
 6. 点击“连接选中的平板”。程序读取 APK 屏幕参数，恢复独立副屏并建立视频连接。把窗口拖到主屏右侧的第二块桌面即可在平板使用。
 7. 平板旋转后，程序结束旧视频会话并重新匹配方向，期间可能短暂显示连接状态。单指触控可移动、点击和拖动鼠标；可在电脑端取消“允许平板触控操作副屏”。
-8. 点击“停止连接”会先结束视频与输入、释放鼠标键、清理本次 USB 转发和显示租约，再移除本次连接所用的 TabLink 虚拟显示设备。签名驱动包和 TabLink 配置保留在电脑中，供下次连接快速重建；断开后 Windows 不应继续保留该虚拟屏。
+8. 点击“停止连接”会先结束视频与输入、释放鼠标键并收回本次显示租约，再移除本次连接所用的 TabLink 虚拟显示设备。随机 USB 转发只按受保护队列中的精确 `Owned` 收据清理；设备离线或 ADB 暂不可用时保留记录以后公平重试，但不延迟显示与驱动回收。签名驱动包和 TabLink 配置保留在电脑中，供下次连接快速重建；断开后 Windows 不应继续保留该虚拟屏。
 9. 点击电脑窗口右上角 **×** 会隐藏到系统托盘，视频与连接监控继续运行。双击托盘图标或再次打开原来的快捷方式可唤回窗口。右键托盘图标可“停止连接”或“退出 TabLink”；“退出”才会清理连接并结束后台程序。
 
 ### 平板全屏与状态文字
@@ -104,7 +104,7 @@ Windows 的管理员授权、锁屏等操作可能使普通桌面暂时无法采
 
 ## 按需驱动与单副屏生命周期
 
-电脑端 `TabLink.exe` 从 0.5.1 起声明需要管理员权限：从普通桌面启动时，由 Windows 请求 UAC 授权，授权成功后程序及其副屏守护进程在管理员权限下运行。0.8.6 不在程序启动、打开配对页或等待扫码时安装虚拟显示设备；只有接收设备通过认证并提交有效屏幕参数、连接准备真正占用副屏时才执行检查与按需安装。
+电脑端 `TabLink.exe` 从 0.5.1 起声明需要管理员权限：从普通桌面启动时，由 Windows 请求 UAC 授权，授权成功后程序及其副屏守护进程在管理员权限下运行。0.8.7 不在程序启动、打开配对页或等待扫码时安装虚拟显示设备；只有接收设备通过认证并提交有效屏幕参数、连接准备真正占用副屏时才执行检查与按需安装。
 
 驱动使用 [VirtualDrivers / Virtual-Display-Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver) 固定版本 25.7.23，附带原始签名二进制、MIT 许可、SHA-256 和来源记录。TabLink 安装前检查固定哈希与 Windows 通用 Authenticode 信任，不会主动启用测试签名、关闭安全启动、安装证书或降低签名策略。该上游签名不是 Microsoft WHQL 认证，实际安装仍受接收电脑的 Windows 驱动信任策略约束；拒绝时健康中心会保留错误，不会更改系统签名设置。驱动配置固定为一个输出；旧配置即使曾设置多个输出，也必须先收敛到一个再安装设备，避免连接瞬间重新生成多块虚拟屏。
 
@@ -114,9 +114,10 @@ Windows 的管理员授权、锁屏等操作可能使普通桌面暂时无法采
 
 ## 设备排除与连接范围
 
-- 每次目标命令均带确切 ADB 序列号，并重新检查 Windows USB 身份、ADB 授权和排除规则。无需 Root。
+- ADB 兼容模式只接受官方 Platform-Tools r37.0.0 固定哈希三件套。首次交互使用时将其复制到受保护 ProgramData staging；之后后台清理也只复核并复用该受保护副本。每次目标命令仍带确切 ADB 序列号，并重新检查 Windows USB 身份、ADB 授权和排除规则。无需 Root。Wi-Fi 与 USB 网络共享连接不使用 ADB，也不需要开发者模式。
 - 新配置默认排除 F50 Pro 已知的 `19D2:0246`、`19D2:0621` 两种 USB 身份，没有排除整个中兴 VID。为了保护隐私，源码不内置任何真实设备序列号；请在“设备保护”页把自己的随身 Wi-Fi 序列号加入本机设置，使它在切换 USB 产品身份后仍被阻止。
-- 不发送 AOA 握手、不重置 USB、不启用网络 ADB，也不全局移除其他软件的转发。仅拥有指定设备的 `tcp:27183` 映射，已有占用会阻止创建。
+- 不发送 AOA 握手、不重置 USB、不启用网络 ADB，也不全局移除其他软件的转发。每个 ADB 会话只在 `--no-rebind` 明确成功后拥有指定设备的随机端点；已有占用会阻止创建，不会先删除或替换。清理前会第二次核对同一端点，但 ADB 不提供跨进程原子 compare-and-delete，最终核验后的外部管理员进程竞态仍是公开边界。
+- `%ProgramData%\TabLink\UsbReverseCleanup\` 使用每收据一文件的 `Prepared` → `Owned` 两阶段队列并绑定原 Windows 用户 SID；持久递增的 sequence 负责公平轮转，不依赖文件 mtime。跨用户的 `Prepared` 因从未拥有删除权限，可在不接触 ADB 的情况下安全封存；跨用户的 `Owned` 会保留并轮转，当前用户不会对它执行 ADB。`%LOCALAPPDATA%` 的 0.8.6 或更早记录只用于诊断，不能授权管理员 ADB 删除；USB 队列异常也不能阻止精确回收 TabLink 的显示目标。
 - ADB 兼容服务仅监听 `127.0.0.1:27183`；Wi-Fi / USB 网络服务仅监听手动选择的本地 IPv4 的 TCP 27184，使用证书固定的 TLS 和随机会话令牌。认证通过后才配置、发送副屏画面，无需外网中转。
 - USB 网络网卡由 Windows 网卡 GUID、PnP 父设备链和真实 USB 序列号识别，复用同一份排除规则；不能按“中兴”厂商或“RNDIS”名称混选 F50 Pro。无法确认身份的 USB 网卡不列为可用线路。Wi-Fi 设备通过用户明确扫码授权，USB VID/PID 排除不被描述为网络身份认证。
 - 显示目标同时核对 CCD、实际 `Root\MttVDD` 适配器、`MTT1337` 显示器及独立非主屏状态。ExtensoDesk、ToDesk、向日葵等其他虚拟显卡不会被选为 TabLink 目标。
@@ -147,7 +148,7 @@ H.264 的解码提交和客户端呈现回调分开统计。`render-submitted` �
 
 ### 画质预设与自动码率
 
-0.8.6 Preview 1 保留“自动、低延迟、均衡、高清晰”四种画质预设。这里的“自动画质”与“Auto 编码器”是两个独立设置：前者按链路反馈调整码率/GOP，后者在连接开始时挑选编码后端。无论画质计划怎样重建，本次连接选定的后端都保持不变。
+0.8.7 Preview 1 保留“自动、低延迟、均衡、高清晰”四种画质预设。这里的“自动画质”与“Auto 编码器”是两个独立设置：前者按链路反馈调整码率/GOP，后者在连接开始时挑选编码后端。无论画质计划怎样重建，本次连接选定的后端都保持不变。
 
 本预览只调整 H.264 目标码率与 GOP。平板报告的原生方向、分辨率和请求刷新率保持不变，自动模式不会降低虚拟显示模式，也不会创建额外显示器。安全桌面暂停、反馈过期或证据不足时冻结判断。`0x16` 接收端反馈包含本会话的接收、队列、提交、呈现和丢弃累计值，但只用于自适应与诊断，不会推进解码提交、呈现回调或显示租约的健康期限。
 
@@ -167,7 +168,7 @@ Android 会按分辨率、目标帧率、PerformancePoint、低延迟能力和�
 
 当前包括一个独立扩展桌面、原生横竖屏匹配、NVENC / QSV / AMF H.264 硬件候选、显式授权的 x264 软件回退、Android 硬解优先并提供软件 decoder 兜底、画面确认、重连、会话守护、排除列表和单指鼠标操作。程序不会自动修改电源计划或升级显卡驱动。
 
-暂不包含音频、压感笔和多点触控。0.8.6 任意时刻只允许一台接收设备占用一块 TabLink 虚拟副屏；不会创建第三、第四块 TabLink 显示器。刷新速度受捕获、编码、USB、解码与安卓面板策略共同限制，当前版本不承诺所有设备达到 90 fps。同一副屏的位置变化会自动恢复；目标身份、主副屏关系或显示模式发生不兼容变化时会停止采集。
+暂不包含音频、压感笔和多点触控。0.8.7 任意时刻只允许一台接收设备占用一块 TabLink 虚拟副屏；不会创建第三、第四块 TabLink 显示器。刷新速度受捕获、编码、USB、解码与安卓面板策略共同限制，当前版本不承诺所有设备达到 90 fps。同一副屏的位置变化会自动恢复；目标身份、主副屏关系或显示模式发生不兼容变化时会停止采集。
 
 ## 文件、日志与构建
 
@@ -188,6 +189,10 @@ Android 会按分辨率、目标帧率、PerformancePoint、低延迟能力和�
 | `%ProgramFiles%\TabLink\` | Windows 唯一正式运行目录；只有这里允许执行自动替换。 |
 | `%ProgramData%\TabLink\Updater\` | 按内容哈希保存、只允许 SYSTEM 与 Administrators 写入的独立更新器。 |
 | `%ProgramData%\TabLink\Transactions\` | 与正式目录同卷的受保护暂存、备份、失败版本与更新日志。 |
+| `%ProgramData%\TabLink\DisplayLeases\` | 按物理 VDD 目标全局保存的当前显示租约、marker、不可变 bootstrap 与全机文件锁；所有 Windows 用户/会话共用唯一所有权，提升权限的 watcher 只接受这里的精确证据。 |
+| `%ProgramData%\TabLink\UsbReverseCleanup\` | 受保护的两阶段 USB reverse 收据、完成 tombstone 与跨进程变更锁；只有当前 Windows 用户 SID 匹配的 `Owned` 可进入精确 ADB 清理。 |
+| `%ProgramData%\TabLink\Adb\sha256-<清单哈希>\` | 首次 ADB 交互使用时，从官方 r37.0.0 三件套固定哈希复制并复核的受保护执行副本。 |
+| `%LOCALAPPDATA%\TabLink\display-layouts\` 与 `last-display.json` | 每个 Windows 用户的副屏位置偏好；只影响下次布局，不能授权 watcher 或 ADB 清理。 |
 | `%LOCALAPPDATA%\TabLink\updates\` | 已验签的 Windows 下载包、稳定清单、待安装状态及进程握手文件。 |
 
 在源码目录运行：
@@ -197,9 +202,9 @@ dotnet run --project tests/TabLink.Core.Tests -c Release
 .\build.ps1 -SkipAndroid
 ```
 
-普通构建使用 `android/artifacts/TabLink-android-0.8.6-debug.apk`；`-PublicRelease` 会生成不可调试但仍使用既有开发证书的 `TabLink-android-0.8.6-preview.apk`，并注入正式稳定频道地址。公开构建同时生成 self-contained Windows x64 程序、排除不可全球再分发的浏览器接收依赖和 Google ADB 二进制。脚本串行运行单屏驱动配置、显示分配、清理与生命周期、连接健康、更新、传输和编码后端回归，复制 APK、LGPL 硬件 helper、GPL x264 helper、各自许可与完整对应源码，并生成 `SHA256SUMS.txt`。构建过程不会安装驱动、创建设备或连接平板。
+普通构建使用 `android/artifacts/TabLink-android-0.8.7-debug.apk`；`-PublicRelease` 会生成不可调试但仍使用既有开发证书的 `TabLink-android-0.8.7-preview.apk`，并注入正式稳定频道地址。公开构建同时生成 self-contained Windows x64 程序、排除不可全球再分发的浏览器接收依赖和 Google ADB 二进制。脚本串行运行单屏驱动配置、显示分配、清理与生命周期、连接健康、更新、传输和编码后端回归，复制 APK、LGPL 硬件 helper、GPL x264 helper、各自许可与完整对应源码，并生成 `SHA256SUMS.txt`。构建过程不会安装驱动、创建设备或连接平板。
 
-构建脚本通过 `dotnet TabLink.dll --self-test` 运行纯传输测试，不触发程序启动的 UAC 授权。自测使用系统分配的临时回环端口，不占用实际副屏的 27183，因此可以在现有连接保持时运行。自测只使用合成字节、回环 TCP 和 fake input，不捕获桌面、不访问真实 ADB、不更改显示器。目前 Core 30 项和 Windows 传输 21 项测试覆盖设备排除、授权重查、模式解析、视频包计数、确认边界和连接状态归零。
+构建脚本通过 `dotnet TabLink.dll --self-test` 运行纯传输测试，不触发程序启动的 UAC 授权。自测使用系统分配的临时回环端口，不占用实际副屏的 27183，因此可以在现有连接保持时运行。自测只使用合成字节、回环 TCP 和 fake input，不捕获桌面、不访问真实 ADB、不更改显示器。当前 Core 代码基线包含 46 个场景，覆盖设备排除、授权重查、模式解析及 ADB 环境变量清理等边界；0.8.7 的最终完整测试数量与结果以 [验证记录](VERIFICATION-0.8.7.md) 的实际构建输出为准。
 
 ## 传输协议 v1
 
@@ -231,4 +236,4 @@ dotnet run --project tests/TabLink.Core.Tests -c Release
 - 显示驱动：[VirtualDrivers / Virtual-Display-Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver)，固定 25.7.23，MIT。许可、签名和哈希记录位于 `third_party/VirtualDisplayDriver/`，交付副本位于 `drivers/VirtualDisplayDriver/`。
 - 视频组件：专用于 TabLink 的两个独立 **FFmpeg 7.0.2** helper，都包含 Windows 私有高精度等待补丁和已有缓存帧时的 DDA 非阻塞重复补丁。`ffmpeg.exe` 采用 LGPL-2.1-or-later 配置，提供 NVENC（nv-codec-headers 12.2.72.0）、QSV（oneVPL 2.11.0）和 AMF（AMF 1.4.35）；`ffmpeg-x264.exe` 启用固定 x264 stable 源码并采用 GPL-2.0-or-later 配置。两者都不含网络协议，不修改系统计时器、注册表或显卡驱动。
 - 0.8.5 最终 E 盘构建：`ffmpeg.exe` SHA-256 `BB1FA5F2A5CC572C6A1D310F88348324EE43B84DF5A778FD0AF02D77B3C86627`，`ffmpeg-x264.exe` SHA-256 `6E3EA733AD40DA6D6D78C2DFC51BCCA950C3519D3304AE045316F7D55B89EDB7`，`source-bundle.tar.gz` SHA-256 `FD7977F53EDD262D55C49F200EB5F54B1B12F5FFA547770380448708D75EA6F2`。构建使用中性 prefix，并对个人路径做 fail-closed 检查。公开仓库在 `third_party/ffmpeg-tablink/` 保留补丁、来源、许可和可复现构建说明；发布二进制时须附完整对应源码。helper 作为单独进程运行，没有替换系统 FFmpeg。
-- USB 工具：使用本机 Android 官方 SDK Platform-Tools 的 ADB。
+- USB 工具：Wi-Fi 与普通 USB 网络共享不使用 ADB；可选的 USB 调试兼容路径只接受官方 Windows Platform-Tools r37.0.0 固定哈希三件套，首次交互时复制到受保护 ProgramData 后再执行。公共包不分发 Google ADB 二进制。

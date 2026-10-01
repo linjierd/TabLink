@@ -72,6 +72,15 @@ internal static class WindowsUpdatePathPolicy
         foreach (var directory in EnumerateDirectoryChain(path)) VerifyExistingDirectoryWithoutReparse(directory);
     }
 
+    internal static void VerifySafeNamespaceChain(string path, string description)
+    {
+        foreach (var directory in EnumerateDirectoryChain(path))
+        {
+            VerifyExistingDirectoryWithoutReparse(directory);
+            VerifySafeNamespaceContainer(directory, description + " " + directory);
+        }
+    }
+
     internal static bool HasNoOrdinaryUserMutationAccess(FileSystemSecurity security)
     {
         var owner = security.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;

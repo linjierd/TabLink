@@ -84,7 +84,7 @@ internal sealed partial class MainForm
                 MarkHealthDisplayReady(display);
                 MarkHealthPipelineStarting("正在启动原生客户端的视频流水线");
             };
-            session.DisplayPreparationFailed+=ex=>MarkConnectionHealthAttention(ex.Message);
+            session.DisplayPreparationFailed+=ex=>MarkConnectionHealthAttention(SafeError(ex));
             additionalSessions.Add(session);
             await session.StartAsync(lifetime.Token);
             MarkHealthRouteReady($"{choice.InterfaceAlias} · {choice.LocalAddress}:{port} · TLS 监听已启动");
@@ -94,7 +94,7 @@ internal sealed partial class MainForm
         {
             InvalidateEncoderSelection(encoderGeneration);
             if(session is not null)additionalSessions.Remove(session);
-            MarkConnectionHealthAttention(ex.Message);
+            MarkConnectionHealthAttention(SafeError(ex));
             throw;
         }
         RefreshSessionList(session.Id);
@@ -165,9 +165,9 @@ internal sealed partial class MainForm
                 }
                 catch(Exception ex)
                 {
-                    Log("独立设备检查失败："+ex.Message);
-                    MarkConnectionHealthAttention(ex.Message);
-                    try{await session.DisposeAsync();}catch(Exception cleanup){Log("该设备回收需要检查："+cleanup.Message);}
+                    Log("独立设备检查失败："+SafeError(ex));
+                    MarkConnectionHealthAttention(SafeError(ex));
+                    try{await session.DisposeAsync();}catch(Exception cleanup){Log("该设备回收需要检查："+SafeError(cleanup));}
                     if(session.HasPendingDisplayCleanup)MarkOwnedDisplayCleanupAttention(OwnedDisplayCleanupFailureDetail(ex));
                 }
             await MonitorBrowserAsync(choices,desktop);
@@ -175,7 +175,7 @@ internal sealed partial class MainForm
             UpdateAdditionalButtons();
         }
         catch(OperationCanceledException)when(lifetime.IsCancellationRequested){}
-        catch(Exception ex){Log("原生客户端监测："+ex.Message);}
+        catch(Exception ex){Log("原生客户端监测："+SafeError(ex));}
         finally{monitoringAdditional=false;}
     }
 
@@ -193,12 +193,12 @@ internal sealed partial class MainForm
             {
                 var detail=OwnedDisplayCleanupFailureDetail(ex);MarkOwnedDisplayCleanupAttention(detail);Log(detail);
             }
-            else {MarkConnectionHealthAttention(ex.Message);Log("原生连接清理需要检查："+ex.Message);}
+            else {MarkConnectionHealthAttention(SafeError(ex));Log("原生连接清理需要检查："+SafeError(ex));}
         }
         try{await StopBrowserAsync();}catch(Exception ex)
         {
             if(!browserCleanupReservations.IsEmpty)MarkOwnedDisplayCleanupAttention(OwnedDisplayCleanupFailureDetail(ex));
-            Log("浏览器连接清理需要检查："+ex.Message);
+            Log("浏览器连接清理需要检查："+SafeError(ex));
         }
         if(!HasAnySessions)ClearEncoderSelectionIfIdle();
         if(!connectionHealth.Snapshot().Steps.Any(step=>step.State==ConnectionHealthState.Attention))StopConnectionHealth("所有连接已停止并回收本次副屏");

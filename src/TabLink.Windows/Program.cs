@@ -16,10 +16,25 @@ internal static class Program
         {File.WriteAllText(args[1],System.Text.Json.JsonSerializer.Serialize(VirtualDisplayManager.GetTargets(),new System.Text.Json.JsonSerializerOptions{WriteIndented=true}));return;}
         if(args.Length==2&&args[0]=="--render-ui")
         {MainForm.RenderUi(args[1]);return;}
-        if(args.Length==3&&args[0]=="--watch-display")
+        if(args.Length>0&&args[0]==DisplayWatcherHandshake.Command)
         {
-            Environment.ExitCode=SessionGuard.WatchAsync(args[1],args[2],
-                SingleDisplayDriverLifecycle.Shared.RemoveAfterOwnerExitAsync).GetAwaiter().GetResult();return;
+            try
+            {
+                var request=DisplayWatcherHandshake.ParseChildArguments(args);
+                using var handshake=DisplayWatcherHandshake.OpenChild(request);
+                Environment.ExitCode=SessionGuard.WatchAsync(request.CurrentPath,request.LeaseId.ToString("D"),
+                    SingleDisplayDriverLifecycle.Shared.RemoveAfterOwnerExitAsync,handshake).GetAwaiter().GetResult();
+            }
+            catch(Exception ex)
+            {
+                // Command-line arguments include a one-time rendezvous nonce.
+                // Record only the exception category, never args/request/inner
+                // details, so diagnostics cannot disclose that nonce.
+                Diagnostics.Save("display-watchdog-start-error.json",()=>new
+                {timestamp=DateTimeOffset.Now,error="副屏保护启动校验失败。",category=ex.GetType().Name});
+                Environment.ExitCode=2;
+            }
+            return;
         }
         if(args.Length==4&&args[0]=="--watch-driver-owner")
         {
@@ -38,7 +53,7 @@ internal static class Program
         if(args.Length>0 && args[0] is "--probe-usb" or "--usb-smoke")
         {
             try { Environment.ExitCode=args[0]=="--probe-usb"?Diagnostics.ProbeAsync().GetAwaiter().GetResult():Diagnostics.SmokeAsync(args.Length>1?args[1]:throw new ArgumentException("Missing serial"),args.Length>2?int.Parse(args[2]):20).GetAwaiter().GetResult(); }
-            catch(Exception ex){Diagnostics.Save("diagnostic-error.json",()=>new{error=ex.ToString(),timestamp=DateTimeOffset.Now});Environment.ExitCode=1;}
+            catch(Exception ex){var error=TabLink.Core.SafeErrorSummary.ForUser(ex,adbOperation:true);Diagnostics.Save("diagnostic-error.json",()=>new{error,timestamp=DateTimeOffset.Now});Environment.ExitCode=1;}
             return;
         }
         if (args.Contains("--self-test"))

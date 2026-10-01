@@ -18,6 +18,11 @@ internal sealed class SingleDisplayDriverLifecycle : ISingleDisplayDriverControl
 
 internal sealed class SessionGuard : IDisposable
 {
+    internal sealed class GuardStartupFailureException(SessionGuard recoveryGuard)
+        : IOException("Injected startup failure")
+    {
+        internal SessionGuard RecoveryGuard { get; } = recoveryGuard;
+    }
     internal SessionGuard(DisplayLease lease, bool requireUnowned = false) => throw new InvalidOperationException("Tests must not create a display guard.");
     internal DisplayLease Lease => throw new InvalidOperationException("No native allocation in snapshot tests.");
     public void Dispose() => throw new InvalidOperationException("No native allocation in snapshot tests.");

@@ -18,6 +18,24 @@ string temporary = Path.Combine(Path.GetTempPath(), "TabLink-Core-Tests-" + Guid
 Directory.CreateDirectory(temporary);
 try
 {
+    await Test("ADB child process ignores caller-controlled routing and serial environment", () =>
+    {
+        var names = new[] { "ADB_SERVER_SOCKET", "ADB_VENDOR_KEYS", "ANDROID_ADB_SERVER_PORT", "ANDROID_SERIAL" };
+        var saved = names.ToDictionary(name => name, Environment.GetEnvironmentVariable,
+            StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            foreach (var name in names) Environment.SetEnvironmentVariable(name, "UNTRUSTED_TEST_VALUE");
+            var start = AdbProcessRunner.CreateStartInfo(@"E:\trusted\adb.exe", ["devices", "-l"]);
+            Assert(names.All(name => !start.Environment.ContainsKey(name)));
+            Assert(start.ArgumentList.SequenceEqual(["devices", "-l"]));
+            Assert(start.WorkingDirectory == @"E:\trusted");
+        }
+        finally
+        {
+            foreach (var item in saved) Environment.SetEnvironmentVariable(item.Key, item.Value);
+        }
+    });
     await Test("Default exclusions contain only the two F50 VID/PID identities", () =>
     {
         var settings = new DevicePolicySettings();
@@ -160,6 +178,55 @@ try
         Assert(targets.Length == AdbClient.MaximumEndpointReservationAttempts);
         Assert(targets.All(call => call.Contains("--list")) && !targets.Any(call => call.Contains("--no-rebind") || call.Contains("--remove")));
     });
+    await TestAsync("Pending cleanup endpoints are excluded before any ADB access", async () =>
+    {
+        var policy = new DevicePolicy(new());
+        var runner = new FakeRunner
+        {
+            TargetHandler = _ => throw new Exception("A reserved endpoint must never reach ADB.")
+        };
+        var allEndpoints = Enumerable.Range(AdbReverseEndpoint.MinimumDevicePort,
+            AdbReverseEndpoint.MaximumDevicePort - AdbReverseEndpoint.MinimumDevicePort + 1)
+            .Select(port => new AdbReverseEndpoint(port)).ToHashSet();
+        await ThrowsAsync<IOException>(() => Client(policy, runner).ReserveRandomReverseEndpointAsync(
+            policy.Approve(good, inventory), allEndpoints));
+        Assert(runner.Calls.Count == 0);
+    });
+    await TestAsync("Pending cleanup predicate skips only retained candidates", async () =>
+    {
+        var policy = new DevicePolicy(new());
+        var runner = new FakeRunner();
+        var retained = new AdbReverseEndpoint(52001);
+        var available = new AdbReverseEndpoint(52002);
+        var candidates = new[] { retained, available };
+        var issued = 0;
+        var reserved = new HashSet<AdbReverseEndpoint> { retained };
+        var result = await Client(policy, runner).ReserveRandomReverseEndpointAsync(
+            policy.Approve(good, inventory), () => candidates[issued++], candidate => !reserved.Contains(candidate));
+        var targets = runner.Calls.Where(call => call[0] != "devices").ToArray();
+        Assert(result == available && issued == 2);
+        Assert(targets.Length == 2 && targets[0].Contains("--list"));
+        Assert(targets[1].SequenceEqual(new[] { "-s", good.Serial, "reverse", "--no-rebind", "tcp:52002", "tcp:27183" }));
+        Assert(!targets.SelectMany(value => value).Contains("tcp:52001"));
+        Assert(!targets.Any(call => call.Contains("--remove")));
+    });
+    await TestAsync("Endpoint reservation race fails without retry or takeover", async () =>
+    {
+        var policy = new DevicePolicy(new());
+        var runner = new FakeRunner
+        {
+            TargetHandler = command => command.Contains("--list")
+                ? new(0, "", "")
+                : new(1, "", "error: cannot rebind existing socket")
+        };
+        var issued = 0;
+        await ThrowsAsync<AdbCommandException>(() => Client(policy, runner).ReserveRandomReverseEndpointAsync(
+            policy.Approve(good, inventory), () => new AdbReverseEndpoint(53001 + issued++), static _ => true));
+        var targets = runner.Calls.Where(call => call[0] != "devices").ToArray();
+        Assert(issued == 1 && targets.Count(call => call.Contains("--list")) == 1);
+        Assert(targets.Count(call => call.Contains("--no-rebind")) == 1);
+        Assert(!targets.Any(call => call.Contains("--remove")));
+    });
     await TestAsync("Missing TabLink reverse mapping is recreated without global adb mutation", async () =>
     {
         var policy = new DevicePolicy(new());
@@ -187,7 +254,7 @@ try
         var result = await Client(policy, conflict).EnsureReversePortAsync(policy.Approve(good, inventory), endpoint);
         Assert(result.Status == AdbReversePortStatus.Conflicting && !conflict.Calls.Any(call => call.Contains("--no-rebind")));
         var malformed = new FakeRunner { TargetStandardOutput = "unexpected reverse output\n" };
-        await ThrowsAsync<InvalidDataException>(() => Client(policy, malformed).EnsureReversePortAsync(policy.Approve(good, inventory), endpoint));
+        await ThrowsAsync<AdbResponseException>(() => Client(policy, malformed).EnsureReversePortAsync(policy.Approve(good, inventory), endpoint));
         Assert(!malformed.Calls.Any(call => call.Contains("--no-rebind")));
     });
     await TestAsync("Recovery revalidates approval again before recreating the mapping", async () =>
@@ -289,7 +356,12 @@ try
     });
     await TestAsync("Process timeout terminates only invoked test child", async () =>
     {
-        await ThrowsAsync<TimeoutException>(() => new AdbProcessRunner().RunAsync(Environment.ProcessPath!, ["--test-process", "sleep"], TimeSpan.FromMilliseconds(250), default));
+        try
+        {
+            await new AdbProcessRunner().RunAsync(Environment.ProcessPath!, ["--test-process", "sleep"], TimeSpan.FromMilliseconds(250), default);
+            throw new Exception("Expected an ADB execution timeout.");
+        }
+        catch (AdbExecutionException ex) { Assert(ex.InnerException is TimeoutException); }
     });
     await TestAsync("Process cancellation propagates as cancellation", async () =>
     {
@@ -302,6 +374,45 @@ try
         var runner = new FakeRunner { TargetExitCode = 1 };
         await ThrowsAsync<AdbCommandException>(() => Client(policy, runner).ReversePortAsync(policy.Approve(good, inventory), endpoint));
         Assert(runner.Calls.Count == 2);
+    });
+    await TestAsync("ADB summaries never expose fake stderr, path or serial markers", async () =>
+    {
+        const string marker = "SENSITIVE-ADB-MARKER serial=PRIVATE-SERIAL path=C:\\Users\\Private\\adb.exe";
+        var policy = new DevicePolicy(new());
+        var runner = new FakeRunner { TargetExitCode = 73, TargetStandardError = marker, TargetStandardOutput = marker };
+        try
+        {
+            await Client(policy, runner).ReversePortAsync(policy.Approve(good, inventory), endpoint);
+            throw new Exception("Expected an ADB command failure.");
+        }
+        catch (AdbCommandException ex)
+        {
+            var summary = SafeErrorSummary.ForUser(ex);
+            Assert(summary.Contains(nameof(AdbCommandException), StringComparison.Ordinal));
+            Assert(summary.Contains("73", StringComparison.Ordinal));
+            Assert(!summary.Contains(marker, StringComparison.Ordinal));
+            Assert(!ex.Message.Contains(marker, StringComparison.Ordinal));
+            Assert(ex.StandardError == marker && ex.StandardOutput == marker);
+        }
+    });
+    await TestAsync("ADB runner failures keep sensitive details out of safe summaries", async () =>
+    {
+        const string marker = "SENSITIVE-RUNNER-MARKER C:\\Users\\Private\\platform-tools\\adb.exe PRIVATE-SERIAL";
+        var policy = new DevicePolicy(new());
+        var runner = new FakeRunner { TargetException = new IOException(marker) };
+        try
+        {
+            await Client(policy, runner).ReversePortAsync(policy.Approve(good, inventory), endpoint);
+            throw new Exception("Expected an ADB execution failure.");
+        }
+        catch (AdbExecutionException ex)
+        {
+            var summary = SafeErrorSummary.ForUser(ex);
+            Assert(summary.Contains(nameof(AdbExecutionException), StringComparison.Ordinal));
+            Assert(!summary.Contains(marker, StringComparison.Ordinal));
+            Assert(!ex.Message.Contains(marker, StringComparison.Ordinal));
+            Assert(ex.InnerException?.Message == marker);
+        }
     });
     await TestAsync("Android launch errors fail even when adb returns exit zero", async () =>
     {
@@ -325,7 +436,11 @@ try
         var policy = new DevicePolicy(new());
         var runner = new FakeRunner { TargetExitCode = 1, TargetStandardError = "error: cannot rebind existing socket" };
         try { await Client(policy, runner).ReversePortAsync(policy.Approve(good, inventory), endpoint); throw new Exception("Expected reservation failure."); }
-        catch (AdbCommandException ex) { Assert(ex.Message.Contains("explicitly remove", StringComparison.Ordinal)); }
+        catch (AdbCommandException ex)
+        {
+            Assert(ex.ExitCode == 1 && ex.Message.Contains(nameof(AdbCommandException), StringComparison.Ordinal));
+            Assert(!ex.Message.Contains("cannot rebind", StringComparison.Ordinal));
+        }
         Assert(runner.Calls.Count == 2 && runner.Calls.Last().Contains("--no-rebind"));
         Assert(!runner.Calls.SelectMany(x => x).Any(x => x is "--remove" or "--remove-all"));
     });
@@ -408,8 +523,27 @@ try
     {
         var policy = new DevicePolicy(new());
         var runner = new FakeRunner { TargetStandardOutput = "Row: 0 json={}" };
-        await ThrowsAsync<InvalidDataException>(() => Client(policy, runner).ReadDisplayProfileAsync(policy.Approve(good, inventory)));
+        await ThrowsAsync<AdbResponseException>(() => Client(policy, runner).ReadDisplayProfileAsync(policy.Approve(good, inventory)));
         Assert(runner.Calls.Count(c => c[0] != "devices") == 1);
+    });
+    await TestAsync("Malformed display payload never exposes fake ADB output markers", async () =>
+    {
+        const string marker = "SENSITIVE-PROVIDER-MARKER serial=PRIVATE-SERIAL path=C:\\Users\\Private\\adb.exe";
+        var policy = new DevicePolicy(new());
+        var runner = new FakeRunner { TargetStandardOutput = "Row: 0 json={\"marker\":\"" + marker.Replace("\\", "\\\\") + "\"}" };
+        try
+        {
+            await Client(policy, runner).ReadDisplayProfileAsync(policy.Approve(good, inventory));
+            throw new Exception("Expected malformed ADB response failure.");
+        }
+        catch (AdbResponseException ex)
+        {
+            var summary = SafeErrorSummary.ForUser(ex);
+            Assert(summary.Contains(nameof(AdbResponseException), StringComparison.Ordinal));
+            Assert(!summary.Contains(marker, StringComparison.Ordinal));
+            Assert(!ex.Message.Contains(marker, StringComparison.Ordinal));
+            Assert(ex.InnerException is not null && runner.TargetStandardOutput.Contains("SENSITIVE-PROVIDER-MARKER", StringComparison.Ordinal));
+        }
     });
     await TestAsync("Provider fallback surfaces Android activation errors", async () =>
     {
@@ -465,13 +599,16 @@ sealed class FakeRunner : IAdbProcessRunner
     public string? DevicesStandardOutput { get; set; }
     public string TargetStandardOutput { get; set; } = "";
     public string TargetStandardError { get; set; } = "";
+    public Exception? TargetException { get; set; }
     public Func<string[], AdbCommandResult>? TargetHandler { get; set; }
     public Task<AdbCommandResult> RunAsync(string executable, IReadOnlyList<string> arguments, TimeSpan timeout, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         Calls.Add(arguments.ToArray());
-        return Task.FromResult(arguments[0] == "devices"
-            ? new AdbCommandResult(0, DevicesStandardOutput ?? $"List of devices attached\nTEST-TABLET-SERIAL-0001 {DeviceState} model:Test_Tablet transport_id:1\n", "")
-            : TargetHandler?.Invoke(arguments.ToArray()) ?? new AdbCommandResult(TargetExitCode, TargetStandardOutput, TargetStandardError));
+        if (arguments[0] == "devices")
+            return Task.FromResult(new AdbCommandResult(0, DevicesStandardOutput ?? $"List of devices attached\nTEST-TABLET-SERIAL-0001 {DeviceState} model:Test_Tablet transport_id:1\n", ""));
+        if (TargetException is not null) return Task.FromException<AdbCommandResult>(TargetException);
+        return Task.FromResult(TargetHandler?.Invoke(arguments.ToArray()) ??
+            new AdbCommandResult(TargetExitCode, TargetStandardOutput, TargetStandardError));
     }
 }

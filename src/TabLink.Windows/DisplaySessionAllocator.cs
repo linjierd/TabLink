@@ -48,7 +48,17 @@ internal sealed class DisplaySessionAllocator
         ArgumentNullException.ThrowIfNull(profile);
         await Gate.WaitAsync(cancellationToken);
         SessionGuard? guard = null;
+        var startupRecoveryGuards = new List<SessionGuard>();
         var driverPrepared = false;
+        SessionGuard CreateGuard(DisplayLease ownedLease, bool requireUnowned = false)
+        {
+            try { return new SessionGuard(ownedLease, requireUnowned); }
+            catch (SessionGuard.GuardStartupFailureException ex)
+            {
+                startupRecoveryGuards.Add(ex.RecoveryGuard);
+                throw;
+            }
+        }
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -92,7 +102,7 @@ internal sealed class DisplaySessionAllocator
             if (!VirtualDisplayManager.GetSupportedModes(lease).Any(m => m.Width == profile.Width && m.Height == profile.Height && m.RefreshRate == profile.RequestedRefreshRate))
                 throw new IOException("此设备需要的显示模式尚未配置。请停止所有副屏连接后配置驱动模式。");
             cancellationToken.ThrowIfCancellationRequested();
-            guard = new SessionGuard(lease, requireUnowned: true);
+            guard = CreateGuard(lease, requireUnowned: true);
 
             // A differently sized active output could overlap another device's desktop.
             // Detach this target only, then rebuild its placement against the fresh layout.
@@ -104,7 +114,7 @@ internal sealed class DisplaySessionAllocator
                 var refreshedSource = refreshed.Sources.Single(s => s.SourceKey == source.SourceKey && !s.IsInUse);
                 lease = CaptureInactive(refreshed, refreshedSource, profile);
                 var previous = guard;
-                guard = new SessionGuard(lease);
+                guard = CreateGuard(lease);
                 previous.Dispose(); // The new marker supersedes only this same target.
             }
             cancellationToken.ThrowIfCancellationRequested();
@@ -117,7 +127,7 @@ internal sealed class DisplaySessionAllocator
             if (VirtualDisplayManager.TargetKey(finalLease) != target.TargetKey || VirtualDisplayManager.SourceKey(finalLease) != source.SourceKey)
                 throw new IOException("副屏恢复后的身份验证失败，停止本次分配。");
             var provisional = guard;
-            guard = new SessionGuard(finalLease);
+            guard = CreateGuard(finalLease);
             provisional.Dispose();
             cancellationToken.ThrowIfCancellationRequested();
             var reservation = new DisplaySessionReservation(this, sessionId, display, guard);
@@ -128,13 +138,19 @@ internal sealed class DisplaySessionAllocator
         catch (Exception original)
         {
             Exception? cleanupFailure = null;
-            if (guard is not null)
+            var cleanupCandidates = startupRecoveryGuards
+                .Concat(guard is null ? Enumerable.Empty<SessionGuard>() : [guard])
+                .Distinct().ToArray();
+            foreach (var cleanupGuard in cleanupCandidates)
             {
                 // Preparation can fail before a reservation is returned. Keep
                 // that guard too if rollback needs another attempt.
-                var cleanup = QueueCleanup(sessionId, guard, null);
-                try { CompleteCleanup(cleanup); }
-                catch (Exception cleanupError) { cleanupFailure = cleanupError; }
+                try { CompleteCleanup(QueueCleanup(sessionId, cleanupGuard, null)); }
+                catch (Exception cleanupError)
+                {
+                    cleanupFailure = cleanupFailure is null ? cleanupError
+                        : new AggregateException(cleanupFailure, cleanupError);
+                }
             }
             if (driverPrepared && cleanupFailure is null)
             {

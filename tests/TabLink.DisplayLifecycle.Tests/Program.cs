@@ -15,6 +15,47 @@ var unknown = new InputDesktopStatus(InputDesktopState.Unknown, "fake-probe-erro
 
 using (var test = new Scenario())
 {
+    var readyCalls = 0;
+    test.OnVerifiedLoopEntry = state =>
+    {
+        readyCalls++;
+        Check(state.Lease.LeaseId == test.Lease.LeaseId &&
+              state.OwnerPid == test.State.OwnerPid &&
+              state.OwnerStartUtcTicks == test.State.OwnerStartUtcTicks,
+            "watcher readiness callback receives the fully matched protected generation and owner identity");
+    };
+    Check(await test.Run() == 0 && readyCalls == 1,
+        "watcher confirms protected loop entry exactly once before ordinary deadline cleanup");
+}
+using (var test = new Scenario())
+{
+    var readyCalls = 0;
+    File.WriteAllText(test.Path, "{broken-current");
+    test.OnVerifiedLoopEntry = _ => readyCalls++;
+    test.AfterTick = t =>
+    {
+        if (t.Seconds == 2)
+            File.WriteAllText(t.Path + ".lease-id", JsonSerializer.Serialize(Guid.Empty));
+    };
+    Check(await test.Run() == 0 && readyCalls == 0 && test.DetachTimes.Count == 0,
+        "watcher never acknowledges readiness when protected current cannot be verified");
+}
+using (var test = new Scenario())
+{
+    var readyCalls = 0;
+    test.Owner = _ => SessionGuard.OwnerLiveness.Unverified;
+    test.OnVerifiedLoopEntry = _ => readyCalls++;
+    test.AfterTick = t =>
+    {
+        if (t.Seconds == 2)
+            File.WriteAllText(t.Path + ".lease-id", JsonSerializer.Serialize(Guid.Empty));
+    };
+    Check(await test.Run() == 0 && readyCalls == 0 && test.DetachTimes.Count == 0,
+        "watcher never acknowledges readiness without a verified retained owner identity");
+}
+
+using (var test = new Scenario())
+{
     test.Desktop = t => t.Seconds < 70 ? unavailable : available;
     Check(await test.Run() == 0, "secure desktop recovery completes");
     Check(test.DetachTimes.SequenceEqual([92]), "70-second secure desktop survives original 20-second deadline, then grants exactly one 20-second recovery window");
@@ -94,69 +135,35 @@ using (var test = new Scenario())
 try
 {
     var endpointPort = 49152;
-    foreach (var complete in new[] { UsbReverseCleanupStatus.Removed, UsbReverseCleanupStatus.AlreadyAbsent })
+    using (var test = new Scenario())
     {
-        using var test = new Scenario();
         var receipt = new UsbReverseLease(Guid.NewGuid(), test.State.OwnerPid, test.State.OwnerStartUtcTicks,
             new AdbReverseEndpoint(endpointPort++));
         test.PublishReverse(receipt);
-        if (complete == UsbReverseCleanupStatus.Removed)
-        {
-            var currentJson = test.ReadRawState();
-            var currentObject = JsonNode.Parse(currentJson)!.AsObject();
-            var legacyReader = JsonSerializer.Deserialize<LegacyWatchState>(currentJson)!;
-            Check(currentObject.ContainsKey("ReverseLeaseV2") && !currentObject.ContainsKey("ReverseLease") &&
-                legacyReader.ReverseLease is null,
-                "v2 receipts use a property that pre-v2 readers ignore instead of interpreting as fixed-port authority");
-        }
+        var currentJson = test.ReadRawState();
+        var currentObject = JsonNode.Parse(currentJson)!.AsObject();
+        var legacyReader = JsonSerializer.Deserialize<LegacyWatchState>(currentJson)!;
+        Check(currentObject.ContainsKey("ReverseLeaseV2") && !currentObject.ContainsKey("ReverseLease") &&
+            legacyReader.ReverseLease is null,
+            "v2 receipts use a property that pre-v2 readers ignore instead of interpreting as fixed-port authority");
         test.Owner = _ => SessionGuard.OwnerLiveness.Exited;
-        var cleanupCalls = 0;
-        var driverCleanupCalls = 0;
-        UsbReverseLease.OnCleanup = (actual, _) =>
+        var events = new List<string>();
+        test.DetachSucceeds = _ => { events.Add("display"); return true; };
+        test.RetainPendingReverse = actual =>
         {
-            cleanupCalls++;
-            return Task.FromResult(actual == receipt
-                ? new UsbReverseCleanupResult(complete, "fake completed cleanup")
-                : new UsbReverseCleanupResult(UsbReverseCleanupStatus.Failed, "wrong receipt"));
+            throw new Exception("watcher must never promote LocalAppData into protected ADB authority");
         };
-        test.AfterOwnerExitDetach = () => { driverCleanupCalls++; return Task.CompletedTask; };
-        Check(await test.Run() == 0 && cleanupCalls == 1 && driverCleanupCalls == 1 && test.ReadMarker() == Guid.Empty,
-            $"{complete} permits exact display and driver reclamation");
-        Check(test.ReadState().ReverseLease is null && test.ReadBootstrapState().ReverseLease is null,
-            $"{complete} consumes the reverse receipt in both persistent records");
-    }
-    foreach (var deferred in new[]
-    {
-        UsbReverseCleanupStatus.DeviceUnavailable,
-        UsbReverseCleanupStatus.MappingChanged,
-        UsbReverseCleanupStatus.Failed
-    })
-    {
-        using var test = new Scenario();
-        var receipt = new UsbReverseLease(Guid.NewGuid(), test.State.OwnerPid, test.State.OwnerStartUtcTicks,
-            new AdbReverseEndpoint(endpointPort++));
-        test.PublishReverse(receipt);
-        test.Owner = _ => SessionGuard.OwnerLiveness.Exited;
-        var cleanupCalls = 0;
-        var driverCleanupCalls = 0;
-        var diagnosticNames = new List<string>();
-        Diagnostics.OnSave = (name, _) => diagnosticNames.Add(name);
-        UsbReverseLease.OnCleanup = (actual, _) =>
-        {
-            Check(actual == receipt, $"{deferred} evaluates only the exact persisted reverse receipt");
-            cleanupCalls++;
-            return Task.FromResult(new UsbReverseCleanupResult(deferred, "fake deferred cleanup"));
-        };
-        test.AfterOwnerExitDetach = () => { driverCleanupCalls++; return Task.CompletedTask; };
-        Check(await test.Run() == 0 && cleanupCalls == 1 && driverCleanupCalls == 1 && test.ReadMarker() == Guid.Empty,
-            $"{deferred} cannot block exact display retirement or the driver cleanup callback");
+        test.AfterOwnerExitDetach = () => { events.Add("driver"); return Task.CompletedTask; };
+        test.ProcessPendingReverse = () => events.Add("usb");
+        UsbReverseLease.OnCleanup = (_, _) => throw new Exception("watcher must not run ADB while owning the display lock");
+        Check(await test.Run() == 0 && test.ReadMarker() == Guid.Empty,
+            "queued USB cleanup cannot block exact display retirement or driver cleanup");
         Check(test.DetachTimes.SequenceEqual([0]) && test.DetachLeaseIds.Single() == test.Lease.LeaseId,
-            $"{deferred} detaches the original display exactly once");
+            "watcher detaches the original display exactly once");
         Check(test.ReadState().ReverseLease == receipt && test.ReadBootstrapState().ReverseLease == receipt,
-            $"{deferred} retains both reverse receipts for the next owner-recovery pass");
-        Check(diagnosticNames.Contains("usb-reverse-recovery.json"),
-            $"{deferred} remains visible in the USB recovery diagnostic");
-        Diagnostics.OnSave = null;
+            "untrusted LocalAppData source records remain immutable after display recovery");
+        Check(events.SequenceEqual(["display", "driver", "usb"]),
+            "watcher reclaims the driver before processing the already-protected queue outside the display lock");
     }
     using (var test = new Scenario())
     {
@@ -165,7 +172,7 @@ try
         test.PublishReverse(receipt);
         test.Owner = _ => SessionGuard.OwnerLiveness.Exited;
         var corrupted = false;
-        var cleanupCalls = 0;
+        var retained = new List<UsbReverseLease>();
         test.DetachSucceeds = t =>
         {
             if (!corrupted)
@@ -175,20 +182,16 @@ try
             }
             return true;
         };
-        UsbReverseLease.OnCleanup = (_, _) =>
-        {
-            cleanupCalls++;
-            return Task.FromResult(new UsbReverseCleanupResult(UsbReverseCleanupStatus.AlreadyAbsent, "fake absence"));
-        };
+        test.RetainPendingReverse = retained.Add;
         test.AfterTick = t =>
         {
             if (t.Seconds != 2) return;
-            Check(t.ReadMarker() == t.Lease.LeaseId && t.ReadState().ReverseLease == receipt && cleanupCalls == 0,
+            Check(t.ReadMarker() == t.Lease.LeaseId && t.ReadState().ReverseLease == receipt && retained.Count == 0,
                 "an unreadable bootstrap is retained as unknown authority and cannot retire the marker");
             t.RestoreBootstrap();
         };
-        Check(await test.Run() == 0 && cleanupCalls == 1 && test.DetachTimes.SequenceEqual([0]),
-            "watcher retries a transient bootstrap JSON failure without repeating an already successful display detach");
+        Check(await test.Run() == 0 && retained.Count==0 && test.DetachTimes.SequenceEqual([0]),
+            "watcher retries a transient bootstrap JSON failure without promoting it or repeating an already successful display detach");
     }
     using (var test = new Scenario())
     {
@@ -374,7 +377,7 @@ using (var second = new Scenario("FAKE-B"))
     Check(SessionGuard.IsAllowedWatchPath(SessionGuard.LeasePath(first.Lease)), "scoped target watcher path accepted");
     Check(!SessionGuard.IsAllowedWatchPath(SessionGuard.RememberedPath(first.Lease)), "remembered-layout file cannot run as watcher state");
 }
-Check(SessionGuard.IsAllowedWatchPath(System.IO.Path.Combine(SessionGuard.Folder, "active-display-lease.json")), "exact legacy watcher path accepted for migration");
+Check(!SessionGuard.IsAllowedWatchPath(System.IO.Path.Combine(SessionGuard.Folder, "active-display-lease.json")), "user-writable legacy watcher path is rejected after protected-storage migration");
 Check(!SessionGuard.IsAllowedWatchPath(System.IO.Path.Combine(SessionGuard.LeaseFolder, "arbitrary.json")), "non-hash watcher filename rejected");
 Check(!SessionGuard.IsAllowedWatchPath(System.IO.Path.Combine(SessionGuard.LeaseFolder + "-other", new string('A', 64) + ".json")), "sibling directory rejected");
 Check(!SessionGuard.IsAllowedWatchPath(System.IO.Path.Combine(SessionGuard.LeaseFolder, "..", new string('A', 64) + ".json")), "path escaping scoped directory rejected");
@@ -445,11 +448,15 @@ Check(failingCleanupCalls == 1 && failingCleanupOwner.Disposed,
     "strict cleanup callback failure faults the watcher once so the child process returns failure");
 
 GuardDisposalTests.Run(Check);
+GuardStartupTests.Run(Check);
+PendingUsbReverseCleanupQueueTests.Run(Check);
+DisplayWatcherHandshakeTests.Run(Check);
 Console.WriteLine($"PASS: {assertions} display lifecycle assertions; injected clocks/desktops/process identities, fake display adapter, no native display or USB operations.");
 
 sealed class Scenario : IDisposable
 {
-    readonly string directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "TabLink-DisplayLifecycle-" + Guid.NewGuid().ToString("N"));
+    readonly string directory = System.IO.Path.Combine(AppContext.BaseDirectory, "test-artifacts",
+        "TabLink-DisplayLifecycle-" + Guid.NewGuid().ToString("N"));
     readonly DateTime origin = DateTime.UtcNow;
     public string Path { get; }
     public int Seconds { get; private set; }
@@ -461,6 +468,9 @@ sealed class Scenario : IDisposable
     public Func<Scenario, bool> DetachSucceeds { get; set; } = _ => true;
     public Action<Scenario>? AfterTick { get; set; }
     public Func<Task>? AfterOwnerExitDetach { get; set; }
+    public Action<UsbReverseLease>? RetainPendingReverse { get; set; }
+    public Action? ProcessPendingReverse { get; set; }
+    public Action<SessionGuard.WatchState>? OnVerifiedLoopEntry { get; set; }
     public List<int> DetachTimes { get; } = [];
     public List<Guid> DetachLeaseIds { get; } = [];
     public Scenario(string deviceName = @"\\.\FAKE-TABLINK-ONLY")
@@ -519,7 +529,7 @@ sealed class Scenario : IDisposable
             if (Seconds > 180) throw new Exception("Watcher failed to reach a bounded test outcome");
             AfterTick?.Invoke(this);
             return Task.CompletedTask;
-        }, AfterOwnerExitDetach));
+        }, AfterOwnerExitDetach, RetainPendingReverse, ProcessPendingReverse, OnVerifiedLoopEntry));
     }
     public void Dispose() => Directory.Delete(directory, true);
 }

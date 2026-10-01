@@ -126,7 +126,7 @@ internal sealed partial class MainForm
             SetStatus("等待平板扫码配对，尚未启用副屏");
             metrics.Text=$"{choice.InterfaceAlias} · {choice.LocalAddress} · TLS 加密 · 无需 USB 调试";
         }
-        catch(Exception ex){MarkConnectionHealthAttention(ex.Message);await StopAsync();throw;}
+        catch(Exception ex){MarkConnectionHealthAttention(SafeError(ex));await StopAsync();throw;}
     }
 
     Task PrepareNetworkOnUiAsync(FrameServer source,TabletDisplayProfile profile,CancellationToken ct)
@@ -199,7 +199,7 @@ internal sealed partial class MainForm
         }
         catch(Exception ex)
         {
-            if(ex is not OperationCanceledException){MarkConnectionHealthAttention(ex.Message);Log("网络副屏准备失败："+ex.Message);pairingHint.Text="副屏准备失败："+ex.Message+"\n\n修正后请在平板重新连接。";}
+            if(ex is not OperationCanceledException){var summary=SafeError(ex);MarkConnectionHealthAttention(summary);Log("网络副屏准备失败："+summary);pairingHint.Text="副屏准备失败："+summary+"\n\n修正后请在平板重新连接。";}
             capture?.Dispose();capture=null;
             await ReleasePrimaryDisplayAsync();
             activePower?.Dispose();activePower=null;

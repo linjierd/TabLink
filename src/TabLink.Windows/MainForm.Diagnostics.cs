@@ -1,6 +1,4 @@
 using System.Diagnostics;
-using System.Security.Cryptography;
-using System.Text;
 using TabLink.Core;
 
 namespace TabLink.Windows;
@@ -44,7 +42,7 @@ internal sealed partial class MainForm
         var modeTools=Flow(refreshModes,requestedModes,repairMode,modeHint);layout.Controls.Add(modeTools,0,5);
         layout.Controls.Add(Flow(repairAdb),0,6);layout.Controls.Add(diagnosticReport,0,7);page.Controls.Add(layout);
         diagnose.Click+=async(_,_)=>await DiagnoseAsync();
-        repairAdb.Click+=async(_,_)=>await GuardAsync(RepairAdbAsync);
+        repairAdb.Click+=async(_,_)=>await GuardAsync(RepairAdbAsync,adbOperation:true);
         repairConnection.Click+=async(_,_)=>await GuardAsync(RepairConnectionAsync);
         repairSuggested.Click+=async(_,_)=>await GuardAsync(RepairSelectedHealthStageAsync);
         refreshModes.Click+=(_,_)=>RefreshRequestedModes();
@@ -384,23 +382,34 @@ internal sealed partial class MainForm
             {
                 var found=results;
                 try{DevicePolicy.ValidateSettings(snapshot);found.Add(new("配置","通过",$"已加载 {snapshot.ExcludedDevices.Count} 条排除规则。"));}
-                catch(Exception ex){found.Add(new("配置","需要处理",ex.Message+"；请修正配置文件，检测不会覆盖损坏的配置。"));return found;}
+                catch(Exception ex){found.Add(new("配置","需要处理",SafeError(ex)+"；请修正配置文件，检测不会覆盖损坏的配置。"));return found;}
                 var bundled=Path.Combine(AppContext.BaseDirectory,"tools","platform-tools","adb.exe");
                 var bundleDirectory=Path.GetDirectoryName(bundled)!;
                 var bundleProvided=Directory.Exists(bundleDirectory);
-                var verification=bundleProvided?VerifyBundledAdb(bundled):null;
-                found.Add(bundleProvided
-                    ?new("内置 ADB",verification is null?"通过":"需要处理",verification??"三件套哈希与随包固定 Google 版本一致。")
-                    :new("ADB 组件","信息","公开发行包不再分发 Google Platform-Tools。免调试网络连接不需要 ADB；兼容模式可选择你从 Android 官方安装的 platform-tools/adb.exe。"));
-                var adbLocation=AdbLocator.FindAdbPath(snapshot.AdbPath);
-                if(verification is not null&&string.Equals(adbLocation,bundled,StringComparison.OrdinalIgnoreCase))adbLocation=null;
+                if(bundleProvided)
+                {
+                    try
+                    {
+                        _=TrustedBundledAdb.StageAndGetVerifiedPath(bundled);
+                        found.Add(new("内置 ADB","通过","三件套哈希与固定 Google r37 版本一致，并已复制到受保护目录。"));
+                    }
+                    catch(Exception ex) when(IsTrustedAdbFailure(ex))
+                    {found.Add(new("内置 ADB","需要处理","随包三件套不完整或固定 SHA-256 不匹配；未执行这些文件。"));}
+                }
+                else found.Add(new("ADB 组件","信息","公开发行包不分发 Google Platform-Tools。免调试网络连接不需要 ADB；兼容模式可选择你从 Android 官方安装的 r37 platform-tools/adb.exe。"));
+                string? adbLocation=null;
+                try{adbLocation=TrustedBundledAdb.LocateStageAndGetVerifiedPath(snapshot.AdbPath);}
+                catch(Exception ex) when(IsTrustedAdbFailure(ex))
+                {found.Add(new("ADB 选择","需要处理","找到的 Android Platform-Tools 未通过固定 SHA-256 校验或无法写入受保护目录；未执行源文件。"));}
                 if(adbLocation is null)found.Add(new("ADB 选择","需要处理",bundleProvided
-                    ?"当前 ADB 路径失效。内置组件完整时，可点击“修复：使用内置 ADB”。"
-                    :"没有找到已安装的 Android Platform-Tools。ADB 兼容模式请从 Android 官方页面安装后选择 adb.exe；Wi-Fi / USB 网络共享模式不需要 ADB。"));
+                    ?"当前没有可执行的受保护 ADB 副本。内置组件完整时，可点击“修复：使用内置 ADB”。"
+                    :"没有可信 ADB 副本。ADB 兼容模式请从 Android 官方页面安装 r37 后选择 adb.exe；Wi-Fi / USB 网络共享模式不需要 ADB。"));
                 else
                 {
                     var version=await new AdbProcessRunner().RunAsync(adbLocation,["version"],TimeSpan.FromSeconds(4),deadline.Token);
-                    found.Add(new("ADB 执行",version.ExitCode==0?"通过":"需要处理",version.ExitCode==0?adbLocation+"\r\n"+version.StandardOutput.Trim():version.StandardError));
+                    found.Add(new("ADB 执行",version.ExitCode==0?"通过":"需要处理",version.ExitCode==0
+                        ?SafeAdbVersionSummary(version.StandardOutput)
+                        :SafeErrorSummary.ForUser(new AdbCommandException(version.ExitCode,version.StandardError,version.StandardOutput))));
                 }
                 var usb=await UsbInventory.ReadAsync(deadline.Token);
                 found.Add(new("Windows USB","信息",$"当前存在 {usb.Count} 个具有序列号的 USB 身份。"));
@@ -410,11 +419,12 @@ internal sealed partial class MainForm
                     var client=new AdbClient(adbLocation,diagnosticPolicy,UsbInventory.ReadAsync);
                     var devices=await client.ListDevicesAsync(deadline.Token);
                     if(devices.Count==0)found.Add(new("安卓调试设备","信息","未发现 ADB 设备。免调试网络模式无需 ADB；调试模式需在安卓开启 USB 调试并允许此电脑。"));
-                    foreach(var device in devices)
+                    for(var index=0;index<devices.Count;index++)
                     {
+                        var device=devices[index];
                         var verdict=diagnosticPolicy.Evaluate(device,usb);
                         var detail=device.State switch{"unauthorized"=>"请在此设备解锁后允许电脑的 USB 调试授权。","offline"=>"设备 ADB 离线，请重插该设备数据线并重新授权。",_=>verdict.Allowed?"可在 USB 调试页选择并连接。":verdict.Reason};
-                        found.Add(new("安卓 "+device.Serial,verdict.Allowed?"通过":"需要处理",detail));
+                        found.Add(new($"安卓设备 {index+1}",verdict.Allowed?"通过":"需要处理",detail));
                     }
                 }
                 var networks=NetworkInterfaceCatalog.GetChoices(snapshot);
@@ -426,7 +436,7 @@ internal sealed partial class MainForm
                     1 => $"检测到唯一虚拟显示目标，活动={targets[0].IsActive}。停止连接后应自动卸载。",
                     _ => $"检测到 {targets.Count} 个 TabLink 兼容目标；单屏策略要求最多一个，请停止连接并运行清理。"
                 }));
-                try{found.Add(new("H.264 编码器","通过",VideoPipeline.FindFfmpeg()));}catch(Exception ex){found.Add(new("H.264 编码器","需要处理",ex.Message+"；请使用完整交付目录。"));}
+                try{found.Add(new("H.264 编码器","通过",VideoPipeline.FindFfmpeg()));}catch(Exception ex){found.Add(new("H.264 编码器","需要处理",SafeError(ex)+"；请使用完整交付目录。"));}
                 var apk=Path.Combine(AppContext.BaseDirectory,"android","TabLink.apk");
                 found.Add(new("安卓客户端",File.Exists(apk)?"通过":"需要处理",File.Exists(apk)?"客户端随包提供；在 USB 调试页可安装到明确选中的安卓设备。":"缺少 android/TabLink.apk，请恢复完整交付目录。"));
                 var conflicts=Process.GetProcessesByName("ExtensoDeskServer");
@@ -439,7 +449,7 @@ internal sealed partial class MainForm
             Diagnostics.Save("connection-diagnosis.json",()=>new{timestamp=DateTimeOffset.Now,findings=results},Log);
         }
         catch(OperationCanceledException){results.Add(new("检测","未完成","检测已超时或取消。已有连接继续运行，可重试检测。"));}
-        catch(Exception ex){results.Add(new("检测","需要处理",ex.Message));}
+        catch(Exception ex){results.Add(new("检测","需要处理",SafeError(ex)));}
         finally
         {
             diagnosticReport.Text=DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")+"\r\n\r\n"+string.Join("\r\n\r\n",results.Select(x=>$"[{x.State}] {x.Check}\r\n{x.Detail}"));
@@ -447,22 +457,20 @@ internal sealed partial class MainForm
         }
     }
 
-    static string? VerifyBundledAdb(string executable)
+    static bool IsTrustedAdbFailure(Exception ex)=>TrustedBundledAdb.IsTrustStorageFailure(ex);
+    static string SafeAdbVersionSummary(string output)
     {
-        var root=Path.GetDirectoryName(executable)!;
-        var expected=new Dictionary<string,string>{{"adb.exe","957E46B8615F7AF5B7292A2DDABE98D2E61940C3FB2B0545756507F080613E71"},{"AdbWinApi.dll","120BEF587119C6CB926B86B9BE90FDFBCE38937588EAE28CD91A94CE63C7B965"},{"AdbWinUsbApi.dll","6CA69A2CA0E31309C087D288F058977D421AD03500E4C3E1DBD981241A069C60"}};
-        foreach(var file in expected)
-        {
-            var path=Path.Combine(root,file.Key);if(!File.Exists(path))return "缺少 "+file.Key+"；请恢复完整安装包。";
-            using var stream=File.OpenRead(path);if(Convert.ToHexString(SHA256.HashData(stream))!=file.Value)return file.Key+" 校验不匹配；未执行此内置文件，请恢复完整安装包。";
-        }
-        return null;
+        var lines=output.Split(['\r','\n'],StringSplitOptions.RemoveEmptyEntries|StringSplitOptions.TrimEntries)
+            .Where(line=>line.StartsWith("Android Debug Bridge version ",StringComparison.Ordinal)||
+                line.StartsWith("Version ",StringComparison.Ordinal)).Take(2).ToArray();
+        return lines.Length==0?"受保护 ADB 的 version 命令执行成功；诊断未记录原始路径。":string.Join("\r\n",lines);
     }
     async Task RepairAdbAsync()
     {
         if(!settingsValid)throw new IOException("配置文件尚未成功读取。请先恢复原配置，不能用 ADB 路径修复覆盖排除规则："+store.Path);
         var bundled=Path.Combine(AppContext.BaseDirectory,"tools","platform-tools","adb.exe");
-        if(VerifyBundledAdb(bundled) is {} error)throw new IOException(error);
+        if(!File.Exists(bundled))throw new IOException("完整交付目录中没有内置 Android Platform-Tools；Wi-Fi 模式仍可使用。");
+        _=TrustedBundledAdb.StageAndGetVerifiedPath(bundled);
         // ADB approval fingerprints include settings. Clean our own reverse
         // before changing the path; unrelated network sessions continue.
         if(approved is not null)await StopAsync();

@@ -1,4 +1,4 @@
-# TabLink Android 客户端 0.8.6 Preview 1
+# TabLink Android 客户端 0.8.7 Preview 1
 
 作者：**张林杰（Jey / [@linjierd](https://github.com/linjierd)）** · 博客：[Linjie / 开发笔记](https://linjie.space/)
 
@@ -40,7 +40,7 @@ TLS 握手成功后，客户端在 `0x10` 认证中声明 `render-submitted-v1`�
 
 ## 正式版自动更新
 
-自 0.8.0 起，Android 客户端在进入前台时立即读取电脑端同一套签名稳定版清单，应用保持打开期间每 6 小时复查。当前 0.8.6 Preview 1 保留此机制，但已签名的公网 stable 清单仍保持 0.8.0，不会因安装或发布预览版而自动推进。默认开启自动下载；设置面板可以关闭自动下载，或手动检查、继续和重试。投屏期间只检查，不下载或安装；停止投屏后继续。
+自 0.8.0 起，Android 客户端在进入前台时立即读取电脑端同一套签名稳定版清单，应用保持打开期间每 6 小时复查。当前 0.8.7 Preview 1 保留此机制，但已签名的公网 stable 清单仍保持 0.8.0，不会因安装或发布预览版而自动推进。默认开启自动下载；设置面板可以关闭自动下载，或手动检查、继续和重试。投屏期间只检查，不下载或安装；停止投屏后继续。
 
 发布构建必须通过 `-UpdateManifestUrl` 注入 HTTPS 清单地址。客户端先验证内置 P-256 公钥对应的签名，再核对 stable SemVer、versionCode、包名、APK 签名、大小和 SHA-256。安装使用 Android `PackageInstaller`：Android 12 及以上会请求无需用户操作，但系统仍可要求显示标准确认页。当前直接分发包继续使用既有开发签名，以便已安装的平板原地更新；切换到新的商店签名前必须单独安排签名迁移。
 
@@ -68,7 +68,7 @@ Set-Location '<repository-root>\android'
 
 其他电脑可通过三个参数指定工具路径；首次需要下载 Gradle 插件依赖时省略 `-Offline`。脚本只在当前进程设置 Java/SDK 环境变量，并在退出时恢复。
 
-普通构建输出 `artifacts/TabLink-android-0.8.6-debug.apk`。增加 `-ReleasePreview` 会运行 `assembleRelease` / `lintRelease`，输出不可调试的 `artifacts/TabLink-android-0.8.6-preview.apk`。两者均为 `versionName 0.8.6`、`versionCode 18`（build 18），并使用本机生成且被 Git 忽略的 `build/signing/debug.keystore` 开发证书，以便覆盖早期 TabLink 测试安装；它不是应用商店生产签名。应安全保留同一份签名文件，绝不能把私钥提交到仓库。
+普通构建输出 `artifacts/TabLink-android-0.8.7-debug.apk`。增加 `-ReleasePreview` 会运行 `assembleRelease` / `lintRelease`，输出不可调试的 `artifacts/TabLink-android-0.8.7-preview.apk`。两者均为 `versionName 0.8.7`、`versionCode 19`（build 19），并使用本机生成且被 Git 忽略的 `build/signing/debug.keystore` 开发证书，以便覆盖早期 TabLink 测试安装；它不是应用商店生产签名。应安全保留同一份签名文件，绝不能把私钥提交到仓库。
 
 本机构建时发现系统 SDK 的 build-tools 35.0.0 目录只有未完成安装记录，因此在项目 `.tools/sdk` 中准备了隔离 SDK：复制现有 SDK platform 35，并从 [Google Android 官方仓库](https://dl.google.com/android/repository/build-tools_r35_windows.zip) 下载 build-tools 35.0.0。压缩包使用 [官方 repository 元数据](https://dl.google.com/android/repository/repository2-1.xml) 中 SHA-1 `af059bb67cf7786f45ee0db85e2d24985df1b4b6` 校验。没有修改系统 SDK。`.tools`、`.gradle`、`build` 和 `app/build` 属于本地构建工具或缓存，不应放进用户发行包。
 
@@ -77,9 +77,9 @@ Set-Location '<repository-root>\android'
 电脑端应先检查用户选定的设备未被排除，并且是获准使用的 USB 调试设备。以下命令中的 `SERIAL` 必须是该设备的真实序列号；不要批量对所有设备执行。
 
 ```text
-adb -s SERIAL install -r TabLink-android-0.8.6-preview.apk
-adb -s SERIAL reverse --no-rebind tcp:27183 tcp:27183
-adb -s SERIAL shell am start -n com.tablink.client/.MainActivity --es host 127.0.0.1 --ei port 27183 --es token RANDOM_SESSION_TOKEN
+adb -s SERIAL install -r TabLink-android-0.8.7-preview.apk
+adb -s SERIAL reverse --no-rebind tcp:RANDOM_DEVICE_PORT tcp:27183
+adb -s SERIAL shell am start -n com.tablink.client/.MainActivity --es host 127.0.0.1 --ei port RANDOM_DEVICE_PORT --es token RANDOM_SESSION_TOKEN
 ```
 
 以上命令只用于原有 ADB 兼容通道。`token` 是每次会话由电脑端生成的随机凭证；不要使用示例常量或将凭证记录到日志。`host` 可省略，其他主机地址会被拒绝；ADB 端口范围为 1024–65535，默认 27183。应用使用 `singleTask`，电脑端再次启动可替换旧会话。网络连接使用上述配对 URI 的 `ACTION_VIEW`，不会把非环回地址传入明文 ADB 通道。
@@ -197,13 +197,15 @@ H.264 必须先发 `0x20` 配置，SPS/PPS 分别为带 Annex-B 起始码的 Bas
 
 ## 已验证范围
 
+本节保留较早版本已完成的安卓逻辑、构建与实机证据，便于回归比较。0.8.7 的最终本地候选已经完成完整构建、APK 身份检查，并在唯一授权的 W202DS 上完成正常连接、断开清理和重新连接验收；准确范围与仍待完成的公开资产检查以根目录 `VERIFICATION-0.8.7.md` 为准。
+
 最终 0.4.2（APK SHA-256 `4F6FBBD8D22447A1D2702B2028A4868CC779D89124074E8923BBE667DFCD58FC`）已通过正常安装、默认开关开启的长时间真机验证：Windows 控制窗口最小化，原生 1200×1920 / 90 Hz，120.433 秒实际呈现 **89.702 fps**，四段 30 秒为 89.800 / 89.667 / 89.733 / 89.567 fps，P99 11.147 ms，最大间隔 33.295 ms，没有断线或采样覆盖缺口。该结果来自 SurfaceFlinger 实际呈现时间戳，而非计划帧率。完整方法和保留的未通过候选结果见根目录 `VERIFICATION.md` 与发行目录 `diagnostics/final042-driftfixed-*`。
 
-- 0.8.6 Preview 1 保留 0.8.5 的能力协商、队列 recovery epoch、关键帧限频、接收端反馈和 decoder 候选测试；USB 随机端点由 Windows 通过既有 `--ei port` 参数传入，因此 Android 帧协议没有变化。纯 JVM 测试不运行真实 MediaCodec；不同 Windows 编码后端、真实队列拥塞和 decoder 运行时故障后的恢复仍须实机验证。最终结果以根目录 `VERIFICATION-0.8.6.md` 为准。
+- 0.8.7 Preview 1 保留 0.8.5 的能力协商、队列 recovery epoch、关键帧限频、接收端反馈和 decoder 候选测试；本轮只同步 Android 版本号。USB 随机端点仍由 Windows 通过既有 `--ei port` 参数传入，因此 Android 帧协议没有变化。纯 JVM 测试不运行真实 MediaCodec；不同 Windows 编码后端、真实队列拥塞和 decoder 运行时故障后的恢复仍须实机验证。最终结果以根目录 `VERIFICATION-0.8.7.md` 为准。
 - 20 项纯 JVM HUD / 暂停状态断言：透明度与不透明度方向、持久化数值边界、九宫格位置、颜色格式，以及暂停、普通心跳、恢复和同会话序号延续。0.5.0 的设置手势、沉浸显示和电脑采集暂停恢复仍需真机联合验证；不能用这些逻辑测试替代运行中的画面验收。
 - 26,024 项独立纯 JVM RenderClock 断言覆盖稳定 90 fps、解码抖动、较慢输入、首批突发、长停顿、固定硬件流水线延迟、重复/倒序 PTS、极大 PTS 跳变、重连重置，以及不同帧率下未来排程不超过 25 ms。新增 100 秒缓慢时钟偏移、持续到达延迟和正负 5 ms 交替抖动用例；后者检查计划间隔均匀且不会反复触发上下限修正。逻辑测试仅验证时钟行为，不能替代最终实际呈现率验收。
-- `assembleDebug` / `assembleRelease` 与 `lintDebug` / `lintRelease` 成功；release Lint 为 0 error / 18 warning，警告仍涉及目标 SDK 版本、较新 XML 属性和中文界面可翻译性等兼容/维护项。
-- 使用 SDK `apksigner` 验证 release APK 的 v1、v2 签名；最终公开 APK 的字节数和 SHA-256 记录在 GitHub Release 的 `SHA256SUMS.txt`。
+- 0.8.7 最终本地候选已重新通过 Android JVM 测试、`assembleDebug` 和 `lintDebug`，debug APK 同时通过 v1、v2 签名验证；候选与 W202DS 包管理器均确认 `versionName 0.8.7`、`versionCode 19`。公开 release APK 的独立身份、签名和外层资产校验仍以 GitHub Release 门禁为准。
+- 较早 release APK 已使用 SDK `apksigner` 验证 v1、v2 签名；0.8.7 最终公开 APK 仍须重新验证，其字节数和 SHA-256 由 GitHub Release 的 `SHA256SUMS.txt` 记录。
 - 0.4.0 已在本机 W202DS 上显示 1200 × 1920 独立 USB 桌面，解码器实际为 `c2.unisoc.avc.decoder`。当时系统将物理屏幕固定在 60 Hz，解码回调约 63–65 fps，单次 SurfaceFlinger 实际呈现采样约 50.4 fps；这些数字不是同一指标。
 - 0.4.1 已安装并完成原生 1200 × 1920、物理屏幕 90 Hz 验证。2026-09-20 02:26 的三个只读样本中，能力接口均报告实际模式 2 / 90 Hz；SurfaceFlinger 周期为 11,111,111 ns，显示策略固定 90 Hz。此时中兴“锁定刷新率”已开启，应用亮度补偿未启用。
 - 同次旧 FFmpeg 采样的硬件解码回调为 63.37–64.62 fps，视频层实际呈现为 56.57–59.88 fps。随后 Windows 高精度 FFmpeg 到位，0.4.1 在 02:53 的三个短样本中达到 89.71–90.36 解码 fps、83.39–88.65 实际呈现 fps；物理面板仍为 90 Hz。这些是不同指标，且不代表持续满帧。两轮证据分别位于发行目录 `diagnostics/android-panel-90hz-verification.json` 和 `diagnostics/android-custom-ffmpeg-90hz-verification.json`，各自附有 `-latency.txt` 原始时间戳。动态负载的整体真机验收结果以根目录 `VERIFICATION.md` 为准。

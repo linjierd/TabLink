@@ -9,10 +9,22 @@ internal static class Diagnostics
     {
         var usb=await UsbInventory.ReadAsync(CancellationToken.None);
         var settings=new SettingsStore(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"TabLink","settings.json")).Load();
-        var path=AdbLocator.FindAdbPath(settings.AdbPath);
+        string? path=null;var adbTrust="not-found";
+        try
+        {
+            path=TrustedBundledAdb.LocateStageAndGetVerifiedPath(settings.AdbPath);
+            if(path is not null)adbTrust="fixed-sha256-protected-copy";
+        }
+        catch(Exception ex) when(IsAdbTrustFailure(ex)){adbTrust="rejected-or-protected-storage-unavailable";}
         var adb=path is null?null:new AdbClient(path,new DevicePolicy(settings),UsbInventory.ReadAsync);
         var devices=adb is null?Array.Empty<AdbDevice>():await adb.ListDevicesAsync();
-        return Save("device-probe.json",()=>new{timestamp=DateTimeOffset.Now,adbPath=path,usb,adbDevices=devices,displays=VirtualDisplayManager.GetDisplays()})?0:1;
+        var displays=VirtualDisplayManager.GetDisplays();
+        var states=devices.GroupBy(device=>device.State,StringComparer.OrdinalIgnoreCase)
+            .OrderBy(group=>group.Key,StringComparer.OrdinalIgnoreCase)
+            .Select(group=>new{state=group.Key,count=group.Count()}).ToArray();
+        return Save("device-probe.json",()=>new{timestamp=DateTimeOffset.Now,adbTrust,
+            usbIdentityCount=usb.Count,adbDeviceCount=devices.Count,adbStates=states,
+            displayCount=displays.Count,tabLinkDisplayCount=displays.Count(display=>display.IsTabLinkCompatible)})?0:1;
     }
 
     internal static async Task<int> SmokeAsync(string serial,int seconds)
@@ -20,7 +32,9 @@ internal static class Diagnostics
         seconds=Math.Clamp(seconds,10,120);
         using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(seconds+35));
         var settings=new SettingsStore(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"TabLink","settings.json")).Load();
-        var adb=new AdbClient(AdbLocator.FindAdbPath(settings.AdbPath)??throw new IOException("找不到adb"),new DevicePolicy(settings),UsbInventory.ReadAsync);
+        var trustedAdb=TrustedBundledAdb.LocateStageAndGetVerifiedPath(settings.AdbPath)
+            ??throw new IOException("找不到与固定 SHA-256 匹配的 Android Platform-Tools。");
+        var adb=new AdbClient(trustedAdb,new DevicePolicy(settings),UsbInventory.ReadAsync);
         var candidate=(await adb.ListDevicesAsync(timeout.Token)).Single(d=>d.Serial==serial);
         var approved=await adb.ApproveAsync(candidate,timeout.Token);
         // A diagnostic image proves Android receives and renders frames before
@@ -30,20 +44,50 @@ internal static class Diagnostics
         await using var server=new FrameServer(()=>images[(Interlocked.Increment(ref tick)/10)%2],null,()=>{},10);
         var reversed=false;
         AdbReverseEndpoint? reverseEndpoint=null;
+        UsbReverseLease? reverseReceipt=null;
+        UsbReverseQueueState? reverseState=null;
         var began=DateTimeOffset.Now;
         try
         {
             server.Start();
-            reverseEndpoint=await adb.ReserveRandomReverseEndpointAsync(approved,timeout.Token);reversed=true;
+            reverseEndpoint=await UsbReverseCleanupCoordinator.Shared.RunMutationAsync(async(reserved,ct)=>
+            {
+                var endpoint=await adb.SelectRandomUnusedReverseEndpointAsync(approved,reserved,ct);
+                reverseReceipt=UsbReverseLease.Created(approved,endpoint);
+                UsbReverseCleanupCoordinator.Shared.PrepareActiveMutation(reverseReceipt);
+                reverseEndpoint=endpoint;
+                reverseState=UsbReverseQueueState.Prepared;
+                try { await adb.ReversePortAsync(approved,endpoint,ct); }
+                catch(AdbCommandException)
+                {
+                    UsbReverseCleanupCoordinator.Shared.CompleteActiveMutation(reverseReceipt);
+                    reverseReceipt=null;reverseEndpoint=null;reverseState=null;
+                    throw;
+                }
+                catch(OperationCanceledException) when(ct.IsCancellationRequested)
+                {
+                    UsbReverseCleanupCoordinator.Shared.CompleteActiveMutation(reverseReceipt);
+                    reverseReceipt=null;reverseEndpoint=null;reverseState=null;
+                    throw;
+                }
+                UsbReverseCleanupCoordinator.Shared.ActivateActiveMutation(reverseReceipt);
+                reverseState=UsbReverseQueueState.Owned;
+                reversed=true;
+                return endpoint;
+            },timeout.Token);
             await adb.LaunchAsync(approved,server.Token,reverseEndpoint.Value,timeout.Token);
             await Task.Delay(TimeSpan.FromSeconds(seconds),timeout.Token);
             var passed=server.PresentedFrames>=Math.Max(5,seconds*3)&&server.LastPresentedUtc>DateTime.UtcNow.AddSeconds(-5);
-            var saved=Save("usb-smoke-result.json",()=>new{passed,began,ended=DateTimeOffset.Now,serial,server.FramesSent,server.PresentedFrames,server.PresentedWidth,server.PresentedHeight,server.LastPresentedUtc,desktopCaptured=false,virtualDisplayChanged=false});
+            var saved=Save("usb-smoke-result.json",()=>new{passed,began,ended=DateTimeOffset.Now,server.FramesSent,server.PresentedFrames,server.PresentedWidth,server.PresentedHeight,server.LastPresentedUtc,desktopCaptured=false,virtualDisplayChanged=false});
             return passed&&saved?0:1;
         }
-        catch(Exception e){Save("usb-smoke-result.json",()=>new{passed=false,serial,error=e.Message,began});throw;}
-        finally{if(reversed&&reverseEndpoint is { } endpoint){try{using var cleanup=new CancellationTokenSource(TimeSpan.FromSeconds(8));var mapping=await adb.InspectReversePortAsync(approved,endpoint,cleanup.Token);if(mapping.Status==AdbReversePortStatus.Existing)await adb.RemoveReverseAsync(approved,endpoint,cleanup.Token);else Save("usb-smoke-cleanup.json",()=>new{error="本次诊断的 USB 端点映射已经变化，未修改它。"});}catch(Exception e){Save("usb-smoke-cleanup.json",()=>new{error=e.Message});}}}
+        catch(Exception e){var error=SafeDiagnosticFailure(e);Save("usb-smoke-result.json",()=>new{passed=false,error,began});throw;}
+        finally{if(reverseReceipt is {} receipt){try{using var cleanup=new CancellationTokenSource(TimeSpan.FromSeconds(8));await UsbReverseCleanupCoordinator.Shared.RunMutationAsync(async(_,ct)=>{if(reverseState==UsbReverseQueueState.Prepared){UsbReverseCleanupCoordinator.Shared.CompleteActiveMutation(receipt);return;}if(!reversed||reverseEndpoint is not { } endpoint)return;var mapping=await adb.InspectReversePortAsync(approved,endpoint,ct);if(mapping.Status==AdbReversePortStatus.Existing)await adb.RemoveReverseAsync(approved,endpoint,ct);else if(mapping.Status is not (AdbReversePortStatus.Missing or AdbReversePortStatus.Conflicting)){Save("usb-smoke-cleanup.json",()=>new{error="本次诊断的 USB 端点状态无法确认，保留受保护记录。"});return;}UsbReverseCleanupCoordinator.Shared.CompleteActiveMutation(receipt);},cleanup.Token);}catch(Exception e){var error=SafeDiagnosticFailure(e);Save("usb-smoke-cleanup.json",()=>new{error});}}}
     }
+
+    static bool IsAdbTrustFailure(Exception ex) => TrustedBundledAdb.IsTrustStorageFailure(ex);
+    static string SafeDiagnosticFailure(Exception error) =>
+        SafeErrorSummary.ForUser(error,adbOperation:true)+" 未记录设备标识、ADB 路径或命令输出。";
 
     static byte[] CreateTestFrame(bool alternate)
     {

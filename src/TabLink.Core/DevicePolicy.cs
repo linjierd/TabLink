@@ -125,6 +125,8 @@ public sealed class DevicePolicy
     internal static bool IsSafeSerial(string serial) => !string.IsNullOrWhiteSpace(serial) && serial.Length <= 256 &&
         !serial.StartsWith('-') && Regex.IsMatch(serial, @"\A[A-Za-z0-9._:+-]+\z", RegexOptions.CultureInvariant);
     internal static bool IsHexId(string? value) => value is not null && Regex.IsMatch(value, @"\A[0-9a-fA-F]{4}\z", RegexOptions.CultureInvariant);
+    public static bool IsSafeUsbSerial(string serial) => IsSafeSerial(serial) && !IsNetworkSerial(serial);
+    public static bool IsUsbHardwareId(string? value) => IsHexId(value);
     public static bool IsNetworkSerial(string serial) => serial.Contains(':') ||
         serial.StartsWith("emulator-", StringComparison.OrdinalIgnoreCase) ||
         serial.Contains("._tcp", StringComparison.OrdinalIgnoreCase) ||

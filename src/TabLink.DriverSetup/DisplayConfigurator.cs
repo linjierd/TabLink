@@ -7,13 +7,26 @@ namespace TabLink.DriverSetup;
 
 internal static partial class DriverInstaller
 {
+    internal static InstallResult InstallStandalone()
+        => DisplayMutationBoundary.RunStandalone(() =>
+        {
+            using var leaseLock = DisplayConfigurationActivity.AcquireLeaseLock();
+            DisplayConfigurationActivity.AssertNoLiveDisplayLeases();
+            return Install();
+        });
+
     internal static InstallResult PrepareSingleDisplay(int width, int height, int refreshRate)
-        => WithDriverLifecycleLock(() => PrepareSingleDisplayCore(width, height, refreshRate));
+        => DisplayMutationBoundary.RunStandalone(
+            () => PrepareSingleDisplayCore(width, height, refreshRate));
 
     // The Windows host holds the same named mutex on a dedicated thread from
     // before this helper starts until the display guard has been retired.
-    internal static InstallResult PrepareSingleDisplayWithCallerLease(int width, int height, int refreshRate)
-        => PrepareSingleDisplayCore(width, height, refreshRate);
+    internal static InstallResult PrepareSingleDisplayWithCallerLease(int width, int height, int refreshRate,
+        DriverLifecycleHandoffCredentials credentials)
+        => DisplayMutationBoundary.RunHeld(credentials, "--prepare-single-display-held",
+            [width.ToString(CultureInfo.InvariantCulture), height.ToString(CultureInfo.InvariantCulture),
+             refreshRate.ToString(CultureInfo.InvariantCulture)],
+            () => PrepareSingleDisplayCore(width, height, refreshRate));
 
     private static InstallResult PrepareSingleDisplayCore(int width, int height, int refreshRate)
     {
@@ -219,11 +232,14 @@ internal static partial class DriverInstaller
         }
     }
 
-    internal static InstallResult RemoveSessionDisplay() => WithDriverLifecycleLock(RemoveSessionDisplayCore);
+    internal static InstallResult RemoveSessionDisplay() =>
+        DisplayMutationBoundary.RunStandalone(RemoveSessionDisplayCore);
 
     // The Windows host keeps the lifecycle mutex for the complete session and
     // invokes this form before handing the mutex to any waiting process.
-    internal static InstallResult RemoveSessionDisplayWithCallerLease() => RemoveSessionDisplayCore();
+    internal static InstallResult RemoveSessionDisplayWithCallerLease(
+        DriverLifecycleHandoffCredentials credentials) =>
+        DisplayMutationBoundary.RunHeld(credentials, "--remove-session-display-held", [], RemoveSessionDisplayCore);
 
     private static InstallResult RemoveSessionDisplayCore()
     {
@@ -326,21 +342,10 @@ internal static partial class DriverInstaller
         throw new IOException(operation + "后，Windows 未在限定时间内确认精确虚拟显示设备已移除。");
     }
 
-    private static T WithDriverLifecycleLock<T>(Func<T> action)
-    {
-        using var mutex = new Mutex(false, @"Global\TabLink.SingleDisplayDriverLifecycle.1");
-        var acquired = false;
-        try
-        {
-            try { acquired = mutex.WaitOne(TimeSpan.FromSeconds(30)); }
-            catch (AbandonedMutexException) { acquired = true; }
-            if (!acquired) throw new IOException("另一个 TabLink 进程正在准备或使用唯一虚拟显示设备。");
-            return action();
-        }
-        finally { if (acquired) mutex.ReleaseMutex(); }
-    }
+    internal static InstallResult CollectOwnedIdlePool() =>
+        DisplayMutationBoundary.RunStandalone(CollectOwnedIdlePoolCore);
 
-    internal static InstallResult CollectOwnedIdlePool()
+    private static InstallResult CollectOwnedIdlePoolCore()
     {
         using var leaseLock = DisplayConfigurationActivity.AcquireLeaseLock();
         DisplayConfigurationActivity.AssertIdle();
@@ -361,14 +366,22 @@ internal static partial class DriverInstaller
         return new(true, "idlePoolCollected", "已收回所有已确认且无人占用的 TabLink 虚拟输出，未重启驱动或修改主屏。", exactInstance, false, DateTimeOffset.UtcNow);
     }
 
-    internal static InstallResult ConfigureDisplay(int width, int height, int refreshRate)
+    internal static InstallResult ConfigureDisplay(int width, int height, int refreshRate) =>
+        DisplayMutationBoundary.RunStandalone(
+            () => ConfigureDisplayCore(width, height, refreshRate));
+
+    private static InstallResult ConfigureDisplayCore(int width, int height, int refreshRate)
     {
         ValidateProfile(width, height, refreshRate);
         return ConfigureOwnedDisplay(bytes => BuildSingleDisplayConfiguration(bytes, width, height, refreshRate),
             $"配置唯一虚拟屏，并添加 {width} × {height} 与 {height} × {width}、{refreshRate} Hz 和60 Hz模式", null);
     }
 
-    internal static InstallResult ConfigurePool(int targetCount)
+    internal static InstallResult ConfigurePool(int targetCount) =>
+        DisplayMutationBoundary.RunStandalone(
+            () => ConfigurePoolCore(targetCount));
+
+    private static InstallResult ConfigurePoolCore(int targetCount)
     {
         if (targetCount != 1) throw new ArgumentOutOfRangeException(nameof(targetCount), "TabLink 只允许配置一块虚拟扩展屏。");
         return ConfigureOwnedDisplay(bytes => BuildPoolConfiguration(bytes, targetCount),

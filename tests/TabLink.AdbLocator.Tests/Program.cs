@@ -1,7 +1,10 @@
 using TabLink.Core;
+using TabLink.Windows;
+using System.Security.Cryptography;
 
 // File-system fixtures only. This program never launches adb or changes process environment.
-var root = Path.Combine(Path.GetTempPath(), "TabLink-AdbLocator-" + Guid.NewGuid().ToString("N"));
+var testParent = Path.Combine(AppContext.BaseDirectory, "test-artifacts");
+var root = Path.Combine(testParent, "TabLink-AdbLocator-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
 var count = 0;
 try
@@ -53,15 +56,119 @@ try
     Check(AdbLocator.FindAdbPath(null, new(".", null, null, null, [".", "", "bad\0path"])) is null,
         "relative and invalid discovery roots cannot search current working directory");
     Check(AdbLocator.FindAdbPath(null, new(app, null, null, null, [])) is null, "no complete installation returns null");
+    VerifyProtectedStagingRecovery(root);
     Console.WriteLine($"PASS: {count} bundled ADB locator assertions; no adb process was executed.");
 }
 finally
 {
     var checkedRoot = Path.GetFullPath(root);
-    var intendedRoot = Path.GetFullPath(Path.GetTempPath()).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-    if (checkedRoot.StartsWith(intendedRoot, StringComparison.OrdinalIgnoreCase)
-        && Path.GetFileName(checkedRoot).StartsWith("TabLink-AdbLocator-", StringComparison.Ordinal))
-        Directory.Delete(checkedRoot, recursive: true);
+    var intendedParent = Path.GetFullPath(testParent).TrimEnd(Path.DirectorySeparatorChar);
+    if (!string.Equals(Path.GetDirectoryName(checkedRoot), intendedParent, StringComparison.OrdinalIgnoreCase) ||
+        !Path.GetFileName(checkedRoot).StartsWith("TabLink-AdbLocator-", StringComparison.Ordinal))
+        throw new IOException("Refusing to delete an unexpected ADB locator test directory");
+    Directory.Delete(checkedRoot, recursive: true);
+    if (Directory.Exists(intendedParent) && !Directory.EnumerateFileSystemEntries(intendedParent).Any())
+        Directory.Delete(intendedParent);
+}
+
+void VerifyProtectedStagingRecovery(string fixtureRoot)
+{
+    var source = Path.Combine(fixtureRoot, "trusted-source");
+    Directory.CreateDirectory(source);
+    var payloads = new Dictionary<string, byte[]>(StringComparer.Ordinal)
+    {
+        ["adb.exe"] = "offline-adb-r37-fixture"u8.ToArray(),
+        ["AdbWinApi.dll"] = "offline-api-r37-fixture"u8.ToArray(),
+        ["AdbWinUsbApi.dll"] = "offline-usb-r37-fixture"u8.ToArray()
+    };
+    foreach (var payload in payloads)
+        File.WriteAllBytes(Path.Combine(source, payload.Key), payload.Value);
+    var hashes = payloads.ToDictionary(x => x.Key,
+        x => Convert.ToHexString(SHA256.HashData(x.Value)), StringComparer.Ordinal);
+
+    var protectedRoot = Path.Combine(fixtureRoot, "protected", "TabLink");
+    var unsafePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    var storage = new TrustedAdbStorageBoundary(
+        protectedRoot,
+        VerifyDirectory,
+        adbRoot =>
+        {
+            Directory.CreateDirectory(protectedRoot);
+            Directory.CreateDirectory(adbRoot);
+            VerifyDirectory(protectedRoot);
+            VerifyDirectory(adbRoot);
+        },
+        (path, parent) =>
+        {
+            RequireDirectChild(path, parent);
+            VerifyDirectory(parent);
+            Directory.CreateDirectory(path);
+            VerifyDirectory(path);
+        },
+        (path, parent) =>
+        {
+            RequireDirectChild(path, parent);
+            VerifyDirectory(parent);
+            return new FileStream(path, FileMode.CreateNew, FileAccess.ReadWrite,
+                FileShare.None, 4096, FileOptions.WriteThrough);
+        },
+        VerifyDirectory,
+        path =>
+        {
+            var full = Path.GetFullPath(path);
+            if (unsafePaths.Contains(full))
+                throw new UnauthorizedAccessException("injected unsafe protected ADB file");
+            if (!File.Exists(full)) throw new FileNotFoundException("fixture file missing", full);
+            var attributes = File.GetAttributes(full);
+            if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0)
+                throw new InvalidDataException("fixture is not an ordinary protected file");
+        });
+
+    var adbRoot = Path.Combine(protectedRoot, "Adb");
+    Directory.CreateDirectory(adbRoot);
+    var target = TrustedBundledAdb.ProtectedTargetDirectory(protectedRoot, hashes);
+    Directory.CreateDirectory(target);
+    File.WriteAllBytes(Path.Combine(target, "adb.exe"), payloads["adb.exe"]);
+    File.WriteAllBytes(Path.Combine(target, "AdbWinApi.dll"), "crash-cut-truncated"u8.ToArray());
+    // AdbWinUsbApi.dll is intentionally absent: this models a crash after the
+    // target directory and only part of the protected triplet were committed.
+    var staged = TrustedBundledAdb.StageAndGetVerifiedPath(
+        Path.Combine(source, "adb.exe"), hashes, storage);
+    Check(staged == Path.Combine(target, "adb.exe") && payloads.All(payload =>
+            File.ReadAllBytes(Path.Combine(target, payload.Key)).SequenceEqual(payload.Value)),
+        "a fixed-hash source safely repairs missing and truncated protected staging members");
+    Check(TrustedBundledAdb.IsTrustStorageFailure(new InvalidDataException("fixture")),
+        "InvalidDataException is classified as a protected ADB staging or trust-store failure");
+
+    var protectedMember = Path.Combine(target, "AdbWinApi.dll");
+    File.WriteAllBytes(protectedMember, "unsafe-content"u8.ToArray());
+    unsafePaths.Add(Path.GetFullPath(protectedMember));
+    Check(Throws<UnauthorizedAccessException>(() => TrustedBundledAdb.StageAndGetVerifiedPath(
+              Path.Combine(source, "adb.exe"), hashes, storage)) &&
+          File.ReadAllBytes(protectedMember).SequenceEqual("unsafe-content"u8.ToArray()),
+        "staging repair refuses to delete a member that fails the protected-file predicate");
+}
+
+void VerifyDirectory(string path)
+{
+    var full = Path.GetFullPath(path);
+    if (!Directory.Exists(full)) throw new DirectoryNotFoundException(full);
+    if ((File.GetAttributes(full) & FileAttributes.ReparsePoint) != 0)
+        throw new InvalidDataException("fixture directory is a reparse point");
+}
+
+void RequireDirectChild(string path, string parent)
+{
+    if (!string.Equals(Path.GetDirectoryName(Path.GetFullPath(path)),
+            Path.GetFullPath(parent).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            StringComparison.OrdinalIgnoreCase))
+        throw new InvalidDataException("fixture path escaped its expected parent");
+}
+
+bool Throws<T>(Action action) where T : Exception
+{
+    try { action(); return false; }
+    catch (T) { return true; }
 }
 
 string Complete(string directory)

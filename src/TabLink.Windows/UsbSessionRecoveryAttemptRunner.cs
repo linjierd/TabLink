@@ -35,7 +35,9 @@ internal sealed class UsbSessionRecoveryAttemptRunner
     readonly Func<bool> isConnected;
     readonly Func<bool> hasOwnedMapping;
     readonly Action retireOwnedMapping;
+    readonly Action prepareCreatedMapping;
     readonly Action publishCreatedMapping;
+    readonly Action abandonPreparedMapping;
     readonly Func<TimeSpan, CancellationToken, Task> delay;
 
     internal UsbSessionRecoveryAttemptRunner(
@@ -49,6 +51,23 @@ internal sealed class UsbSessionRecoveryAttemptRunner
         Action retireOwnedMapping,
         Action publishCreatedMapping,
         Func<TimeSpan, CancellationToken, Task>? delay = null)
+        : this(adb, target, endpoint, token, isCurrent, isConnected, hasOwnedMapping,
+            retireOwnedMapping, static () => { }, publishCreatedMapping, static () => { }, delay)
+    { }
+
+    internal UsbSessionRecoveryAttemptRunner(
+        AdbClient adb,
+        ApprovedUsbDevice target,
+        AdbReverseEndpoint endpoint,
+        string token,
+        Func<bool> isCurrent,
+        Func<bool> isConnected,
+        Func<bool> hasOwnedMapping,
+        Action retireOwnedMapping,
+        Action prepareCreatedMapping,
+        Action publishCreatedMapping,
+        Action abandonPreparedMapping,
+        Func<TimeSpan, CancellationToken, Task>? delay = null)
     {
         this.adb = adb ?? throw new ArgumentNullException(nameof(adb));
         this.target = target ?? throw new ArgumentNullException(nameof(target));
@@ -60,7 +79,9 @@ internal sealed class UsbSessionRecoveryAttemptRunner
         this.isConnected = isConnected ?? throw new ArgumentNullException(nameof(isConnected));
         this.hasOwnedMapping = hasOwnedMapping ?? throw new ArgumentNullException(nameof(hasOwnedMapping));
         this.retireOwnedMapping = retireOwnedMapping ?? throw new ArgumentNullException(nameof(retireOwnedMapping));
+        this.prepareCreatedMapping = prepareCreatedMapping ?? throw new ArgumentNullException(nameof(prepareCreatedMapping));
         this.publishCreatedMapping = publishCreatedMapping ?? throw new ArgumentNullException(nameof(publishCreatedMapping));
+        this.abandonPreparedMapping = abandonPreparedMapping ?? throw new ArgumentNullException(nameof(abandonPreparedMapping));
         this.delay = delay ?? Task.Delay;
     }
 
@@ -94,20 +115,39 @@ internal sealed class UsbSessionRecoveryAttemptRunner
                 catch (Exception ex) when (IsOwnershipPersistenceFailure(ex))
                 {
                     return Terminal(route, false,
-                        "本会话 USB 端点已指向其他映射；已撤销直接删除权限，但无法持久注销旧记录："+ex.Message);
+                        "本会话 USB 端点已指向其他映射；已撤销直接删除权限，但无法持久注销旧记录："+SafeErrorSummary.ForUser(ex));
                 }
                 return Terminal(route, false, "本会话 USB 端点已指向其他映射，未替换或删除它。");
             }
             if (inspection.Status == AdbReversePortStatus.Existing && !hasOwnedMapping())
+            {
+                try { retireOwnedMapping(); }
+                catch (Exception ex) when (IsOwnershipPersistenceFailure(ex))
+                {
+                    return Terminal(route, false,
+                        "发现未获删除权限的 USB 映射；未修改它，且无法封存准备记录："+SafeErrorSummary.ForUser(ex));
+                }
                 return Terminal(route, false,
-                    "发现本会话 USB 端点映射，但没有可验证的创建收据；未接管、替换或删除它。");
+                    "发现本会话端点映射，但准备记录未获得删除权限；已封存记录，未修改映射。");
+            }
             if (inspection.Status == AdbReversePortStatus.Missing)
             {
                 // The old receipt cannot authorize cleanup of a future mapping.
                 retireOwnedMapping();
                 ct.ThrowIfCancellationRequested();
                 if (!isCurrent()) return Cancelled("重建前连接代次已经变化。");
-                await adb.ReversePortAsync(target, endpoint, ct);
+                prepareCreatedMapping();
+                try { await adb.ReversePortAsync(target, endpoint, ct); }
+                catch (AdbCommandException)
+                {
+                    abandonPreparedMapping();
+                    throw;
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    abandonPreparedMapping();
+                    throw;
+                }
                 route = AdbReversePortStatus.Created;
                 // Publish immediately after a definite --no-rebind success. If
                 // Stop raced us, it waits this attempt and then removes exactly
@@ -116,7 +156,7 @@ internal sealed class UsbSessionRecoveryAttemptRunner
                 catch (Exception ex) when (IsOwnershipPersistenceFailure(ex))
                 {
                     return Terminal(route, false,
-                        "USB 映射已创建，但无法发布新的所有权记录；将停止会话并执行精确清理："+ex.Message);
+                        "USB 映射已创建，但无法发布新的所有权记录；将停止会话并执行精确清理："+SafeErrorSummary.ForUser(ex));
                 }
             }
 
@@ -143,29 +183,29 @@ internal sealed class UsbSessionRecoveryAttemptRunner
         }
         catch (AdbDeviceTemporarilyUnavailableException ex)
         {
-            return Retry(ex.Message, route, launched);
+            return Retry(SafeErrorSummary.ForUser(ex), route, launched);
         }
-        catch (InvalidDataException ex)
+        catch (Exception ex) when (ex is InvalidDataException or AdbResponseException)
         {
             // Unknown list output means the old ownership proof is no longer
             // sufficient to authorize crash cleanup of whatever occupies the
             // per-session device endpoint.
             try { retireOwnedMapping(); }
             catch (Exception retireError) when (IsOwnershipPersistenceFailure(retireError))
-            { return Terminal(route, launched, ex.Message + "；注销旧 USB 所有权记录也失败：" + retireError.Message); }
-            return Terminal(route, launched, ex.Message);
+            { return Terminal(route, launched, SafeErrorSummary.ForUser(ex,adbOperation:true) + "；注销旧 USB 所有权记录也失败：" + SafeErrorSummary.ForUser(retireError)); }
+            return Terminal(route, launched, SafeErrorSummary.ForUser(ex,adbOperation:true));
         }
         catch (DevicePolicyException ex)
         {
-            return Terminal(route, launched, ex.Message);
+            return Terminal(route, launched, SafeErrorSummary.ForUser(ex,adbOperation:true));
         }
         catch (Exception ex) when (ex is IOException or TimeoutException or UnauthorizedAccessException)
         {
-            return Retry(ex.Message, route, launched);
+            return Retry(SafeErrorSummary.ForUser(ex,adbOperation:true), route, launched);
         }
         catch (ArgumentException ex)
         {
-            return Terminal(route, launched, ex.Message);
+            return Terminal(route, launched, SafeErrorSummary.ForUser(ex,adbOperation:true));
         }
     }
 

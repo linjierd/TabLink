@@ -13,6 +13,12 @@ static class GuardDisposalTests
             test.Guard.AttachReverse(first);
             check(test.ReadState().ReverseLease == first,
                 "the first created USB mapping publishes its exact crash-cleanup receipt");
+            var queue = new PendingUsbReverseCleanupQueue(test.PendingFolder);
+            queue.Prepare(first);queue.Activate(first);
+            test.Guard.RetainReverseForCleanup(first);
+            var pending = queue.ReadPending(8);
+            check(pending.Contains(first),
+                "an active guard can preserve its exact receipt independently before stop retires the display lease");
             test.Guard.ReplaceReverse(first, null);
             check(test.ReadState().ReverseLease is null,
                 "a missing or uncertain mapping retires its old cleanup authority before repair");
@@ -146,10 +152,12 @@ static class GuardDisposalTests
 
     sealed class DisposalScenario : IDisposable
     {
-        readonly string directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "TabLink-GuardDisposal-" + Guid.NewGuid().ToString("N"));
+        readonly string directory = System.IO.Path.Combine(AppContext.BaseDirectory, "test-artifacts",
+            "TabLink-GuardDisposal-" + Guid.NewGuid().ToString("N"));
         internal string Path { get; }
         internal string MarkerPath => Path + ".lease-id";
         internal string BootstrapPath => Path + "." + Lease.LeaseId.ToString("N") + ".initial.json";
+        internal string PendingFolder => System.IO.Path.Combine(directory, "pending-usb-reverse");
         internal DisplayLease Lease { get; } = new(Guid.NewGuid(), @"\\.\FAKE-GUARD-DISPOSAL-ONLY");
         internal long OwnerStartTicks { get; }
         internal SessionGuard Guard { get; }
@@ -165,12 +173,14 @@ static class GuardDisposalTests
         {
             Directory.CreateDirectory(directory);
             Path = System.IO.Path.Combine(directory, "lease.json");
+            Directory.CreateDirectory(PendingFolder);
+            Directory.CreateDirectory(System.IO.Path.Combine(PendingFolder, "completed"));
             using var owner = Process.GetCurrentProcess();
             OwnerStartTicks = owner.StartTime.ToUniversalTime().Ticks;
             var state = new SessionGuard.WatchState(Lease, Environment.ProcessId, OwnerStartTicks, DateTime.UtcNow.AddSeconds(20));
             File.WriteAllText(Path, JsonSerializer.Serialize(state));
             Marker = Lease.LeaseId;
-            Guard = new SessionGuard(Lease, Path, OwnerStartTicks);
+            Guard = new SessionGuard(Lease, Path, OwnerStartTicks, PendingFolder);
             VirtualDisplayManager.OnDetach = lease =>
             {
                 DetachIds.Add(lease.LeaseId);
@@ -184,11 +194,14 @@ static class GuardDisposalTests
         {
             VirtualDisplayManager.OnDetach = _ => throw new Exception("Unexpected fake detach after disposal test");
             var resolved = System.IO.Path.GetFullPath(directory);
-            var expectedParent = System.IO.Path.GetFullPath(System.IO.Path.GetTempPath()).TrimEnd(System.IO.Path.DirectorySeparatorChar);
+            var expectedParent = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppContext.BaseDirectory,
+                "test-artifacts")).TrimEnd(System.IO.Path.DirectorySeparatorChar);
             if (!string.Equals(System.IO.Path.GetDirectoryName(resolved), expectedParent, StringComparison.OrdinalIgnoreCase)
                 || !System.IO.Path.GetFileName(resolved).StartsWith("TabLink-GuardDisposal-", StringComparison.Ordinal))
                 throw new IOException("Refusing to delete an unexpected disposal-test directory");
             Directory.Delete(resolved, true);
+            if (Directory.Exists(expectedParent) && !Directory.EnumerateFileSystemEntries(expectedParent).Any())
+                Directory.Delete(expectedParent);
         }
     }
 }

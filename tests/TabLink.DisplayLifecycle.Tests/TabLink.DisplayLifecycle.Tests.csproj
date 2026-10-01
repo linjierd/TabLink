@@ -7,10 +7,13 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="../../src/TabLink.Core/TabLink.Core.csproj" />
     <Compile Include="../../src/TabLink.Windows/SessionGuard.cs" Link="SessionGuard.cs" />
+    <Compile Include="../../src/TabLink.Windows/PendingUsbReverseCleanupQueue.cs" Link="PendingUsbReverseCleanupQueue.cs" />
     <Compile Include="../../src/TabLink.Windows/InputDesktopAvailability.cs" Link="InputDesktopAvailability.cs" />
     <Compile Include="../../src/TabLink.Windows/SessionPresentationDeadline.cs" Link="SessionPresentationDeadline.cs" />
     <Compile Include="../../src/TabLink.Windows/UsbSessionRecoveryGate.cs" Link="UsbSessionRecoveryGate.cs" />
     <Compile Include="../../src/TabLink.Windows/DriverOwnerWatchdog.cs" Link="DriverOwnerWatchdog.cs" />
+    <Compile Include="../../src/TabLink.Windows/DisplayWatcherHandshake.cs" Link="DisplayWatcherHandshake.cs" />
   </ItemGroup>
 </Project>
