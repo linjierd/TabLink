@@ -302,6 +302,7 @@ function Assert-FfmpegSourceBundleSafe {
                 throw "FFmpeg source bundle contains a build output: $entry"
             }
             if ($normalizedEntry -match '(?i)^ffmpeg-tablink/bin/' -and
+                $normalizedEntry -notmatch '(?i)^ffmpeg-tablink/bin/?$' -and
                 $normalizedEntry -notmatch '(?i)^ffmpeg-tablink/bin/COPYING[^/]*$') {
                 throw "FFmpeg source bundle bin directory contains a non-license artifact: $entry"
             }
