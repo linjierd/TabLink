@@ -1,6 +1,6 @@
 # TabLink 设备兼容性目录
 
-此目录由 `compatibility/catalog.json` 自动生成，请勿手工编辑。Schema v1，当前 1 条记录。
+此目录由 `compatibility/catalog.json` 自动生成，请勿手工编辑。Schema v1，当前 2 条记录。
 只收录经过人工审查的非唯一设备型号和能力信息。
 每条记录只证明表中完全相同的软件、硬件和连接配置；不能据此推断同型号的其他系统版本或连接方式。
 
@@ -13,6 +13,7 @@
 | 日期 | 结果 | 电脑 | 接收设备 | 连接 | 显示 | 刷新率 | 视频 | 证据 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 2026-10-02 | `verified` | Windows 11 / `x64` / NVIDIA RTX 4060 Laptop GPU | `android` / `android-native` / ZTE W202DS / Android 13 / c2.unisoc.avc.decoder | `native-network` | 1920×1200（原生 1200×1920，旋转 1/4 圈） | 90 Hz（请求 90 Hz；支持 60/90 Hz） | `h264` / `nvenc` / `hardware`；呈现回调 90 fps；物理呈现 — | [VERIFICATION-0.8.8.md](../VERIFICATION-0.8.8.md) |
+| 2026-10-02 | `verified` | Windows 11 / `x64` / NVIDIA RTX 4060 Laptop GPU | `android` / `android-native` / ZTE W202DS / Android 13 / unknown | `adb` | 1920×1200（原生 1200×1920，旋转 1/4 圈） | 90 Hz（请求 90 Hz；支持 60/90 Hz） | `h264` / `nvenc` / `unknown`；呈现回调 90.004 fps；物理呈现 86.966 fps (`surfaceflinger`) | [VERIFICATION-0.8.9.md](../VERIFICATION-0.8.9.md) |
 
 ## 能力与限制
 
@@ -23,3 +24,11 @@
 - 视频测量：请求 90 fps；有效 90 fps；提交 90.1 fps；呈现回调 90 fps；物理呈现 —
 - 已验证：`app-process-restart-reconnect`、`extended-desktop`、`hardware-decoding`、`native-orientation`、`ninety-hz`、`single-display-cleanup`、`trusted-reconnect`、`trusted-registration`
 - 限制：`active-revocation-not-tested`、`route-migration-not-tested`、`system-restart-not-tested`、`token-replay-not-tested`
+
+### `tlc-000002`
+
+- TabLink：`0.8.9` / `preview` / `v0.8.9-preview.1`
+- 来源：`maintainer-verification`，提交 `2a1c3aced048315e3171489fc410c6adeb2eed66`
+- 视频测量：请求 90 fps；有效 90 fps；提交 89.952 fps；呈现回调 90.004 fps；物理呈现 86.966 fps (`surfaceflinger`)
+- 已验证：`extended-desktop`、`native-orientation`、`ninety-hz`、`single-display-cleanup`
+- 限制：`system-restart-not-tested`、`usb-debug-required`

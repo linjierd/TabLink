@@ -68,6 +68,70 @@
         "document": "VERIFICATION-0.8.8.md",
         "sourceCommit": "7c20a72c5d77cd454a4115d4a763d668f002f329"
       }
+    },
+    {
+      "id": "tlc-000002",
+      "result": "verified",
+      "verifiedOn": "2026-10-02",
+      "source": "maintainer-verification",
+      "tabLink": {
+        "version": "0.8.9",
+        "channel": "preview",
+        "releaseTag": "v0.8.9-preview.1"
+      },
+      "host": {
+        "operatingSystem": "Windows 11",
+        "architecture": "x64",
+        "gpuVendor": "NVIDIA",
+        "gpuModel": "RTX 4060 Laptop GPU"
+      },
+      "receiver": {
+        "client": "android-native",
+        "platform": "android",
+        "manufacturer": "ZTE",
+        "model": "W202DS",
+        "operatingSystem": "Android 13",
+        "decoder": "unknown"
+      },
+      "connection": "adb",
+      "display": {
+        "logicalWidth": 1920,
+        "logicalHeight": 1200,
+        "nativeWidth": 1200,
+        "nativeHeight": 1920,
+        "rotationQuarterTurns": 1,
+        "activeRefreshHz": 90,
+        "requestedRefreshHz": 90,
+        "supportedRefreshHz": [
+          60,
+          90
+        ]
+      },
+      "video": {
+        "codec": "h264",
+        "encoder": "nvenc",
+        "decoder": "unknown",
+        "requestedFps": 90,
+        "effectiveFps": 90,
+        "submittedFps": 89.952,
+        "presentationCallbackFps": 90.004,
+        "physicalPresentationFps": 86.966,
+        "physicalPresentationMethod": "surfaceflinger"
+      },
+      "verifiedFeatures": [
+        "extended-desktop",
+        "native-orientation",
+        "ninety-hz",
+        "single-display-cleanup"
+      ],
+      "limitations": [
+        "system-restart-not-tested",
+        "usb-debug-required"
+      ],
+      "evidence": {
+        "document": "VERIFICATION-0.8.9.md",
+        "sourceCommit": "2a1c3aced048315e3171489fc410c6adeb2eed66"
+      }
     }
   ]
 }
