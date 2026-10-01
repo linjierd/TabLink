@@ -17,6 +17,8 @@ internal static class Program
         await TestAsync("existing owned mapping reconnects without rebind", ExistingOwnedMappingDoesNotRebindAsync);
         await TestAsync("existing unowned mapping is terminal", ExistingUnownedMappingFailsClosedAsync);
         await TestAsync("conflicting and malformed mappings retire ownership without mutation", ConflictAndMalformedMappingsFailClosedAsync);
+        await TestAsync("Android user changes and malformed user output stop before route inspection", AndroidUserMismatchStopsBeforeRouteInspectionAsync);
+        await TestAsync("Android user change during native reconnect wait blocks the client launch", AndroidUserChangeBeforeLaunchStopsWithoutIssuingLaunchAsync);
         await TestAsync("empty and offline inventories are retryable", AbsentAndOfflineDevicesAreRetryableAsync);
         await TestAsync("recovery detail redacts fake ADB stderr, path and serial markers", SensitiveAdbFailuresAreRedactedAsync);
         await TestAsync("identity and exclusion changes fail closed", IdentityAndExclusionChangesFailClosedAsync);
@@ -86,7 +88,7 @@ internal static class Program
             return Task.CompletedTask;
         }
 
-        var runner = new UsbSessionRecoveryAttemptRunner(context.Client, context.Approved, Endpoint, OriginalToken,
+        var runner = new UsbSessionRecoveryAttemptRunner(context.Client, context.AndroidUser, Endpoint, OriginalToken,
             () => true, () => connected, () => owned,
             () => { retired++; owned = false; },
             () => { published++; owned = true; }, Delay);
@@ -95,7 +97,7 @@ internal static class Program
 
         Check(result.Status == UsbRecoveryExecutionStatus.Connected, "missing mapping recovery connects");
         Check(result.RouteStatus == AdbReversePortStatus.Created, "missing mapping reports Created");
-        Check(result.ClientLaunchIssued, "missing mapping recovery records the launch");
+        Check(result.ClientLaunchCompleted, "missing mapping recovery records the completed launch");
         Check(retired == 1 && published == 1 && owned, "old receipt is retired before the new receipt is published");
         Check(launchReservations == 1, "one client launch reservation is requested");
         Check(postLaunchPolls == 2, "connection is observed after a delayed post-launch poll");
@@ -103,11 +105,15 @@ internal static class Program
         Check(context.Runner.LaunchCount == 1, "one Android launch is issued");
 
         var targeted = context.Runner.TargetCalls;
-        Check(targeted.Count == 3, "missing mapping path has exactly three targeted commands");
-        Check(targeted[0].SequenceEqual(Target("reverse", "--list")), "inspection precedes all mutation");
-        Check(targeted[1].SequenceEqual(Target("reverse", "--no-rebind", "tcp:54321", "tcp:27183")),
+        Check(targeted.Count == 5, "missing mapping path has exactly five targeted commands");
+        Check(targeted[0].SequenceEqual(Target("shell", "am", "get-current-user")),
+            "bound Android user is checked before route inspection");
+        Check(targeted[1].SequenceEqual(Target("reverse", "--list")), "inspection precedes all mutation");
+        Check(targeted[2].SequenceEqual(Target("reverse", "--no-rebind", "tcp:54321", "tcp:27183")),
             "mapping is created with exact --no-rebind endpoints");
-        Check(targeted[2].SequenceEqual(Target("shell", "am", "start", "-n", "com.tablink.client/.MainActivity",
+        Check(targeted[3].SequenceEqual(Target("shell", "am", "get-current-user")),
+            "bound Android user is checked again immediately before launch");
+        Check(targeted[4].SequenceEqual(Target("shell", "am", "start", "--user", "0", "-n", "com.tablink.client/.MainActivity",
             "--es", "token", OriginalToken, "--ei", "port", "54321")),
             "client launch uses the original session token and fixed per-session endpoint");
     }
@@ -125,33 +131,35 @@ internal static class Program
             connected = true;
             return Task.CompletedTask;
         }
-        var runner = new UsbSessionRecoveryAttemptRunner(context.Client, context.Approved, Endpoint, OriginalToken,
+        var runner = new UsbSessionRecoveryAttemptRunner(context.Client, context.AndroidUser, Endpoint, OriginalToken,
             () => true, () => connected, () => true, () => retired++, () => published++, Delay);
         var result = await runner.RunAsync(TimeSpan.FromSeconds(10),
             () => { reserved++; return true; }, CancellationToken.None);
 
         Check(result.Status == UsbRecoveryExecutionStatus.Connected, "owned existing route reconnects");
         Check(result.RouteStatus == AdbReversePortStatus.Existing, "owned existing route is reported");
-        Check(!result.ClientLaunchIssued, "native reconnect does not launch the client");
+        Check(!result.ClientLaunchCompleted, "native reconnect does not launch the client");
         Check(context.Runner.ReverseCreateCount == 0, "owned existing route is not rebound");
         Check(context.Runner.LaunchCount == 0 && reserved == 0, "native reconnect needs no launch reservation");
         Check(retired == 0 && published == 0, "owned receipt is unchanged");
-        Check(context.Runner.TargetCalls.Count == 1 && context.Runner.TargetCalls[0].SequenceEqual(Target("reverse", "--list")),
-            "owned existing route performs read-only inspection only");
+        Check(context.Runner.TargetCalls.Count == 2 &&
+            context.Runner.TargetCalls[0].SequenceEqual(Target("shell", "am", "get-current-user")) &&
+            context.Runner.TargetCalls[1].SequenceEqual(Target("reverse", "--list")),
+            "owned existing route validates the bound user and performs read-only inspection only");
     }
 
     static async Task ExistingUnownedMappingFailsClosedAsync()
     {
         var context = CreateContext(mapping: "UsbFfs tcp:54321 tcp:27183\n");
         var callbacks = 0;
-        var runner = new UsbSessionRecoveryAttemptRunner(context.Client, context.Approved, Endpoint, OriginalToken,
+        var runner = new UsbSessionRecoveryAttemptRunner(context.Client, context.AndroidUser, Endpoint, OriginalToken,
             () => true, () => false, () => false, () => callbacks++, () => callbacks++, NoDelay);
         var result = await runner.RunAsync(TimeSpan.FromSeconds(10),
             () => throw new Exception("terminal path must not reserve a launch"), CancellationToken.None);
 
         Check(result.Status == UsbRecoveryExecutionStatus.TerminalFailure, "unowned existing route is terminal");
         Check(result.RouteStatus == AdbReversePortStatus.Existing, "unowned route status is preserved");
-        Check(!result.ClientLaunchIssued && context.Runner.LaunchCount == 0, "unowned route never launches");
+        Check(!result.ClientLaunchCompleted && context.Runner.LaunchCount == 0, "unowned route never launches");
         Check(context.Runner.ReverseCreateCount == 0 && callbacks == 1,
             "unowned route is never mutated or claimed and any prepared intent is terminally revoked");
     }
@@ -163,7 +171,7 @@ internal static class Program
             var context = CreateContext(mapping: mapping);
             var retired = 0;
             var published = 0;
-            var runner = new UsbSessionRecoveryAttemptRunner(context.Client, context.Approved, Endpoint, OriginalToken,
+            var runner = new UsbSessionRecoveryAttemptRunner(context.Client, context.AndroidUser, Endpoint, OriginalToken,
                 () => true, () => false, () => true, () => retired++, () => published++, NoDelay);
             var result = await runner.RunAsync(TimeSpan.FromSeconds(10),
                 () => throw new Exception("terminal path must not reserve a launch"), CancellationToken.None);
@@ -173,9 +181,65 @@ internal static class Program
             Check(published == 0, "conflict/malformed route does not publish ownership");
             Check(context.Runner.ReverseCreateCount == 0 && context.Runner.LaunchCount == 0,
                 "conflict/malformed route has no mutation or launch");
-            Check(context.Runner.TargetCalls.Count == 1 && context.Runner.TargetCalls[0].SequenceEqual(Target("reverse", "--list")),
+            Check(context.Runner.TargetCalls.Count == 2 && context.Runner.TargetCalls[1].SequenceEqual(Target("reverse", "--list")),
                 "conflict/malformed route stops after inspection");
         }
+    }
+
+    static async Task AndroidUserMismatchStopsBeforeRouteInspectionAsync()
+    {
+        foreach (var output in new[] { "13\n", "not-a-user\n" })
+        {
+            var context = CreateContext(mapping: "UsbFfs tcp:54321 tcp:27183\n");
+            context.Runner.CurrentAndroidUserOutput = output;
+            var callbacks = 0;
+            var runner = new UsbSessionRecoveryAttemptRunner(context.Client, context.AndroidUser, Endpoint, OriginalToken,
+                () => true, () => false, () => true, () => callbacks++, () => callbacks++, NoDelay);
+            var result = await runner.RunAsync(TimeSpan.FromSeconds(10), () => true, CancellationToken.None);
+
+            Check(result.Status == UsbRecoveryExecutionStatus.TerminalFailure,
+                "changed or malformed Android user is terminal");
+            Check(result.RouteStatus is null && !result.ClientLaunchCompleted,
+                "Android user failure occurs before route inspection or launch");
+            Check(context.Runner.TargetCalls.Count == 1 &&
+                context.Runner.TargetCalls[0].SequenceEqual(Target("shell", "am", "get-current-user")),
+                "Android user failure executes only the user validation command");
+            Check(context.Runner.ReverseCreateCount == 0 && context.Runner.LaunchCount == 0 && callbacks == 0,
+                "Android user failure preserves route ownership without mutation");
+        }
+    }
+
+    static async Task AndroidUserChangeBeforeLaunchStopsWithoutIssuingLaunchAsync()
+    {
+        var context = CreateContext(mapping: "UsbFfs tcp:54321 tcp:27183\n");
+        var callbacks = 0;
+        var changed = false;
+        Task ChangeUserDuringWait(TimeSpan _, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!changed)
+            {
+                context.Runner.CurrentAndroidUserOutput = "13\n";
+                changed = true;
+            }
+            return Task.CompletedTask;
+        }
+        var runner = new UsbSessionRecoveryAttemptRunner(context.Client, context.AndroidUser, Endpoint, OriginalToken,
+            () => true, () => false, () => true, () => callbacks++, () => callbacks++, ChangeUserDuringWait);
+        var result = await runner.RunAsync(TimeSpan.FromSeconds(10), () => true, CancellationToken.None);
+
+        Check(result.Status == UsbRecoveryExecutionStatus.TerminalFailure &&
+            result.RouteStatus == AdbReversePortStatus.Existing,
+            "user change after inspection becomes a terminal recovery result for the inspected route");
+        Check(!result.ClientLaunchCompleted && context.Runner.LaunchCount == 0,
+            "failed pre-launch user validation cannot claim or execute an Android launch");
+        Check(context.Runner.TargetCalls.Count == 3 &&
+            context.Runner.TargetCalls[0].SequenceEqual(Target("shell", "am", "get-current-user")) &&
+            context.Runner.TargetCalls[1].SequenceEqual(Target("reverse", "--list")) &&
+            context.Runner.TargetCalls[2].SequenceEqual(Target("shell", "am", "get-current-user")),
+            "user is validated at recovery start and again before any client launch");
+        Check(callbacks == 0 && context.Runner.ReverseCreateCount == 0,
+            "user change after an owned route inspection leaves ownership and mapping unchanged");
     }
 
     static async Task AbsentAndOfflineDevicesAreRetryableAsync()
@@ -188,13 +252,13 @@ internal static class Program
         foreach (var context in cases)
         {
             var callbacks = 0;
-            var runner = new UsbSessionRecoveryAttemptRunner(context.Client, context.Approved, Endpoint, OriginalToken,
+            var runner = new UsbSessionRecoveryAttemptRunner(context.Client, context.AndroidUser, Endpoint, OriginalToken,
                 () => true, () => false, () => true, () => callbacks++, () => callbacks++, NoDelay);
             var result = await runner.RunAsync(TimeSpan.FromSeconds(10),
                 () => throw new Exception("retryable inventory failure must not reserve a launch"), CancellationToken.None);
 
             Check(result.Status == UsbRecoveryExecutionStatus.RetryableFailure, "absent/offline device is retryable");
-            Check(result.RouteStatus is null && !result.ClientLaunchIssued, "inventory failure precedes route mutation");
+            Check(result.RouteStatus is null && !result.ClientLaunchCompleted, "inventory failure precedes route mutation");
             Check(callbacks == 0 && context.Runner.TargetCalls.Count == 0,
                 "absent/offline device has no targeted command or ownership callback");
         }
@@ -204,7 +268,7 @@ internal static class Program
     {
         const string marker = "SENSITIVE-RECOVERY-MARKER serial=TABLINK_RECOVERY_TEST_001 path=C:\\Users\\Private\\adb.exe";
         var context = CreateContext(mapping: "", reverseListExitCode: 91, reverseListError: marker);
-        var runner = new UsbSessionRecoveryAttemptRunner(context.Client, context.Approved, Endpoint, OriginalToken,
+        var runner = new UsbSessionRecoveryAttemptRunner(context.Client, context.AndroidUser, Endpoint, OriginalToken,
             () => true, () => false, () => true, () => { }, () => { }, NoDelay);
         var result = await runner.RunAsync(TimeSpan.FromSeconds(10), () => true, CancellationToken.None);
 
@@ -235,13 +299,13 @@ internal static class Program
     static async Task AssertPolicyFailureIsTerminalAsync(TestContext context, string caseName)
     {
         var callbacks = 0;
-        var runner = new UsbSessionRecoveryAttemptRunner(context.Client, context.Approved, Endpoint, OriginalToken,
+        var runner = new UsbSessionRecoveryAttemptRunner(context.Client, context.AndroidUser, Endpoint, OriginalToken,
             () => true, () => false, () => true, () => callbacks++, () => callbacks++, NoDelay);
         var result = await runner.RunAsync(TimeSpan.FromSeconds(10),
             () => throw new Exception("policy failure must not reserve a launch"), CancellationToken.None);
 
         Check(result.Status == UsbRecoveryExecutionStatus.TerminalFailure, caseName + " is terminal");
-        Check(result.RouteStatus is null && !result.ClientLaunchIssued, caseName + " fails before route inspection");
+        Check(result.RouteStatus is null && !result.ClientLaunchCompleted, caseName + " fails before route inspection");
         Check(context.Runner.TargetCalls.Count == 0 && callbacks == 0, caseName + " performs no mutation or ownership change");
     }
 
@@ -251,7 +315,7 @@ internal static class Program
         context.Runner.BlockInspection = true;
         var callbacks = 0;
         using var stop = new CancellationTokenSource();
-        var runner = new UsbSessionRecoveryAttemptRunner(context.Client, context.Approved, Endpoint, OriginalToken,
+        var runner = new UsbSessionRecoveryAttemptRunner(context.Client, context.AndroidUser, Endpoint, OriginalToken,
             () => true, () => false, () => true, () => callbacks++, () => callbacks++, NoDelay);
         var task = runner.RunAsync(TimeSpan.FromMinutes(1),
             () => throw new Exception("cancelled inspection must not reserve a launch"), stop.Token);
@@ -264,7 +328,7 @@ internal static class Program
         Check(context.Runner.ReverseCreateCount == 0 && context.Runner.LaunchCount == 0,
             "cancelled inspection cannot rebind or launch");
         Check(callbacks == 0, "cancelled inspection cannot change ownership");
-        Check(context.Runner.TargetCalls.Count == 1 && context.Runner.TargetCalls[0].SequenceEqual(Target("reverse", "--list")),
+        Check(context.Runner.TargetCalls.Count == 2 && context.Runner.TargetCalls[1].SequenceEqual(Target("reverse", "--list")),
             "cancelled path reaches only the blocked inspection");
     }
 
@@ -279,7 +343,7 @@ internal static class Program
             var context = CreateContext(mapping: "");
             var retired = 0;
             var publishAttempted = 0;
-            var runner = new UsbSessionRecoveryAttemptRunner(context.Client, context.Approved, Endpoint, OriginalToken,
+            var runner = new UsbSessionRecoveryAttemptRunner(context.Client, context.AndroidUser, Endpoint, OriginalToken,
                 () => true, () => false, () => true, () => retired++,
                 () => { publishAttempted++; throw failure(); }, NoDelay);
             var result = await runner.RunAsync(TimeSpan.FromSeconds(10),
@@ -287,7 +351,7 @@ internal static class Program
 
             Check(result.Status == UsbRecoveryExecutionStatus.TerminalFailure, "publish failure is terminal");
             Check(result.RouteStatus == AdbReversePortStatus.Created, "created route remains explicitly reported");
-            Check(!result.ClientLaunchIssued && context.Runner.LaunchCount == 0, "publish failure never launches the client");
+            Check(!result.ClientLaunchCompleted && context.Runner.LaunchCount == 0, "publish failure never launches the client");
             Check(retired == 1 && publishAttempted == 1, "old ownership retires and created callback executes exactly once");
             Check(context.Runner.ReverseCreateCount == 1, "reverse creation succeeded before publish failed");
             Check(context.Runner.TargetCalls.Last().SequenceEqual(Target("reverse", "--no-rebind", "tcp:54321", "tcp:27183")),
@@ -400,9 +464,7 @@ internal static class Program
         {
             ReverseListOutput = mapping,
             ReverseListExitCode = reverseListExitCode,
-            ReverseListError = reverseListError ?? "",
-            DeviceState = deviceState,
-            DevicesStandardOutput = deviceListing
+            ReverseListError = reverseListError ?? ""
         };
         Task<IReadOnlyList<UsbDeviceIdentity>> Inventory(CancellationToken cancellationToken)
         {
@@ -410,8 +472,12 @@ internal static class Program
             return Task.FromResult<IReadOnlyList<UsbDeviceIdentity>>(inventory.ToArray());
         }
         var client = new AdbClient("E:\\offline-tests\\fake-adb.exe", policy, Inventory, fake);
+        var androidUser = client.BindCurrentAndroidUserAsync(approved).GetAwaiter().GetResult();
+        fake.ResetCalls();
+        fake.DeviceState = deviceState;
+        fake.DevicesStandardOutput = deviceListing;
         ObservedRunners.Add(fake);
-        return new(client, approved, fake, settings, inventory);
+        return new(client, approved, androidUser, fake, settings, inventory);
     }
 
     static Task NoDelay(TimeSpan _, CancellationToken cancellationToken)
@@ -448,7 +514,8 @@ internal static class Program
         if (!condition) throw new Exception("Assertion failed: " + message);
     }
 
-    sealed record TestContext(AdbClient Client, ApprovedUsbDevice Approved, OfflineAdbRunner Runner,
+    sealed record TestContext(AdbClient Client, ApprovedUsbDevice Approved, ApprovedAndroidUser AndroidUser,
+        OfflineAdbRunner Runner,
         DevicePolicySettings Settings, List<UsbDeviceIdentity> Inventory);
 
     sealed class OfflineAdbRunner(string expectedSerial) : IAdbProcessRunner
@@ -461,8 +528,9 @@ internal static class Program
         public string ReverseListOutput { get; init; } = "";
         public int ReverseListExitCode { get; init; }
         public string ReverseListError { get; init; } = "";
-        public string DeviceState { get; init; } = "device";
-        public string? DevicesStandardOutput { get; init; }
+        public string DeviceState { get; set; } = "device";
+        public string? DevicesStandardOutput { get; set; }
+        public string CurrentAndroidUserOutput { get; set; } = "0\n";
         public bool BlockInspection { get; set; }
         public bool BlockReverse { get; set; }
         public TaskCompletionSource<bool> InspectionEntered { get; } =
@@ -475,6 +543,7 @@ internal static class Program
         public int LaunchCount => Volatile.Read(ref launchCount);
         public IReadOnlyList<string[]> Calls { get { lock (sync) return calls.Select(x => x.ToArray()).ToArray(); } }
         public IReadOnlyList<string[]> TargetCalls => Calls.Where(x => !x.SequenceEqual(new[] { "devices", "-l" })).ToArray();
+        public void ResetCalls() { lock (sync) calls.Clear(); }
 
         public async Task<AdbCommandResult> RunAsync(string executable, IReadOnlyList<string> arguments,
             TimeSpan timeout, CancellationToken cancellationToken)
@@ -497,6 +566,8 @@ internal static class Program
                     await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
                 return new AdbCommandResult(ReverseListExitCode, ReverseListOutput, ReverseListError);
             }
+            if (call.SequenceEqual(Target("shell", "am", "get-current-user")))
+                return new AdbCommandResult(0, CurrentAndroidUserOutput, "");
             if (call.SequenceEqual(Target("reverse", "--no-rebind", "tcp:54321", "tcp:27183")))
             {
                 ReverseEntered.TrySetResult(true);
@@ -505,7 +576,7 @@ internal static class Program
                 Interlocked.Increment(ref reverseCreateCount);
                 return new AdbCommandResult(0, "", "");
             }
-            if (call.SequenceEqual(Target("shell", "am", "start", "-n", "com.tablink.client/.MainActivity",
+            if (call.SequenceEqual(Target("shell", "am", "start", "--user", "0", "-n", "com.tablink.client/.MainActivity",
                 "--es", "token", OriginalToken, "--ei", "port", "54321")))
             {
                 Interlocked.Increment(ref launchCount);

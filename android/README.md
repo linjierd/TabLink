@@ -80,12 +80,12 @@ Set-Location '<repository-root>\android'
 
 ## 电脑端调用
 
-电脑端应先检查用户选定的设备未被排除，并且是获准使用的 USB 调试设备。以下命令中的 `SERIAL` 必须是该设备的真实序列号；不要批量对所有设备执行。
+电脑端应先检查用户选定的设备未被排除，并且是获准使用的 USB 调试设备。以下命令中的 `SERIAL` 必须是该设备的真实序列号，`USER_ID` 必须是同一设备通过 `am get-current-user` 回读的当前前台用户；不要批量对所有设备执行。
 
 ```text
-adb -s SERIAL install -r TabLink-android-0.8.9-preview.apk
+adb -s SERIAL install --user USER_ID --no-streaming -r TabLink-android-0.8.9-preview.apk
 adb -s SERIAL reverse --no-rebind tcp:RANDOM_DEVICE_PORT tcp:27183
-adb -s SERIAL shell am start -n com.tablink.client/.MainActivity --es host 127.0.0.1 --ei port RANDOM_DEVICE_PORT --es token RANDOM_SESSION_TOKEN
+adb -s SERIAL shell am start --user USER_ID -n com.tablink.client/.MainActivity --es host 127.0.0.1 --ei port RANDOM_DEVICE_PORT --es token RANDOM_SESSION_TOKEN
 ```
 
 以上命令只用于原有 ADB 兼容通道。`token` 是每次会话由电脑端生成的随机凭证；不要使用示例常量或将凭证记录到日志。`host` 可省略，其他主机地址会被拒绝；ADB 端口范围为 1024–65535，默认 27183。应用使用 `singleTask`，电脑端再次启动可替换旧会话。网络连接使用上述配对 URI 的 `ACTION_VIEW`，不会把非环回地址传入明文 ADB 通道。

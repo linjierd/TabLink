@@ -13,7 +13,7 @@ internal enum UsbRecoveryExecutionStatus
 internal sealed record UsbRecoveryExecution(
     UsbRecoveryExecutionStatus Status,
     AdbReversePortStatus? RouteStatus,
-    bool ClientLaunchIssued,
+    bool ClientLaunchCompleted,
     string Detail);
 
 /// <summary>
@@ -28,6 +28,7 @@ internal sealed class UsbSessionRecoveryAttemptRunner
     static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(100);
 
     readonly AdbClient adb;
+    readonly ApprovedAndroidUser targetUser;
     readonly ApprovedUsbDevice target;
     readonly AdbReverseEndpoint endpoint;
     readonly string token;
@@ -42,7 +43,7 @@ internal sealed class UsbSessionRecoveryAttemptRunner
 
     internal UsbSessionRecoveryAttemptRunner(
         AdbClient adb,
-        ApprovedUsbDevice target,
+        ApprovedAndroidUser targetUser,
         AdbReverseEndpoint endpoint,
         string token,
         Func<bool> isCurrent,
@@ -51,13 +52,13 @@ internal sealed class UsbSessionRecoveryAttemptRunner
         Action retireOwnedMapping,
         Action publishCreatedMapping,
         Func<TimeSpan, CancellationToken, Task>? delay = null)
-        : this(adb, target, endpoint, token, isCurrent, isConnected, hasOwnedMapping,
+        : this(adb, targetUser, endpoint, token, isCurrent, isConnected, hasOwnedMapping,
             retireOwnedMapping, static () => { }, publishCreatedMapping, static () => { }, delay)
     { }
 
     internal UsbSessionRecoveryAttemptRunner(
         AdbClient adb,
-        ApprovedUsbDevice target,
+        ApprovedAndroidUser targetUser,
         AdbReverseEndpoint endpoint,
         string token,
         Func<bool> isCurrent,
@@ -70,7 +71,8 @@ internal sealed class UsbSessionRecoveryAttemptRunner
         Func<TimeSpan, CancellationToken, Task>? delay = null)
     {
         this.adb = adb ?? throw new ArgumentNullException(nameof(adb));
-        this.target = target ?? throw new ArgumentNullException(nameof(target));
+        this.targetUser = targetUser ?? throw new ArgumentNullException(nameof(targetUser));
+        target = targetUser.Device;
         if (!endpoint.IsValid) throw new ArgumentException("The USB endpoint is invalid.", nameof(endpoint));
         this.endpoint = endpoint;
         if (string.IsNullOrWhiteSpace(token)) throw new ArgumentException("A session token is required.", nameof(token));
@@ -104,6 +106,14 @@ internal sealed class UsbSessionRecoveryAttemptRunner
             ct.ThrowIfCancellationRequested();
             if (!isCurrent()) return Cancelled("连接代次已经变化。");
             if (isConnected()) return Connected(null, false, "平板已经重新连接。");
+
+            // A recovery episode belongs to the Android user that was bound
+            // when this display session started. Check it before inspecting or
+            // mutating the reverse route; malformed user output must not retire
+            // an otherwise valid ownership receipt.
+            try { await adb.ValidateCurrentAndroidUserAsync(targetUser, ct); }
+            catch (AdbResponseException ex)
+            { return Terminal(null, false, SafeErrorSummary.ForUser(ex, adbOperation: true)); }
 
             var inspection = await adb.InspectReversePortAsync(target, endpoint, ct);
             route = inspection.Status;
@@ -166,8 +176,8 @@ internal sealed class UsbSessionRecoveryAttemptRunner
 
             if (tryReserveClientLaunch())
             {
+                await adb.LaunchAsync(targetUser, token, endpoint, ct);
                 launched = true;
-                await adb.LaunchAsync(target, token, endpoint, ct);
                 if (await WaitForConnectionAsync(LaunchReconnectWindow, ct))
                     return Connected(route, true, "已用原会话令牌启动客户端并恢复连接。");
             }

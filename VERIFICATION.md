@@ -76,7 +76,7 @@ B 的调度目标在 90 fps 时为约 **22.22 ms**，未来排程最多 **25 ms*
 - 视频解析、目标身份和子进程生命周期：11 项通过；450 张原生尺寸合成帧完整解码，H.264 High、无 B 帧。
 - Android 0.4.2：55 项协议/几何/帧进度断言，加 26,024 项有界时钟边界断言通过；assembleDebug、lintDebug 和 APK v1/v2 签名校验通过。开发版的兼容/维护 Lint 提示保留，没有当作错误忽略。
 - 最终发行文件位于 `dist/TabLink/`；包含完整程序、APK、驱动来源、FFmpeg 许可和完整对应源码。实际二进制以发行目录 `SHA256SUMS.txt` 为准。
-- 使用 `tools/Measure-AndroidPresentation.ps1` 只读采集 SurfaceFlinger 视频层的实际时间戳。该指标与解码回调、面板 Hz 和不同源画面计数分别报告。
+- 使用 `tools/Measure-AndroidPresentation.ps1` 只读采集 SurfaceFlinger 视频层的实际时间戳。工具只执行绝对路径且三件套 SHA-256 匹配的 Google Platform-Tools r37 ADB，结果用序列号哈希绑定设备，不保存原始序列号；SurfaceFlinger 物理呈现与 Windows 回调、Android 解码提交、Android 呈现回调、面板 Hz 和不同源画面计数分别报告。
 
 没有测量光子级端到端输入延迟，也没有验证音频、压感笔、多点触控或多平板同时扩展。
 # 0.6.0 网络连接验证（2026-09-29）

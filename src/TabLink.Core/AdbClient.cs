@@ -8,6 +8,21 @@ public sealed record AdbCommandResult(int ExitCode, string StandardOutput, strin
 public enum AdbReversePortStatus { Missing, Existing, Created, Conflicting }
 public sealed record AdbReversePortResult(AdbReversePortStatus Status);
 
+/// <summary>
+/// A non-forgeable binding between one approved physical USB device and the
+/// Android user that was active when the TabLink session started. Provider
+/// reads and client launches use this exact user for the entire session.
+/// </summary>
+public sealed class ApprovedAndroidUser
+{
+    internal ApprovedAndroidUser(AdbClient owner, ApprovedUsbDevice device, int userId)
+        => (Owner, Device, UserId) = (owner, device, userId);
+
+    internal AdbClient Owner { get; }
+    public ApprovedUsbDevice Device { get; }
+    public int UserId { get; }
+}
+
 /// <summary>Inject a fake runner in tests. Production only runs adb through ArgumentList, never a shell.</summary>
 public interface IAdbProcessRunner
 {
@@ -297,15 +312,36 @@ public sealed class AdbClient
         return TargetAsync(device, ["reverse", "--remove", endpoint.DeviceAddress], TimeSpan.FromSeconds(15), cancellationToken);
     }
 
-    public async Task<TabletDisplayProfile> ReadDisplayProfileAsync(ApprovedUsbDevice device,CancellationToken cancellationToken=default)
+    public async Task<ApprovedAndroidUser> BindCurrentAndroidUserAsync(ApprovedUsbDevice device,
+        CancellationToken cancellationToken = default)
     {
-        var command=new[]{"shell","content","query","--uri","content://com.tablink.client.display/capabilities","--user","0"};
+        ArgumentNullException.ThrowIfNull(device);
+        var userId = await ReadCurrentAndroidUserAsync(device, cancellationToken).ConfigureAwait(false);
+        return new(this, device, userId);
+    }
+
+    public async Task ValidateCurrentAndroidUserAsync(ApprovedAndroidUser user,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateUserBinding(user);
+        var current = await ReadCurrentAndroidUserAsync(user.Device, cancellationToken).ConfigureAwait(false);
+        if (current != user.UserId)
+            throw new AndroidUserChangedException();
+    }
+
+    public async Task<TabletDisplayProfile> ReadDisplayProfileAsync(ApprovedAndroidUser user,CancellationToken cancellationToken=default)
+    {
+        ValidateUserBinding(user);
+        await ValidateCurrentAndroidUserAsync(user,cancellationToken).ConfigureAwait(false);
+        var device=user.Device;
+        var androidUser=user.UserId.ToString(CultureInfo.InvariantCulture);
+        var command=new[]{"shell","content","query","--uri","content://com.tablink.client.display/capabilities","--user",androidUser};
         var result=await TargetAsync(device,command,TimeSpan.FromSeconds(12),cancellationToken).ConfigureAwait(false);
         if(!result.StandardOutput.Contains("json=",StringComparison.Ordinal))
         {
             // Some Android vendors cannot start a stopped package's provider.
             // Launch only our installed client, then repeat the read-only query.
-            await TargetAsync(device,["shell","am","start","-n","com.tablink.client/.MainActivity","--ez","profileOnly","true"],TimeSpan.FromSeconds(12),cancellationToken,true).ConfigureAwait(false);
+            await TargetAsync(device,["shell","am","start","--user",androidUser,"-n","com.tablink.client/.MainActivity","--ez","profileOnly","true"],TimeSpan.FromSeconds(12),cancellationToken,true).ConfigureAwait(false);
             await Task.Delay(350,cancellationToken).ConfigureAwait(false);
             result=await TargetAsync(device,command,TimeSpan.FromSeconds(12),cancellationToken).ConfigureAwait(false);
         }
@@ -316,24 +352,63 @@ public sealed class AdbClient
         { throw new AdbResponseException(ex); }
     }
 
-    public Task InstallApkAsync(ApprovedUsbDevice device, string apkPath, CancellationToken cancellationToken = default)
+    public async Task InstallApkAsync(ApprovedUsbDevice device, string apkPath, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(apkPath)) throw new ArgumentException("APK path is required.", nameof(apkPath));
         var fullPath = Path.GetFullPath(apkPath);
         if (!string.Equals(Path.GetExtension(fullPath), ".apk", StringComparison.OrdinalIgnoreCase) || !File.Exists(fullPath))
             throw new FileNotFoundException("APK file does not exist or is not an .apk file.", fullPath);
-        return TargetAsync(device, ["install", "-r", fullPath], TimeSpan.FromMinutes(2), cancellationToken);
+        // Push the APK before asking Package Manager to commit it. Some vendor
+        // installers show their confirmation/result UI while a streaming
+        // install is still open and never return the final result to adb. The
+        // official --no-streaming path keeps transfer and commit separate,
+        // while preserving the same approved-device checks and -s targeting.
+        var user = (await BindCurrentAndroidUserAsync(device, cancellationToken).ConfigureAwait(false)).UserId
+            .ToString(CultureInfo.InvariantCulture);
+        var result = await TargetAsync(device,
+            ["install", "--user", user, "--no-streaming", "-r", fullPath],
+            TimeSpan.FromMinutes(2), cancellationToken).ConfigureAwait(false);
+        if (!Regex.IsMatch(result.StandardOutput, @"(?m)^\s*Success\s*$", RegexOptions.CultureInvariant))
+            throw new AdbResponseException(new InvalidDataException(
+                "ADB package installation did not return an unambiguous Success result."));
     }
 
-    public Task LaunchAsync(ApprovedUsbDevice device, string token, AdbReverseEndpoint endpoint,
+    public async Task LaunchAsync(ApprovedAndroidUser user, string token, AdbReverseEndpoint endpoint,
         CancellationToken cancellationToken = default)
     {
         endpoint.Validate();
         if (token is null || !Regex.IsMatch(token, @"\A[A-Za-z0-9_-]{16,256}\z", RegexOptions.CultureInvariant))
             throw new ArgumentException("The session token must contain 16–256 URL-safe alphanumeric characters.", nameof(token));
-        return TargetAsync(device,
-            ["shell", "am", "start", "-n", "com.tablink.client/.MainActivity", "--es", "token", token, "--ei", "port", endpoint.DevicePort.ToString(CultureInfo.InvariantCulture)],
-            TimeSpan.FromSeconds(15), cancellationToken, validateLaunchOutput: true);
+        ValidateUserBinding(user);
+        await ValidateCurrentAndroidUserAsync(user,cancellationToken).ConfigureAwait(false);
+        var androidUser=user.UserId.ToString(CultureInfo.InvariantCulture);
+        await TargetAsync(user.Device,
+            ["shell", "am", "start", "--user", androidUser, "-n", "com.tablink.client/.MainActivity", "--es", "token", token, "--ei", "port", endpoint.DevicePort.ToString(CultureInfo.InvariantCulture)],
+            TimeSpan.FromSeconds(15), cancellationToken, validateLaunchOutput: true).ConfigureAwait(false);
+    }
+
+    void ValidateUserBinding(ApprovedAndroidUser user)
+    {
+        ArgumentNullException.ThrowIfNull(user);
+        if (!ReferenceEquals(user.Owner, this))
+            throw new DevicePolicyException("Android user binding belongs to another ADB client.");
+    }
+
+    async Task<int> ReadCurrentAndroidUserAsync(ApprovedUsbDevice device, CancellationToken cancellationToken)
+    {
+        var result = await TargetAsync(device, ["shell", "am", "get-current-user"],
+            TimeSpan.FromSeconds(10), cancellationToken).ConfigureAwait(false);
+        return ParseCurrentAndroidUser(result.StandardOutput);
+    }
+
+    public static int ParseCurrentAndroidUser(string output)
+    {
+        ArgumentNullException.ThrowIfNull(output);
+        var match = Regex.Match(output, @"\A\s*(?<user>[0-9]{1,10})\s*\z", RegexOptions.CultureInvariant);
+        if (!match.Success || !int.TryParse(match.Groups["user"].Value, NumberStyles.None,
+                CultureInfo.InvariantCulture, out var userId) || userId < 0)
+            throw new AdbResponseException(new InvalidDataException("ADB returned an invalid current Android user."));
+        return userId;
     }
 
     private async Task<AdbCommandResult> TargetAsync(ApprovedUsbDevice approved, IReadOnlyList<string> command, TimeSpan timeout, CancellationToken cancellationToken, bool validateLaunchOutput = false)

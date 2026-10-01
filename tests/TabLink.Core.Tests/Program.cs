@@ -47,6 +47,17 @@ try
         Assert(new DevicePolicy(settings).Evaluate(
             new(fictionalF50Serial, "device"), [new(fictionalF50Serial, "18D1", "2D00")]).Allowed);
     });
+    await Test("Measurement device binding is stable, case-sensitive and USB-only", () =>
+    {
+        const string serial = "TEST-TABLET-SERIAL-0001";
+        const string expected = "d0798da604e052599b47f73139db7a378687c7383991af733d3ae65240010f9f";
+        var actual = DeviceSerialBinding.ComputeSha256(serial);
+        Assert(DeviceSerialBinding.Algorithm == "sha256-utf8-tablink-device-serial-v1");
+        Assert(actual == expected && actual.Length == 64 && !actual.Contains(serial, StringComparison.Ordinal));
+        Assert(DeviceSerialBinding.ComputeSha256(serial.ToLowerInvariant()) != actual);
+        Throws<ArgumentException>(() => DeviceSerialBinding.ComputeSha256("192.0.2.1:5555"));
+        Throws<ArgumentException>(() => DeviceSerialBinding.ComputeSha256("-not-a-target"));
+    });
     await Test("VID/PID exclusion overrides an otherwise valid tablet", () =>
     {
         var policy = new DevicePolicy(new());
@@ -114,6 +125,58 @@ try
         settings.ExcludedDevices.Add(new() { Vid = "19D2", Pid = "invalid" });
         Assert(!new DevicePolicy(settings).Evaluate(good, inventory).Allowed);
     });
+    await Test("Current Android user parsing accepts one nonnegative integer only", () =>
+    {
+        Assert(AdbClient.ParseCurrentAndroidUser("0\r\n") == 0);
+        Assert(AdbClient.ParseCurrentAndroidUser(" 12 \n") == 12);
+        foreach (var invalid in new[] { "", "-1", "0\n1", "all", "2147483648", new string('1', 11) })
+            Throws<AdbResponseException>(() => AdbClient.ParseCurrentAndroidUser(invalid));
+    });
+    await TestAsync("Install and one bound session use the selected current Android user", async () =>
+    {
+        var apk = Path.Combine(temporary, "multi-user-client.apk");
+        File.WriteAllText(apk, "test-only");
+        var policy = new DevicePolicy(new());
+        var runner = new FakeRunner
+        {
+            CurrentAndroidUserOutput = "12\n",
+            TargetHandler = command => command.Contains("install")
+                ? new(0, "Success\n", "")
+                : command.Contains("query")
+                    ? new(0, "Row: 0 json=" + DisplayProfileJson() + "\n", "")
+                    : new(0, "Starting: Intent { cmp=com.tablink.client/.MainActivity }", "")
+        };
+        var client = Client(policy, runner);
+        var approved = policy.Approve(good, inventory);
+        await client.InstallApkAsync(approved, apk);
+        var sessionUser = await client.BindCurrentAndroidUserAsync(approved);
+        _ = await client.ReadDisplayProfileAsync(sessionUser);
+        await client.LaunchAsync(sessionUser, "0123456789abcdef", endpoint);
+        var operations = runner.Calls.Where(c => c.Contains("install") || c.Contains("query") || c.Contains("start")).ToArray();
+        Assert(operations.Length == 3 && operations.All(c =>
+        {
+            var user = Array.IndexOf(c, "--user");
+            return user >= 0 && user + 1 < c.Length && c[user + 1] == "12";
+        }));
+    });
+    await TestAsync("Bound session rejects an Android user change before provider read or launch", async () =>
+    {
+        var policy = new DevicePolicy(new());
+        var runner = new FakeRunner
+        {
+            CurrentAndroidUserOutput = "12\n",
+            TargetHandler = command => command.Contains("query")
+                ? new(0, "Row: 0 json=" + DisplayProfileJson() + "\n", "")
+                : new(0, "Starting: Intent { cmp=com.tablink.client/.MainActivity }", "")
+        };
+        var client = Client(policy, runner);
+        var sessionUser = await client.BindCurrentAndroidUserAsync(policy.Approve(good, inventory));
+        runner.CurrentAndroidUserOutput = "13\n";
+        await ThrowsAsync<AndroidUserChangedException>(() => client.ReadDisplayProfileAsync(sessionUser));
+        await ThrowsAsync<AndroidUserChangedException>(() =>
+            client.LaunchAsync(sessionUser, "0123456789abcdef", endpoint));
+        Assert(!runner.Calls.Any(call => call.Contains("query") || call.Contains("start")));
+    });
     await TestAsync("All target commands use explicitly approved serial and bounded reverse", async () =>
     {
         var runner = new FakeRunner();
@@ -121,13 +184,16 @@ try
         var client = Client(policy, runner);
         var approved = await client.ApproveAsync(good);
         await client.ReversePortAsync(approved, endpoint);
-        await client.LaunchAsync(approved, "0123456789abcdef0123456789abcdef", endpoint);
+        var sessionUser = await client.BindCurrentAndroidUserAsync(approved);
+        await client.LaunchAsync(sessionUser, "0123456789abcdef0123456789abcdef", endpoint);
         await client.RemoveReverseAsync(approved, endpoint);
         var targets = runner.Calls.Where(x => x[0] != "devices").ToArray();
-        Assert(targets.Length == 3 && targets.All(x => x[0] == "-s" && x[1] == "TEST-TABLET-SERIAL-0001"));
+        Assert(targets.Length == 5 && targets.All(x => x[0] == "-s" && x[1] == "TEST-TABLET-SERIAL-0001"));
         Assert(targets[0].SequenceEqual(new[] { "-s", "TEST-TABLET-SERIAL-0001", "reverse", "--no-rebind", "tcp:54321", "tcp:27183" }));
-        Assert(targets[1].Last() == "54321");
-        Assert(targets[2].SequenceEqual(new[] { "-s", "TEST-TABLET-SERIAL-0001", "reverse", "--remove", "tcp:54321" }));
+        Assert(targets[1].SequenceEqual(new[] { "-s", "TEST-TABLET-SERIAL-0001", "shell", "am", "get-current-user" }));
+        Assert(targets[2].SequenceEqual(targets[1]));
+        Assert(targets[3].Contains("--user") && targets[3].Contains("0") && targets[3].Last() == "54321");
+        Assert(targets[4].SequenceEqual(new[] { "-s", "TEST-TABLET-SERIAL-0001", "reverse", "--remove", "tcp:54321" }));
         Assert(!runner.Calls.SelectMany(x => x).Any(x => x is "kill-server" or "tcpip" or "--remove-all"));
     });
     await Test("Per-session endpoints use the cryptographic ephemeral range", () =>
@@ -333,7 +399,9 @@ try
         var runner = new FakeRunner();
         var client = Client(policy, runner);
         var approved = policy.Approve(good, inventory);
-        await ThrowsAsync<ArgumentException>(() => client.LaunchAsync(approved, "validtoken1234567;reboot", endpoint));
+        var sessionUser = await client.BindCurrentAndroidUserAsync(approved);
+        runner.Calls.Clear();
+        await ThrowsAsync<ArgumentException>(() => client.LaunchAsync(sessionUser, "validtoken1234567;reboot", endpoint));
         Throws<ArgumentOutOfRangeException>(() => _ = new AdbReverseEndpoint(5555));
         Assert(runner.Calls.Count == 0);
     });
@@ -342,9 +410,20 @@ try
         var apk = Path.Combine(temporary, "client & sample.apk");
         File.WriteAllText(apk, "test-only");
         var policy = new DevicePolicy(new());
-        var runner = new FakeRunner();
+        var runner = new FakeRunner { TargetStandardOutput = "Performing Push Install\nSuccess\n" };
         await Client(policy, runner).InstallApkAsync(policy.Approve(good, inventory), apk);
-        Assert(runner.Calls.Last().SequenceEqual(new[] { "-s", "TEST-TABLET-SERIAL-0001", "install", "-r", apk }));
+        var install = runner.Calls.Single(c => c.Contains("install"));
+        Assert(install.SequenceEqual(new[] { "-s", "TEST-TABLET-SERIAL-0001", "install", "--user", "0", "--no-streaming", "-r", apk }));
+    });
+    await TestAsync("APK install requires an unambiguous Success result", async () =>
+    {
+        var apk = Path.Combine(temporary, "client.apk");
+        File.WriteAllText(apk, "test-only");
+        var policy = new DevicePolicy(new());
+        var runner = new FakeRunner { TargetStandardOutput = "Performing Push Install\n" };
+        await ThrowsAsync<AdbResponseException>(() =>
+            Client(policy, runner).InstallApkAsync(policy.Approve(good, inventory), apk));
+        Assert(runner.Calls.Count(c => c[0] != "devices") == 2);
     });
     await TestAsync("Process ArgumentList preserves metacharacters literally", async () =>
     {
@@ -421,15 +500,19 @@ try
         {
             var policy = new DevicePolicy(new());
             var runner = new FakeRunner { TargetStandardOutput = error };
-            await ThrowsAsync<AdbCommandException>(() => Client(policy, runner).LaunchAsync(policy.Approve(good, inventory), "0123456789abcdef", endpoint));
-            Assert(runner.Calls.Count == 2);
+            var client = Client(policy, runner);
+            var sessionUser = await client.BindCurrentAndroidUserAsync(policy.Approve(good, inventory));
+            await ThrowsAsync<AdbCommandException>(() => client.LaunchAsync(sessionUser, "0123456789abcdef", endpoint));
+            Assert(runner.Calls.Count == 6);
         }
     });
     await TestAsync("Android launch stderr exception also fails with exit zero", async () =>
     {
         var policy = new DevicePolicy(new());
         var runner = new FakeRunner { TargetStandardError = "Exception occurred while executing 'start':" };
-        await ThrowsAsync<AdbCommandException>(() => Client(policy, runner).LaunchAsync(policy.Approve(good, inventory), "0123456789abcdef", endpoint));
+        var client = Client(policy, runner);
+        var sessionUser = await client.BindCurrentAndroidUserAsync(policy.Approve(good, inventory));
+        await ThrowsAsync<AdbCommandException>(() => client.LaunchAsync(sessionUser, "0123456789abcdef", endpoint));
     });
     await TestAsync("Existing reverse mapping is neither replaced nor automatically removed", async () =>
     {
@@ -488,9 +571,11 @@ try
     {
         var policy = new DevicePolicy(new());
         var runner = new FakeRunner { TargetStandardOutput = "Row: 0 json=" + DisplayProfileJson() + "\n" };
-        var result = await Client(policy, runner).ReadDisplayProfileAsync(policy.Approve(good, inventory));
+        var client = Client(policy, runner);
+        var sessionUser = await client.BindCurrentAndroidUserAsync(policy.Approve(good, inventory));
+        var result = await client.ReadDisplayProfileAsync(sessionUser);
         Assert(result.RequestedRefreshRate == 90);
-        var target = runner.Calls.Where(c => c[0] != "devices").Single();
+        var target = runner.Calls.Where(c => c.Contains("query")).Single();
         Assert(target.SequenceEqual(new[] { "-s", "TEST-TABLET-SERIAL-0001", "shell", "content", "query", "--uri", "content://com.tablink.client.display/capabilities", "--user", "0" }));
     });
     await TestAsync("Stopped provider fallback launches only TabLink and requeries approved serial", async () =>
@@ -503,28 +588,34 @@ try
                 ? new(0, ++queries == 1 ? "No result found." : "Row: 0 json=" + DisplayProfileJson(true), "")
                 : new(0, "Starting: Intent { cmp=com.tablink.client/.MainActivity }", "")
         };
-        var result = await Client(policy, runner).ReadDisplayProfileAsync(policy.Approve(good, inventory));
+        var client = Client(policy, runner);
+        var sessionUser = await client.BindCurrentAndroidUserAsync(policy.Approve(good, inventory));
+        var result = await client.ReadDisplayProfileAsync(sessionUser);
         var targets = runner.Calls.Where(c => c[0] != "devices").ToArray();
-        Assert(queries == 2 && targets.Length == 3 && result.Rotation == 1);
+        Assert(queries == 2 && targets.Length == 5 && result.Rotation == 1);
         Assert(targets.All(c => c[0] == "-s" && c[1] == "TEST-TABLET-SERIAL-0001"));
-        Assert(targets[0].SequenceEqual(targets[2]));
-        Assert(targets[1].SequenceEqual(new[] { "-s", "TEST-TABLET-SERIAL-0001", "shell", "am", "start", "-n", "com.tablink.client/.MainActivity", "--ez", "profileOnly", "true" }));
-        Assert(runner.Calls.Count(c => c[0] == "devices") == 3);
+        Assert(targets[2].SequenceEqual(targets[4]));
+        Assert(targets[3].SequenceEqual(new[] { "-s", "TEST-TABLET-SERIAL-0001", "shell", "am", "start", "--user", "0", "-n", "com.tablink.client/.MainActivity", "--ez", "profileOnly", "true" }));
+        Assert(runner.Calls.Count(c => c[0] == "devices") == 5);
     });
     await TestAsync("Display provider fallback rechecks USB approval before activation", async () =>
     {
         var policy = new DevicePolicy(new());
         var runner = new FakeRunner();
         runner.TargetHandler = _ => { runner.DeviceState = "offline"; return new(0, "No result found.", ""); };
-        await ThrowsAsync<DevicePolicyException>(() => Client(policy, runner).ReadDisplayProfileAsync(policy.Approve(good, inventory)));
-        Assert(runner.Calls.Count(c => c[0] != "devices") == 1 && !runner.Calls.Any(c => c.Contains("am")));
+        var client = Client(policy, runner);
+        var sessionUser = await client.BindCurrentAndroidUserAsync(policy.Approve(good, inventory));
+        await ThrowsAsync<DevicePolicyException>(() => client.ReadDisplayProfileAsync(sessionUser));
+        Assert(runner.Calls.Count(c => c[0] != "devices") == 3 && !runner.Calls.Any(c => c.Contains("start")));
     });
     await TestAsync("Malformed provider result does not trigger activation or guess a display mode", async () =>
     {
         var policy = new DevicePolicy(new());
         var runner = new FakeRunner { TargetStandardOutput = "Row: 0 json={}" };
-        await ThrowsAsync<AdbResponseException>(() => Client(policy, runner).ReadDisplayProfileAsync(policy.Approve(good, inventory)));
-        Assert(runner.Calls.Count(c => c[0] != "devices") == 1);
+        var client = Client(policy, runner);
+        var sessionUser = await client.BindCurrentAndroidUserAsync(policy.Approve(good, inventory));
+        await ThrowsAsync<AdbResponseException>(() => client.ReadDisplayProfileAsync(sessionUser));
+        Assert(runner.Calls.Count(c => c[0] != "devices") == 3);
     });
     await TestAsync("Malformed display payload never exposes fake ADB output markers", async () =>
     {
@@ -533,7 +624,9 @@ try
         var runner = new FakeRunner { TargetStandardOutput = "Row: 0 json={\"marker\":\"" + marker.Replace("\\", "\\\\") + "\"}" };
         try
         {
-            await Client(policy, runner).ReadDisplayProfileAsync(policy.Approve(good, inventory));
+            var client = Client(policy, runner);
+            var sessionUser = await client.BindCurrentAndroidUserAsync(policy.Approve(good, inventory));
+            await client.ReadDisplayProfileAsync(sessionUser);
             throw new Exception("Expected malformed ADB response failure.");
         }
         catch (AdbResponseException ex)
@@ -550,8 +643,10 @@ try
         var policy = new DevicePolicy(new());
         var runner = new FakeRunner { TargetHandler = command => command.Contains("query")
             ? new(0, "No result found.", "") : new(0, "Error type 3\nActivity class does not exist", "") };
-        await ThrowsAsync<AdbCommandException>(() => Client(policy, runner).ReadDisplayProfileAsync(policy.Approve(good, inventory)));
-        Assert(runner.Calls.Count(c => c[0] != "devices") == 2);
+        var client = Client(policy, runner);
+        var sessionUser = await client.BindCurrentAndroidUserAsync(policy.Approve(good, inventory));
+        await ThrowsAsync<AdbCommandException>(() => client.ReadDisplayProfileAsync(sessionUser));
+        Assert(runner.Calls.Count(c => c[0] != "devices") == 4);
     });
 }
 finally
@@ -599,6 +694,7 @@ sealed class FakeRunner : IAdbProcessRunner
     public string? DevicesStandardOutput { get; set; }
     public string TargetStandardOutput { get; set; } = "";
     public string TargetStandardError { get; set; } = "";
+    public string CurrentAndroidUserOutput { get; set; } = "0\n";
     public Exception? TargetException { get; set; }
     public Func<string[], AdbCommandResult>? TargetHandler { get; set; }
     public Task<AdbCommandResult> RunAsync(string executable, IReadOnlyList<string> arguments, TimeSpan timeout, CancellationToken cancellationToken)
@@ -607,6 +703,8 @@ sealed class FakeRunner : IAdbProcessRunner
         Calls.Add(arguments.ToArray());
         if (arguments[0] == "devices")
             return Task.FromResult(new AdbCommandResult(0, DevicesStandardOutput ?? $"List of devices attached\nTEST-TABLET-SERIAL-0001 {DeviceState} model:Test_Tablet transport_id:1\n", ""));
+        if (arguments.Count >= 5 && arguments[^2] == "am" && arguments[^1] == "get-current-user")
+            return Task.FromResult(new AdbCommandResult(0, CurrentAndroidUserOutput, ""));
         if (TargetException is not null) return Task.FromException<AdbCommandResult>(TargetException);
         return Task.FromResult(TargetHandler?.Invoke(arguments.ToArray()) ??
             new AdbCommandResult(TargetExitCode, TargetStandardOutput, TargetStandardError));

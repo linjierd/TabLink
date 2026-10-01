@@ -32,6 +32,12 @@ Windows 的“检测与日志”页可以由用户主动导出支持包。保存
 
 CI 同时覆盖 Windows 两种浏览器功能配置、DriverSetup、所有 managed 测试、Android JVM 测试、`assembleDebug`、`lintDebug` 和 APK 签名验证。完整、逐项的当前结果和尚未完成的硬件边界见 [0.8.9 验证记录](VERIFICATION-0.8.9.md)。
 
+## 安卓安装兼容与帧率证据
+
+ADB 兼容页先读取 Android 当前前台用户。安装操作把 APK 明确装入该用户；每次 USB 副屏会话再独立固定一次当前用户，让屏幕能力 provider、首次 Activity 启动与断线恢复始终使用同一个会话用户。若前台用户已经变化，恢复会在检查或重建反向通道前终止，不会静默切换到另一个用户。安装使用 Google Platform-Tools 的 `--no-streaming` 路径先完成文件传输、再交给系统包管理器提交，并且只有 ADB 返回独立的 `Success` 行才显示安装成功。这规避了部分厂商安装器在 streaming 事务中已经显示结果页、却一直不向 ADB 返回最终结果的问题；超时或含糊输出仍按失败处理，不会自动叠加第二个安装事务。每条命令继续绑定用户选中的唯一 USB 设备，并在执行前复核 Windows USB 身份、ADB 状态和设备排除规则。
+
+物理呈现测量工具同时修复了与 `session-health.json` 的字段漂移。0.8.9 分别记录 SurfaceFlinger actual-present 物理呈现、Windows 呈现回调增量、Android 解码提交和 Android 呈现回调，后三项都不能替代物理呈现。ADB 会话健康数据使用带域分隔的设备序列号 SHA-256 绑定测量目标，测量 JSON 不再保存原始序列号；该跨 C# / PowerShell 规范和字段映射已经加入根构建与 CI 门禁。
+
 ## 兼容性与不变项
 
 - 传输协议主版本仍为 v1；已登记设备仍使用固定电脑证书、Android Keystore P-256 身份和逐连接新挑战。

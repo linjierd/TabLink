@@ -20,11 +20,13 @@
 | Windows Release（浏览器功能启用与禁用） | 两种配置均 0 warning / 0 error | 只证明编译与静态依赖闭环 |
 | DriverSetup Release | 0 warning / 0 error | 不安装、不卸载驱动 |
 | 全部 managed 测试项目 | 18 / 18 项目通过 | 使用 E 盘测试目录、回环或 fake 边界 |
+| Android 呈现测量契约 | 36 项断言通过 | 固定测试向量核对序列号哈希绑定、health 字段映射、最终样本新鲜度、四类指标命名、原始序列号不落盘、SurfaceFlinger 枚举退出码、ADB 完全限定路径，以及 Google r37 三件套固定哈希；不调用 ADB 或 SurfaceFlinger |
+| ADB APK 安装兼容 | Core 51 场景通过；覆盖当前用户安装、会话用户固定、用户切换失败关闭、`--no-streaming`、保留数据覆盖安装和独立 `Success`；USB 恢复 194 项断言验证用户变化发生在反向通道检查前或启动前都会终止，并且不会把未执行的启动记为已完成 | fake runner 只证明参数、目标复核与结果解析；W202DS 最终覆盖安装仍须单独完成 |
 | 可信线路恢复状态机 | 23 场景 / 69 断言通过 | 不调用真实网络接口或显示 API |
 | 脱敏支持包与诊断 | 18 场景 / 164 断言通过 | 临时文件测试，不等于真实 UI 导出 |
 | 兼容性目录 | 13 场景 / 128 断言通过 | 静态资料校验；不证明设备兼容性 |
 | Android JVM、`assembleDebug`、`lintDebug`、APK 签名 | 通过；debug APK 为 430,494 字节，SHA-256 `9F672878F77B642B7CC5FD2C2103D2F59174AD8C873215EE1CFA3C2E75CD19E8` | 包名 `com.tablink.client`、0.8.9 / build 21、minSdk 23、targetSdk 35；不运行真实 Android Keystore、MediaCodec 或网络迁移 |
-| `git diff --check` 与 16 个变更文件的隐私扫描 | 通过 | 未发现个人用户目录、项目绝对路径、USB VID/PID、MAC 或长 token/serial 形状；只覆盖仓库文本与生成内容 |
+| `git diff --check` 与 18 个候选文件的隐私扫描 | 通过 | 覆盖 15 个已跟踪修改文件和 3 个新增文件；未发现个人用户目录、项目绝对路径、真实设备序列号、MAC 或配对秘密；命中项仅为回环/文档地址、固定工具哈希和明确标注的测试向量。只覆盖仓库文本与生成内容 |
 
 最近一次 0.8.8 后开发基线的 GitHub Actions run 为 [`36911542956`](https://github.com/linjierd/TabLink/actions/runs/36911542956)，Windows 与 Android 两个 job 均成功。它发生在版本提升之前，只能作为变更基线，不能证明 0.8.9 身份或产物。
 
@@ -38,6 +40,8 @@
 - [x] 本地构建不可调试的 Android Release Preview；包名 `com.tablink.client`、`versionName 0.8.9`、`versionCode 21`、v1/v2 签名及固定签名证书 SHA-256 均通过门禁。该本地 APK 为 344,039 字节，SHA-256 `B7C0B31EA66F4A4F7C03D528BF419DF8AEB656A721771DD6D145FE370A2243F1`；它不是最终 GitHub 资产，提交后必须重建。
 - [ ] 在 W202DS 上从 0.8.8 覆盖安装，并从设备回读包名、版本、build、签名和候选 APK 哈希。
 - [ ] 完整 Windows 包包含对应 Android APK、许可、FFmpeg 两个 helper 及完整对应源码；公共包不包含 Google ADB 或受地域限制的浏览器依赖。
+
+首次真机尝试使用提交前生成的 0.8.9 Preview APK 和默认 streaming 安装路径。W202DS 厂商安装器显示了不含版本/session 身份的“安装完成”页面，但 ADB 安装客户端没有返回，包管理器回读仍为 0.8.8 / build 20；该次尝试已只终止挂起的单个 ADB 客户端，未停止共享 ADB 服务，也没有卸载或清除应用数据。因此它明确记为**未完成**，不能作为 0.8.9 安装证据。后续只使用最终干净提交的 PublicRelease APK，通过唯一 W202DS 读取当前前台用户并执行一次对应用户的 `--no-streaming -r` 安装；只有 ADB 独立成功、设备版本/build、原安装时间、回拉 APK 哈希和固定签名全部匹配后才勾选本项。
 
 ## W202DS 基本功能与单屏生命周期
 
@@ -78,9 +82,10 @@
 | --- | ---: | --- |
 | 平板支持 / 当前面板 Hz | 未测 | 待设备只读能力与当前模式回读 |
 | Windows 请求 Hz | 未测 | 待当前会话配置记录 |
-| Android 解码提交 fps | 未测 | 待客户端提交计数 |
-| Android 呈现回调 fps | 未测 | 待 `OnFrameRenderedListener` 计数 |
-| 物理呈现 fps | 未测 | 待 SurfaceFlinger 时间戳或外部测量；若不测则保持“未测” |
+| Windows 呈现回调增量 fps | 未测 | `session-health.measuredPresentedFps`；只表示回调增量，不是物理呈现 |
+| Android 解码提交 fps | 未测 | `session-health.ClientSubmittedFps` |
+| Android 呈现回调 fps | 未测 | `session-health.ClientPresentedFps` / `OnFrameRenderedListener`；不是物理呈现 |
+| 物理呈现 fps | 未测 | `Measure-AndroidPresentation.ps1` 的 SurfaceFlinger actual-present 时间戳；若不测则保持“未测” |
 
 ## 公共发布
 

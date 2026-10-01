@@ -141,3 +141,10 @@ public class DevicePolicyException(string message) : InvalidOperationException(m
 /// all identity, exclusion and approval failures remain DevicePolicyException.
 /// </summary>
 public sealed class AdbDeviceTemporarilyUnavailableException(string message) : DevicePolicyException(message);
+
+/// <summary>
+/// The foreground Android user no longer matches the user bound when this USB
+/// display session began. The caller must stop and establish a fresh session.
+/// </summary>
+public sealed class AndroidUserChangedException()
+    : DevicePolicyException("当前 Android 用户已经变化；请重新连接副屏。");

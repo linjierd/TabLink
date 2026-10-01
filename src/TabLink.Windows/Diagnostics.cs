@@ -37,6 +37,7 @@ internal static class Diagnostics
         var adb=new AdbClient(trustedAdb,new DevicePolicy(settings),UsbInventory.ReadAsync);
         var candidate=(await adb.ListDevicesAsync(timeout.Token)).Single(d=>d.Serial==serial);
         var approved=await adb.ApproveAsync(candidate,timeout.Token);
+        var approvedUser=await adb.BindCurrentAndroidUserAsync(approved,timeout.Token);
         // A diagnostic image proves Android receives and renders frames before
         // any Windows display is created or enabled. It contains no desktop data.
         var images=new[]{CreateTestFrame(false),CreateTestFrame(true)};
@@ -75,7 +76,7 @@ internal static class Diagnostics
                 reversed=true;
                 return endpoint;
             },timeout.Token);
-            await adb.LaunchAsync(approved,server.Token,reverseEndpoint.Value,timeout.Token);
+            await adb.LaunchAsync(approvedUser,server.Token,reverseEndpoint.Value,timeout.Token);
             await Task.Delay(TimeSpan.FromSeconds(seconds),timeout.Token);
             var passed=server.PresentedFrames>=Math.Max(5,seconds*3)&&server.LastPresentedUtc>DateTime.UtcNow.AddSeconds(-5);
             var saved=Save("usb-smoke-result.json",()=>new{passed,began,ended=DateTimeOffset.Now,server.FramesSent,server.PresentedFrames,server.PresentedWidth,server.PresentedHeight,server.LastPresentedUtc,desktopCaptured=false,virtualDisplayChanged=false});

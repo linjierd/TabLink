@@ -17,6 +17,9 @@ jobs:
       - name: Verify cross-platform version contract
         shell: pwsh
         run: .\tools\Test-TabLinkVersionContract.ps1
+      - name: Verify Android presentation measurement contract
+        shell: pwsh
+        run: .\tools\Test-AndroidPresentationMeasurement.ps1
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
