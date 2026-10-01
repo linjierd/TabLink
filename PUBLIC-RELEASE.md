@@ -1,5 +1,7 @@
 # Public binary release scope
 
+<!-- tablink-version-contract: version=0.8.9; channel=preview; preview=1; androidVersionCode=21 -->
+
 The planned globally downloadable GitHub binary is a preview build with a narrower
 redistribution scope than a normal local source build.
 
@@ -7,10 +9,10 @@ TabLink is created and maintained by **张林杰 (Jey)** (GitHub
 [@linjierd](https://github.com/linjierd)); the author's blog is
 [Linjie / 开发笔记](https://linjie.space/).
 
-- It will include the self-contained Windows x64 0.8.8 Preview 1 application,
+- It will include the self-contained Windows x64 0.8.9 Preview 1 application,
   updater, signed Virtual Display Driver, two separately licensed patched
   FFmpeg helper executables plus complete corresponding source, and the
-  Android 0.8.8 / versionCode 20 preview APK.
+  Android 0.8.9 / versionCode 21 preview APK.
 - Native Android pairing now creates an installation-scoped Windows host
   identity and a non-exportable Android Keystore P-256 device identity. The
   first QR bearer expires after five minutes and is consumed once. A trusted
@@ -109,7 +111,7 @@ TabLink is created and maintained by **张林杰 (Jey)** (GitHub
   `b0035ffe0539e43ded2f5c40e3b7e4d4edfb5d8f8063459faca911edc7500554`;
   a missing or different identity fails closed instead of generating a new
   signer. The build also verifies package `com.tablink.client`, versionCode
-  `20`, and versionName `0.8.8`. It is for this preview and is not an app-store
+  `21`, and versionName `0.8.9`. It is for this preview and is not an app-store
   production signature.
 - A public release cannot be built with `-SkipAndroid`. The build entry point
   rejects `-PublicRelease -SkipAndroid`, so the Windows archive cannot be
@@ -118,7 +120,7 @@ TabLink is created and maintained by **张林杰 (Jey)** (GitHub
 The Windows public ZIP is self-contained for Windows x64 and does not require
 a separate .NET installation.
 
-The signed `stable` update channel remains at 0.8.0. Publishing 0.8.8 Preview
+The signed `stable` update channel remains at 0.8.0. Publishing 0.8.9 Preview
 1 assets on GitHub must not move the stable manifest or cause installed stable
 clients to update automatically.
 

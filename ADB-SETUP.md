@@ -8,7 +8,7 @@ the APK from the Windows UI.
 
 ## Accepted Platform-Tools build
 
-TabLink 0.8.8 accepts only the official **SDK Platform-Tools r37.0.0 for
+TabLink 0.8.8 and later accept only the official **SDK Platform-Tools r37.0.0 for
 Windows** triplet below. The files must come from the same official archive and
 remain next to each other:
 

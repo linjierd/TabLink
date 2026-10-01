@@ -28,7 +28,7 @@ body:
     id: tablink_version
     attributes:
       label: "TabLink 版本与构建"
-      placeholder: "例如：Windows 0.8.8 Preview 1；Android 0.8.8 / build 20"
+      placeholder: "例如：Windows 0.8.9 Preview 1；Android 0.8.9 / build 21"
     validations:
       required: true
 

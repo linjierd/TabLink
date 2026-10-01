@@ -22,6 +22,8 @@ if ($versionNameMatches.Count -ne 1 -or $versionCodeMatches.Count -ne 1) {
 }
 $androidVersionName = $versionNameMatches[0].Groups['value'].Value
 $androidVersionCode = $versionCodeMatches[0].Groups['value'].Value
+& (Join-Path (Split-Path -Parent $projectDirectory) 'tools\Test-TabLinkVersionContract.ps1') `
+    -RepositoryRoot (Split-Path -Parent $projectDirectory)
 if (-not $JavaHome) {
     $javaCandidates = @(
         'C:\Program Files\Android\openjdk\jdk-21.0.8',

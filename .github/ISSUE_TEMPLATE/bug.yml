@@ -14,7 +14,7 @@ body:
     attributes:
       label: "TabLink 版本与构建"
       description: "填写 Windows 端和 Android 端显示的版本；不知道的一端可写“不知道”。"
-      placeholder: "例如：Windows 0.8.8 Preview 1；Android 0.8.8 / build 20"
+      placeholder: "例如：Windows 0.8.9 Preview 1；Android 0.8.9 / build 21"
     validations:
       required: true
 
