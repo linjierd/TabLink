@@ -7,7 +7,7 @@
     <Nullable>enable</Nullable>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>TabLink</AssemblyName>
-    <Version>0.8.7</Version>
+    <Version>0.8.8</Version>
     <Authors>张林杰（Jey / @linjierd）</Authors>
     <Company>张林杰（Jey / @linjierd）</Company>
     <Product>TabLink</Product>
@@ -23,6 +23,9 @@
   <ItemGroup>
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
       <_Parameter1>TabLink.AdbLocator.Tests</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>TabLink.TrustedPairing.Tests</_Parameter1>
     </AssemblyAttribute>
   </ItemGroup>
   <ItemGroup><Compile Include="../TabLink.DriverSetup/DriverLifecycleHandoff.cs" Link="DisplaySafety/DriverLifecycleHandoff.cs" /></ItemGroup>

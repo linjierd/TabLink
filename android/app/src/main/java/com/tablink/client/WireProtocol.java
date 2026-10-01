@@ -11,6 +11,7 @@ public final class WireProtocol {
     public static final String FEATURE_DECODER_REFRESH = "decoder-refresh-v1";
     public static final String FEATURE_RECEIVER_FEEDBACK = "receiver-feedback-v1";
     public static final String FEATURE_ADAPTIVE_VIDEO = "adaptive-video-v1";
+    public static final String FEATURE_TRUSTED_DEVICE = TrustedDeviceProtocol.FEATURE;
     public static final int FRAME = 0x01;
     public static final int STATUS = 0x02;
     public static final int ERROR = 0x03;
@@ -21,6 +22,10 @@ public final class WireProtocol {
     public static final int RENDER_SUBMITTED = 0x14;
     public static final int DECODER_REFRESH = 0x15;
     public static final int RECEIVER_FEEDBACK = 0x16;
+    public static final int TRUSTED_HELLO = TrustedDeviceProtocol.TRUSTED_HELLO;
+    public static final int TRUSTED_CHALLENGE = TrustedDeviceProtocol.TRUSTED_CHALLENGE;
+    public static final int TRUSTED_PROOF = TrustedDeviceProtocol.TRUSTED_PROOF;
+    public static final int TRUST_ESTABLISHED = TrustedDeviceProtocol.TRUST_ESTABLISHED;
     public static final int VIDEO_CONFIG = 0x20;
     public static final int VIDEO_FRAME = 0x21;
 

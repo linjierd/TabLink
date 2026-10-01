@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using TabLink.Core;
 
 namespace TabLink.Windows;
@@ -10,6 +11,8 @@ internal sealed partial class MainForm : Form
     readonly VideoQualityPreferences qualityPreferences=new(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"TabLink","video-settings.json"));
     DevicePolicySettings settings = new();
     DevicePolicy policy=null!;
+    NativeTrustRepository? nativeTrust;
+    string? nativeTrustError;
     AdbClient? adb;
     ApprovedUsbDevice? approved;
     DesktopCapture? capture;
@@ -93,6 +96,10 @@ internal sealed partial class MainForm : Form
         StartPosition=FormStartPosition.CenterScreen; Font=new Font("Microsoft YaHei UI",10); BackColor=Color.FromArgb(244,247,251); ForeColor=ink;
         if(!verification)
         {
+            try { nativeTrust=new NativeTrustRepository(); }
+            catch(Exception ex) when(ex is IOException or InvalidDataException or UnauthorizedAccessException or
+                CryptographicException or System.Security.SecurityException)
+            {nativeTrustError=SafeErrorSummary.ForUser(ex);}
             var videoPreferences=qualityPreferences.Load();
             selectedQuality=videoPreferences.Quality;selectedEncoder=videoPreferences.Encoder;
             allowSoftwareFallback=videoPreferences.AllowSoftwareFallback;
@@ -102,7 +109,7 @@ internal sealed partial class MainForm : Form
         var exit=new ToolStripMenuItem("退出 TabLink");
         showWindow.Click+=(_,_)=>RestoreFromTray();
         tray.DoubleClick+=(_,_)=>RestoreFromTray();
-        trayStop.Click+=async(_,_)=>await GuardAsync(StopAllAsync);
+        trayStop.Click+=async(_,_)=>await GuardAsync(async()=>{trustedAutoStartSuppressed=true;await StopAllAsync();});
         exit.Click+=async(_,_)=>await ExitAsync();
         trayMenu.Items.AddRange([showWindow,trayStop,new ToolStripSeparator(),exit]);
         tray.ContextMenuStrip=trayMenu;
@@ -145,6 +152,11 @@ internal sealed partial class MainForm : Form
                     networks.SelectedItem=choice;await StartNetworkAsync();
                 });
             }
+            else if(this.requestedSerial is null&&nativeTrust is {Count:>0}&&!HasAnySessions&&
+                networks.SelectedItem is NetworkInterfaceChoice)
+            {
+                await GuardAsync(()=>networkStartTask=StartNetworkCoreAsync(autoTrusted:true));
+            }
             if(this.requestedSerial is not null)
             {
                 connectionMode.SelectedIndex=2;
@@ -165,7 +177,7 @@ internal sealed partial class MainForm : Form
             }
             e.Cancel=true;await ExitAsync();
         };
-        FormClosed+=(_,_)=>{idleUpdateDelay?.Cancel();idleUpdateDelay?.Dispose();activationTimer.Dispose();monitor.Dispose();tray.Visible=false;tray.Dispose();trayMenu.Dispose();updateCoordinator?.Dispose();lifetime.Dispose();};
+        FormClosed+=(_,_)=>{idleUpdateDelay?.Cancel();idleUpdateDelay?.Dispose();activationTimer.Dispose();monitor.Dispose();tray.Visible=false;tray.Dispose();trayMenu.Dispose();updateCoordinator?.Dispose();nativeTrust?.Dispose();lifetime.Dispose();};
         UpdateButtons();
     }
 
@@ -736,15 +748,15 @@ internal sealed partial class MainForm : Form
             server?.RequestReconnect();
             try{await preparing;}catch(Exception ex){Log("网络屏幕准备已结束："+SafeError(ex));}
         }
-        var running=server;var ownedCapture=capture;var ownedApproval=approved;var ownedAdb=adb;var ownedReverse=reverseCreated;var ownedEndpoint=reverseEndpoint;var ownedReceipt=reverseReceipt;var ownedReceiptState=reverseReceiptState;var ownedReverseAttached=reverseAttached;var ownedGuard=displayGuard;var ownedReservation=primaryReservation;var ownedPower=activePower;var ownedFirewall=networkFirewall;
+        var running=server;var ownedCapture=capture;var ownedApproval=approved;var ownedAdb=adb;var ownedReverse=reverseCreated;var ownedEndpoint=reverseEndpoint;var ownedReceipt=reverseReceipt;var ownedReceiptState=reverseReceiptState;var ownedReverseAttached=reverseAttached;var ownedGuard=displayGuard;var ownedReservation=primaryReservation;var ownedPower=activePower;var ownedFirewall=networkFirewall;var ownedDiscoveryFirewall=discoveryFirewall;var ownedDiscovery=networkDiscovery;
         var displayCollected=true;
         server=null;capture=null;approved=null;reverseCreated=false;reverseEndpoint=null;reverseReceipt=null;reverseReceiptState=null;reverseAttached=false;
         displayGuard=null;
         primaryReservation=null;primaryTargetKey=null;
         activePower=null;
-        networkFirewall=null;networkChoice=null;networkDisplay=null;tabletProfile=null;videoQuality=null;ClearPairing();
+        networkFirewall=null;discoveryFirewall=null;networkDiscovery=null;networkChoice=null;networkDisplay=null;tabletProfile=null;videoQuality=null;ClearPairing();
         welcome?.Close();welcome=null;
-        if(running is null&&ownedCapture is null&&ownedApproval is null&&ownedGuard is null&&ownedFirewall is null&&
+        if(running is null&&ownedCapture is null&&ownedApproval is null&&ownedGuard is null&&ownedFirewall is null&&ownedDiscoveryFirewall is null&&ownedDiscovery is null&&
             !ownedReverse&&ownedEndpoint is null&&ownedReceipt is null)
         {
             stopping=false;
@@ -835,6 +847,8 @@ internal sealed partial class MainForm : Form
         }
         finally
         {
+            if(ownedDiscovery is not null)try{await ownedDiscovery.DisposeAsync();}catch(Exception ex){Log("停止局域网发现时报告："+SafeError(ex));}
+            if(ownedDiscoveryFirewall is not null)try{await ownedDiscoveryFirewall.DisposeAsync();}catch(Exception ex){Log("清理局域网发现防火墙规则失败："+SafeError(ex));}
             if(ownedFirewall is not null)try{await ownedFirewall.DisposeAsync();}catch(Exception ex){Log("清理本次防火墙规则失败："+SafeError(ex));}
             ownedPower?.Dispose();
             stopping=false;
@@ -852,8 +866,14 @@ internal sealed partial class MainForm : Form
     async Task MonitorAsync()
     {
         await MonitorAdditionalAsync();
-        if(server is null&&!HasAdditionalSessions)await RetryPendingUsbCleanupAsync("background-retry");
+        if(server is null&&!HasAdditionalSessions)
+        {
+            await RetryPendingUsbCleanupAsync("background-retry");
+            await TryAutoStartTrustedNetworkAsync();
+        }
         if(server is {} healthServer)RefreshPrimaryConnectionHealth(healthServer);
+        if(server is {} registrationServer&&pairingUri is not null&&!registrationServer.RegistrationAvailable)
+            ExpireNetworkPairingUi();
         if(monitoring||stopping||preparingNetwork||server is null)return;monitoring=true;
         var observedApproval=approved;var observedServer=server;
         try
@@ -870,10 +890,17 @@ internal sealed partial class MainForm : Form
                 var observedNetwork=networkChoice;
                 var available=await IsNetworkAvailableAsync();
                 if(!ReferenceEquals(server,observedServer)||!ReferenceEquals(networkChoice,observedNetwork))return;
-                if(!available) {Log("选中的网络线路已断开或身份变化，停止传输。");await StopAsync();return;}
+                if(!available)
+                {
+                    Log("选中的网络线路已断开或地址变化，正在迁移可信设备监听。");
+                    await StopAsync();
+                    await TryAutoStartTrustedNetworkAsync();
+                    return;
+                }
                 if(capture is null)
                 {
-                    if(DateTime.UtcNow-sessionStartedUtc>TimeSpan.FromMinutes(5)) {Log("配对二维码已超时，请重新开始连接。");await StopAsync();}
+                    if(nativeTrust is not {Count:>0}&&DateTime.UtcNow-sessionStartedUtc>TimeSpan.FromMinutes(5))
+                    {Log("配对二维码已超时，请重新开始连接。");await StopAsync();}
                     return;
                 }
             }

@@ -1,6 +1,9 @@
 param([switch]$SkipAndroid,[string]$OutputDirectory,[switch]$PublicRelease)
 $ErrorActionPreference = 'Stop'
 $projectRoot = $PSScriptRoot
+if ($PublicRelease -and $SkipAndroid) {
+    throw 'PublicRelease cannot use -SkipAndroid. A public package must rebuild, lint, identify and verify the Android APK from the same clean source commit.'
+}
 if ($PublicRelease) {
     $insideWorkTree = & git -C $projectRoot rev-parse --is-inside-work-tree 2>$null
     if ($LASTEXITCODE -ne 0 -or $insideWorkTree -ne 'true') {
@@ -30,7 +33,7 @@ if ($PSBoundParameters.ContainsKey('OutputDirectory')) {
 else {
     $publishRoot = Join-Path $projectRoot 'dist\TabLink'
 }
-$apkPath = Join-Path $projectRoot $(if ($PublicRelease) { 'android\artifacts\TabLink-android-0.8.7-preview.apk' } else { 'android\artifacts\TabLink-android-0.8.7-debug.apk' })
+$apkPath = Join-Path $projectRoot $(if ($PublicRelease) { 'android\artifacts\TabLink-android-0.8.8-preview.apk' } else { 'android\artifacts\TabLink-android-0.8.8-debug.apk' })
 $ffmpegRoot = Join-Path $projectRoot 'third_party\ffmpeg-tablink'
 $ffmpegHardwareBinary = Join-Path $ffmpegRoot 'bin\ffmpeg.exe'
 $ffmpegSoftwareBinary = Join-Path $ffmpegRoot 'bin\ffmpeg-x264.exe'
@@ -485,6 +488,7 @@ foreach ($windowsTest in @(
     'TabLink.ConnectionHealth.Tests',
     'TabLink.Diagnostics.Tests',
     'TabLink.Transport.Tests',
+    'TabLink.TrustedPairing.Tests',
     'TabLink.UsbLease.Tests',
     'TabLink.UsbRecovery.Tests',
     'TabLink.Video.Tests'
@@ -588,8 +592,8 @@ Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md') -Destination $publis
 Copy-Item -LiteralPath (Join-Path $projectRoot 'AUTHORS.md') -Destination $publishRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot 'LICENSE') -Destination $publishRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot 'THIRD_PARTY_NOTICES.md') -Destination $publishRoot
-Copy-Item -LiteralPath (Join-Path $projectRoot 'RELEASE-0.8.7.md') -Destination $publishRoot
-Copy-Item -LiteralPath (Join-Path $projectRoot 'VERIFICATION-0.8.7.md') -Destination $publishRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot 'RELEASE-0.8.8.md') -Destination $publishRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot 'VERIFICATION-0.8.8.md') -Destination $publishRoot
 if ($PublicRelease) {
     Copy-Item -LiteralPath (Join-Path $projectRoot 'PUBLIC-RELEASE.md') -Destination $publishRoot
     Copy-Item -LiteralPath (Join-Path $projectRoot 'ADB-SETUP.md') -Destination $publishRoot

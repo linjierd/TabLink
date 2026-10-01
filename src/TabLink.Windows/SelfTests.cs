@@ -19,10 +19,15 @@ internal static class SelfTests
         var ruleA=NetworkFirewall.GetRuleName(nic,@"C:\TabLink\TabLink.exe",27184);
         var ruleB=NetworkFirewall.GetRuleName(nic,@"C:\TabLink\TabLink.exe",27186);
         var ruleUdp=NetworkFirewall.GetRuleName(nic,@"C:\TabLink\TabLink.exe",27200,"UDP");
-        Check(new[]{ruleA,ruleB,ruleUdp}.Distinct().Count()==3,"different device endpoints share a firewall identity");
+        var discoveryRule=NetworkFirewall.GetRuleName(nic,@"C:\TabLink\TabLink.exe",27193,"UDP",acceptLocalBroadcast:true);
+        Check(new[]{ruleA,ruleB,ruleUdp,discoveryRule}.Distinct().Count()==4,"different device endpoints share a firewall identity");
         var script=NetworkFirewall.BuildCreateScript(nic,@"C:\TabLink\TabLink.exe",ruleUdp,27200,"UDP");
         Check(script.Contains("-Protocol UDP -LocalPort 27200")&&script.Contains("-LocalAddress '192.168.8.20'")&&script.Contains("-RemoteAddress '192.168.8.0/24'")&&script.Contains("-InterfaceAlias 'Test Wi-Fi'"),"media firewall scope is not exact");
-        log.Add("PASS independent native/media endpoint firewall identities and local-interface/subnet scope (script only)");
+        var discoveryScript=NetworkFirewall.BuildCreateScript(nic,@"C:\TabLink\TabLink.exe",discoveryRule,27193,"UDP",acceptLocalBroadcast:true);
+        Check(discoveryScript.Contains("-Protocol UDP -LocalPort 27193")&&discoveryScript.Contains("-LocalAddress 'Any'")&&
+            discoveryScript.Contains("-RemoteAddress '192.168.8.0/24'")&&discoveryScript.Contains("-InterfaceAlias 'Test Wi-Fi'"),
+            "discovery firewall does not admit local broadcast destinations within the selected interface/subnet scope");
+        log.Add("PASS independent native/media/discovery firewall identities and selected-interface/subnet scope (script only)");
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var ct = deadline.Token;
         // Only synthetic bytes and fake input callbacks are used. No desktop

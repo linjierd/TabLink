@@ -1,16 +1,32 @@
 # Public binary release scope
 
-The globally downloadable GitHub binary is a preview build with a narrower
+The planned globally downloadable GitHub binary is a preview build with a narrower
 redistribution scope than a normal local source build.
 
 TabLink is created and maintained by **张林杰 (Jey)** (GitHub
 [@linjierd](https://github.com/linjierd)); the author's blog is
 [Linjie / 开发笔记](https://linjie.space/).
 
-- It includes the self-contained Windows x64 0.8.7 Preview 1 application,
+- It will include the self-contained Windows x64 0.8.8 Preview 1 application,
   updater, signed Virtual Display Driver, two separately licensed patched
   FFmpeg helper executables plus complete corresponding source, and the
-  Android 0.8.7 / versionCode 19 preview APK.
+  Android 0.8.8 / versionCode 20 preview APK.
+- Native Android pairing now creates an installation-scoped Windows host
+  identity and a non-exportable Android Keystore P-256 device identity. The
+  first QR bearer expires after five minutes and is consumed once. A trusted
+  listener that starts automatically does not publish a QR code; the user must
+  explicitly select “生成新配对二维码” to create one. Creating a new code
+  immediately invalidates the old token, and the new token is also limited to
+  one successful enrollment. Later reconnects pin the same TLS certificate and
+  sign a fresh host-bound challenge. UDP discovery publishes only the opaque
+  host ID, request nonce and current port as an untrusted route hint. Android
+  collects a bounded set of candidates for the full discovery window instead
+  of trusting the first response, then applies the exact saved certificate pin
+  and a fresh signed challenge to every attempted candidate on the same socket.
+  Discovery never publishes a bearer token, device key list or private pairing
+  URI. Authentication and a validated display profile still complete before
+  any virtual-display mutation. Removing a trusted device prevents later
+  authentication and stops its retained connection/display lease.
 - The optional ADB USB compatibility path assigns a cryptographically random
   device-side port to each session, while forwarding to the fixed loopback
   frame server on the PC. Its protected ProgramData receipt is first persisted
@@ -87,13 +103,22 @@ TabLink is created and maintained by **张林杰 (Jey)** (GitHub
   each Windows machine's driver trust policy. TabLink does not install
   certificates, enable test signing, disable Secure Boot or weaken that policy.
 - The APK is a non-debuggable release build signed with the project's existing
-  development key so earlier TabLink test installations can upgrade in place.
-  It is for this preview and is not an app-store production signature.
+  preview key so earlier TabLink test installations can upgrade in place. The
+  `-ReleasePreview` build requires that identity to exist already and requires
+  its certificate SHA-256 to be exactly
+  `b0035ffe0539e43ded2f5c40e3b7e4d4edfb5d8f8063459faca911edc7500554`;
+  a missing or different identity fails closed instead of generating a new
+  signer. The build also verifies package `com.tablink.client`, versionCode
+  `20`, and versionName `0.8.8`. It is for this preview and is not an app-store
+  production signature.
+- A public release cannot be built with `-SkipAndroid`. The build entry point
+  rejects `-PublicRelease -SkipAndroid`, so the Windows archive cannot be
+  published while bypassing the preview APK signer, package and version gates.
 
 The Windows public ZIP is self-contained for Windows x64 and does not require
 a separate .NET installation.
 
-The signed `stable` update channel remains at 0.8.0. Publishing 0.8.7 Preview
+The signed `stable` update channel remains at 0.8.0. Publishing 0.8.8 Preview
 1 assets on GitHub must not move the stable manifest or cause installed stable
 clients to update automatically.
 

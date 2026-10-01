@@ -7,6 +7,7 @@ using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 using System.Security.Authentication;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using System.Threading.Channels;
 using TabLink.Windows;
@@ -47,6 +48,18 @@ static async Task<(TcpClient Client,SslStream Stream)> Connect(NetworkSessionOpt
 }
 static async Task ReadUntil(Stream stream,byte type,CancellationToken ct)
 {while((await FrameServer.ReadPacketAsync(stream,8192,ct)).Type!=type){}}
+static X509Certificate2 PersistentCertificate()
+{
+    using var key=RSA.Create(3072);
+    var request=new CertificateRequest("CN=TabLink Native Host test",key,HashAlgorithmName.SHA256,RSASignaturePadding.Pkcs1);
+    request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false,false,0,true));
+    request.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature|X509KeyUsageFlags.KeyEncipherment,true));
+    request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(new OidCollection{new("1.3.6.1.5.5.7.3.1")},false));
+    using var generated=request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-5),DateTimeOffset.UtcNow.AddDays(30));
+    var pfx=generated.Export(X509ContentType.Pfx);
+    try{return X509CertificateLoader.LoadPkcs12(pfx,null,X509KeyStorageFlags.UserKeySet);}
+    finally{CryptographicOperations.ZeroMemory(pfx);}
+}
 static byte[] RefreshConfiguration()=>JsonSerializer.SerializeToUtf8Bytes(new
 {
     codec="video/avc",width=1200,height=1920,fps=90,
@@ -484,6 +497,236 @@ await using(var timed=new FrameServer(timedOptions,async(_,token)=>
 }
 Console.WriteLine("PASS bounded preparation cancels its callback without capture; dispose also closes unauthenticated idle TLS");
 
+// A valid one-time enrollment bearer is consumed before trust storage is
+// mutated. If protected persistence fails, the same QR cannot be replayed as a
+// legacy session or a second enrollment attempt.
+{
+    using var certificate=PersistentCertificate();
+    var hostId=Convert.ToHexString(SHA256.HashData(certificate.RawData)).ToLowerInvariant();
+    var registry=new MemoryTrustedRegistry(hostId,rejectRegistrations:true);
+    var enrollmentOptions=new NetworkSessionOptions(IPAddress.Loopback,FreePort(),certificate,registry);
+    var prepares=0;
+    await using var enrollmentFailure=new FrameServer(enrollmentOptions,(_,_)=> {
+        Interlocked.Increment(ref prepares);return Task.CompletedTask;
+    },Forbidden,null,()=>{});
+    enrollmentFailure.Start();
+    using var device=ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    var spki=Convert.ToBase64String(device.ExportSubjectPublicKeyInfo());
+    var deviceId=TrustedPairingProtocol.DeviceIdFromPublicKey(spki);
+    {
+        var connection=await Connect(enrollmentOptions,enrollmentOptions.CertificateFingerprint,ct);
+        using var client=connection.Client;using var stream=connection.Stream;
+        await FrameServer.WritePacketAsync(stream,0x10,JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            protocol=1,token=enrollmentFailure.Token,
+            features=new[]{TrustedPairingProtocol.Feature},deviceId,devicePublicKey=spki,deviceName="Test tablet"
+        }),ct);
+        await Closed(stream,ct);
+    }
+    {
+        var replay=await Connect(enrollmentOptions,enrollmentOptions.CertificateFingerprint,ct);
+        using var client=replay.Client;using var stream=replay.Stream;
+        await Hello(stream,enrollmentFailure.Token,ct);
+        await Closed(stream,ct);
+    }
+    Check(prepares==0&&registry.Count==0,"failed enrollment bearer was replayable or reached display preparation");
+}
+Console.WriteLine("PASS failed protected enrollment consumes its one-time QR before mutation and remains before display preparation");
+
+// A persistent listener may outlive the QR timeout after any device has been
+// enrolled. Even a legacy client that omits trusted-device-v1 therefore gets
+// exactly one bearer-authenticated connection on that listener.
+{
+    using var certificate=PersistentCertificate();
+    var hostId=Convert.ToHexString(SHA256.HashData(certificate.RawData)).ToLowerInvariant();
+    var registry=new MemoryTrustedRegistry(hostId);
+    var persistentOptions=new NetworkSessionOptions(IPAddress.Loopback,FreePort(),certificate,registry);
+    var prepares=0;
+    await using var persistentServer=new FrameServer(persistentOptions,(_,_)=>
+    {Interlocked.Increment(ref prepares);return Task.CompletedTask;},Video,null,()=>{});
+    persistentServer.Start();
+    {
+        var first=await Connect(persistentOptions,persistentOptions.CertificateFingerprint,ct);
+        using var client=first.Client;using var stream=first.Stream;
+        await Hello(stream,persistentServer.Token,ct);
+        await FrameServer.WritePacketAsync(stream,0x13,Profile(),ct);
+        await ReadUntil(stream,0x21,ct);
+    }
+    await WaitFor(()=>!persistentServer.ClientConnected,ct);
+    {
+        var replay=await Connect(persistentOptions,persistentOptions.CertificateFingerprint,ct);
+        using var client=replay.Client;using var stream=replay.Stream;
+        await Hello(stream,persistentServer.Token,ct);
+        await Closed(stream,ct);
+    }
+    Check(prepares==1,"persistent listener accepted a reused legacy QR bearer");
+}
+Console.WriteLine("PASS persistent listeners consume a legacy QR bearer after its first authenticated connection");
+
+// Persistent listeners remain available for signed reconnects, but an
+// unconsumed registration bearer expires after five minutes. A user can issue
+// a fresh short-lived bearer without restarting the listener or changing its
+// pinned host certificate.
+{
+    using var certificate=PersistentCertificate();
+    var hostId=Convert.ToHexString(SHA256.HashData(certificate.RawData)).ToLowerInvariant();
+    var registry=new MemoryTrustedRegistry(hostId);
+    var expiryOptions=new NetworkSessionOptions(IPAddress.Loopback,FreePort(),certificate,registry);
+    var prepares=0;long clock=1000;
+    await using var expiring=new FrameServer(expiryOptions,(_,_)=>
+    {Interlocked.Increment(ref prepares);return Task.CompletedTask;},Video,null,()=>{},
+        monotonicMilliseconds:()=>Volatile.Read(ref clock));
+    expiring.Start();
+    var expiredToken=expiring.Token;
+    Check(expiring.RegistrationAvailable&&expiring.NetworkConnectionUri is not null,
+        "new persistent registration bearer is not available");
+    Volatile.Write(ref clock,1000+(long)FrameServer.RegistrationLifetime.TotalMilliseconds);
+    Check(!expiring.RegistrationAvailable&&expiring.NetworkConnectionUri is null,
+        "expired registration bearer remains publishable");
+    {
+        var expired=await Connect(expiryOptions,expiryOptions.CertificateFingerprint,ct);
+        using var client=expired.Client;using var stream=expired.Stream;
+        await Hello(stream,expiredToken,ct);await Closed(stream,ct);
+    }
+    await WaitFor(()=>expiring.CanRefreshRegistration,ct);
+    var refreshedUri=expiring.RefreshRegistrationUri();
+    var refreshedToken=expiring.Token;
+    Check(expiring.RegistrationAvailable&&refreshedUri.Contains(refreshedToken,StringComparison.Ordinal)&&
+        refreshedToken!=expiredToken,"explicit refresh did not rotate and republish a short-lived bearer");
+    {
+        var stale=await Connect(expiryOptions,expiryOptions.CertificateFingerprint,ct);
+        using var client=stale.Client;using var stream=stale.Stream;
+        await Hello(stream,expiredToken,ct);await Closed(stream,ct);
+    }
+    {
+        var fresh=await Connect(expiryOptions,expiryOptions.CertificateFingerprint,ct);
+        using var client=fresh.Client;using var stream=fresh.Stream;
+        await Hello(stream,refreshedToken,ct);
+        await FrameServer.WritePacketAsync(stream,0x13,Profile(),ct);
+        await ReadUntil(stream,0x21,ct);
+    }
+    Check(prepares==1&&!expiring.RegistrationAvailable,
+        "fresh bearer was not single-use or expired/stale bearer reached display preparation");
+}
+Console.WriteLine("PASS persistent registration QR expires at five minutes and explicit refresh rotates it");
+
+// A QR token enrolls a P-256 public key exactly once. Every later connection
+// must answer a fresh host-bound challenge before the display profile can reach
+// preparation; replay, revocation and token reuse all fail before that boundary.
+{
+    using var certificate=PersistentCertificate();
+    var hostId=Convert.ToHexString(SHA256.HashData(certificate.RawData)).ToLowerInvariant();
+    var registry=new MemoryTrustedRegistry(hostId);
+    var trustedOptions=new NetworkSessionOptions(IPAddress.Loopback,FreePort(),certificate,registry);
+    var trustPrepares=0;
+    async IAsyncEnumerable<VideoPacket> TrustedVideo([EnumeratorCancellation]CancellationToken token)
+    {
+        yield return new(0x20,[1],false);
+        yield return new(0x21,[0,0,0,0,0,0,0,1,0x65],true);
+        await Task.Delay(Timeout.Infinite,token);
+    }
+    await using var trustedServer=new FrameServer(trustedOptions,(_,_)=>
+    {Interlocked.Increment(ref trustPrepares);return Task.CompletedTask;},TrustedVideo,null,()=>{});
+    trustedServer.Start();
+    using var device=ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    var spki=Convert.ToBase64String(device.ExportSubjectPublicKeyInfo());
+    var deviceId=TrustedPairingProtocol.DeviceIdFromPublicKey(spki);
+    byte[]? acceptedSignature=null;
+    {
+        var connection=await Connect(trustedOptions,trustedOptions.CertificateFingerprint,ct);
+        using var client=connection.Client;using var stream=connection.Stream;
+        await FrameServer.WritePacketAsync(stream,0x10,JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            protocol=1,token=trustedServer.Token,
+            features=new[]{TrustedPairingProtocol.Feature,FrameServer.RenderSubmittedFeature},
+            deviceId,devicePublicKey=spki,deviceName="Test tablet"
+        }),ct);
+        var established=await FrameServer.ReadPacketAsync(stream,4096,ct);
+        Check(established.Type==TrustedPairingProtocol.TrustEstablishedPacket,"registration acknowledgement missing");
+        using(var json=JsonDocument.Parse(established.Payload))
+            Check(json.RootElement.GetProperty("hostId").GetString()==hostId&&json.RootElement.GetProperty("deviceId").GetString()==deviceId,
+                "registration acknowledgement identity mismatch");
+        await FrameServer.WritePacketAsync(stream,0x13,Profile(),ct);
+        await ReadUntil(stream,0x21,ct);
+        Check(trustPrepares==1&&trustedServer.AuthenticatedDeviceId==deviceId&&registry.Count==1,
+            "registered connection did not cross preparation exactly once");
+    }
+    await WaitFor(()=>!trustedServer.ClientConnected,ct);
+    {
+        var reused=await Connect(trustedOptions,trustedOptions.CertificateFingerprint,ct);
+        using var client=reused.Client;using var stream=reused.Stream;
+        await Hello(stream,trustedServer.Token,ct);
+        await Closed(stream,ct);
+        Check(trustPrepares==1,"consumed registration token reached display preparation");
+    }
+    {
+        var verificationBefore=registry.VerificationCount;
+        var connection=await Connect(trustedOptions,trustedOptions.CertificateFingerprint,ct);
+        using var client=connection.Client;using var stream=connection.Stream;
+        await FrameServer.WritePacketAsync(stream,TrustedPairingProtocol.TrustedHelloPacket,
+            JsonSerializer.SerializeToUtf8Bytes(new{protocol=1,deviceId,features=new[]{TrustedPairingProtocol.Feature}}),ct);
+        var challengePacket=await FrameServer.ReadPacketAsync(stream,4096,ct);
+        byte[] challenge;
+        using(var json=JsonDocument.Parse(challengePacket.Payload))
+            challenge=Convert.FromBase64String(json.RootElement.GetProperty("challenge").GetString()!);
+        var signature=device.SignData(TrustedPairingProtocol.BuildProofTranscript(hostId,deviceId,challenge),
+            HashAlgorithmName.SHA256,DSASignatureFormat.Rfc3279DerSequence);
+        await FrameServer.WritePacketAsync(stream,TrustedPairingProtocol.TrustedProofPacket,
+            JsonSerializer.SerializeToUtf8Bytes(new{deviceId,signature=Convert.ToBase64String(signature)}),ct);
+        await WaitFor(()=>registry.VerificationCount>verificationBefore,ct);
+        Check(registry.Revoke(deviceId),"authenticated device could not be revoked before profile preparation");
+        try{await FrameServer.WritePacketAsync(stream,0x13,Profile(),ct);}catch(IOException){}
+        await Closed(stream,ct);
+        Check(trustPrepares==1,"device revoked between signature and profile reached display preparation");
+        registry.Register(deviceId,spki,"Test tablet");
+    }
+    {
+        var connection=await Connect(trustedOptions,trustedOptions.CertificateFingerprint,ct);
+        using var client=connection.Client;using var stream=connection.Stream;
+        await FrameServer.WritePacketAsync(stream,TrustedPairingProtocol.TrustedHelloPacket,
+            JsonSerializer.SerializeToUtf8Bytes(new{protocol=1,deviceId,features=new[]{TrustedPairingProtocol.Feature}}),ct);
+        var challengePacket=await FrameServer.ReadPacketAsync(stream,4096,ct);
+        Check(challengePacket.Type==TrustedPairingProtocol.TrustedChallengePacket,"trusted challenge missing");
+        byte[] challenge;
+        using(var json=JsonDocument.Parse(challengePacket.Payload))
+        {
+            Check(json.RootElement.GetProperty("hostId").GetString()==hostId,"challenge host identity mismatch");
+            challenge=Convert.FromBase64String(json.RootElement.GetProperty("challenge").GetString()!);
+        }
+        acceptedSignature=device.SignData(TrustedPairingProtocol.BuildProofTranscript(hostId,deviceId,challenge),
+            HashAlgorithmName.SHA256,DSASignatureFormat.Rfc3279DerSequence);
+        await FrameServer.WritePacketAsync(stream,TrustedPairingProtocol.TrustedProofPacket,
+            JsonSerializer.SerializeToUtf8Bytes(new{deviceId,signature=Convert.ToBase64String(acceptedSignature)}),ct);
+        await FrameServer.WritePacketAsync(stream,0x13,Profile(),ct);
+        await ReadUntil(stream,0x21,ct);
+        Check(trustPrepares==2&&trustedServer.AuthenticatedDeviceId==deviceId,
+            "fresh signed reconnect did not reach preparation");
+    }
+    await WaitFor(()=>!trustedServer.ClientConnected,ct);
+    {
+        var replay=await Connect(trustedOptions,trustedOptions.CertificateFingerprint,ct);
+        using var client=replay.Client;using var stream=replay.Stream;
+        await FrameServer.WritePacketAsync(stream,TrustedPairingProtocol.TrustedHelloPacket,
+            JsonSerializer.SerializeToUtf8Bytes(new{protocol=1,deviceId,features=new[]{TrustedPairingProtocol.Feature}}),ct);
+        Check((await FrameServer.ReadPacketAsync(stream,4096,ct)).Type==TrustedPairingProtocol.TrustedChallengePacket,
+            "replay test did not receive fresh challenge");
+        await FrameServer.WritePacketAsync(stream,TrustedPairingProtocol.TrustedProofPacket,
+            JsonSerializer.SerializeToUtf8Bytes(new{deviceId,signature=Convert.ToBase64String(acceptedSignature!)}),ct);
+        await Closed(stream,ct);
+        Check(trustPrepares==2,"old challenge signature reached preparation");
+    }
+    Check(registry.Revoke(deviceId),"test device was not revoked");
+    {
+        var revoked=await Connect(trustedOptions,trustedOptions.CertificateFingerprint,ct);
+        using var client=revoked.Client;using var stream=revoked.Stream;
+        await FrameServer.WritePacketAsync(stream,TrustedPairingProtocol.TrustedHelloPacket,
+            JsonSerializer.SerializeToUtf8Bytes(new{protocol=1,deviceId,features=new[]{TrustedPairingProtocol.Feature}}),ct);
+        await Closed(stream,ct);
+        Check(trustPrepares==2,"revoked device reached challenge or preparation");
+    }
+}
+Console.WriteLine("PASS one-time enrollment, persistent host identity, fresh signed reconnect, replay rejection and revocation all precede display preparation");
+
 var failureOptions=new NetworkSessionOptions(IPAddress.Loopback,FreePort());
 await using(var failed=new FrameServer(failureOptions,(_,_)=>throw new IOException("private-exception-details"),Forbidden,null,()=>{}))
 {
@@ -564,3 +807,34 @@ for(var iteration=0;iteration<60;iteration++)
     }
 }
 Console.WriteLine("PASS 60 accept/authentication/dispose races terminate within 2s without retaining listener or client");
+
+sealed class MemoryTrustedRegistry(string hostId,bool rejectRegistrations=false) : ITrustedDeviceRegistry
+{
+    readonly Dictionary<string,TrustedDeviceInfo> devices=new(StringComparer.Ordinal);
+    int verificationCount;
+    public string HostId {get;}=hostId;
+    public int Count=>devices.Count;
+    public int VerificationCount=>Volatile.Read(ref verificationCount);
+    public IReadOnlyList<TrustedDeviceInfo> Snapshot()=>devices.Values.ToArray();
+    public TrustedDeviceInfo Register(string deviceId,string publicKeySpki,string? displayName)
+    {
+        if(rejectRegistrations)throw new IOException("protected trust persistence failed");
+        if(TrustedPairingProtocol.DeviceIdFromPublicKey(publicKeySpki)!=deviceId)throw new InvalidDataException("identity mismatch");
+        var now=DateTimeOffset.UtcNow;
+        if(devices.TryGetValue(deviceId,out var existing))
+        {
+            if(existing.PublicKeySpki!=publicKeySpki)throw new InvalidDataException("key mismatch");
+            return devices[deviceId]=existing with{DisplayName=TrustedPairingProtocol.NormalizeDeviceName(displayName),LastUsedUtc=now};
+        }
+        return devices[deviceId]=new(deviceId,TrustedPairingProtocol.NormalizeDeviceName(displayName),publicKeySpki,now,now);
+    }
+    public bool Contains(string deviceId)=>devices.ContainsKey(deviceId);
+    public bool Verify(string deviceId,ReadOnlySpan<byte> challenge,ReadOnlySpan<byte> signature)
+    {
+        var verified=devices.TryGetValue(deviceId,out var device)&&
+            TrustedPairingProtocol.VerifySignature(device.PublicKeySpki,HostId,deviceId,challenge,signature);
+        if(verified)Interlocked.Increment(ref verificationCount);
+        return verified;
+    }
+    public bool Revoke(string deviceId)=>devices.Remove(deviceId);
+}

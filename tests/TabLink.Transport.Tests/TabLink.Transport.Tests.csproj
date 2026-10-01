@@ -5,6 +5,7 @@
     <Compile Include="../../src/TabLink.Windows/VideoQuality.cs" Link="VideoQuality.cs" />
     <Compile Include="../../src/TabLink.Windows/VideoEncoderSelection.cs" Link="VideoEncoderSelection.cs" />
     <Compile Include="../../src/TabLink.Windows/NetworkSessionOptions.cs" Link="NetworkSessionOptions.cs" />
+    <Compile Include="../../src/TabLink.Windows/TrustedPairingProtocol.cs" Link="TrustedPairingProtocol.cs" />
     <Compile Include="../../src/TabLink.Windows/InputDesktopAvailability.cs" Link="InputDesktopAvailability.cs" />
     <ProjectReference Include="../../src/TabLink.Core/TabLink.Core.csproj" />
   </ItemGroup>

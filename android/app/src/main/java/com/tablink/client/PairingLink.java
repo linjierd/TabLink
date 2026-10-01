@@ -71,7 +71,15 @@ public final class PairingLink {
         throw new IllegalArgumentException("连接端口无效，请使用电脑端的原生客户端二维码；27185 仅用于浏览器");
     }
 
-    private static boolean isUnicastIpv4(String value) {
+    static boolean isNativePort(int value) {
+        switch (value) {
+            case 27184: case 27186: case 27187: case 27188:
+            case 27189: case 27190: case 27191: case 27192: return true;
+            default: return false;
+        }
+    }
+
+    static boolean isUnicastIpv4(String value) {
         if (value == null || !value.matches("[0-9.]{7,15}")) return false;
         String[] octets = value.split("\\.", -1);
         if (octets.length != 4) return false;

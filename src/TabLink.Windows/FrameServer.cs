@@ -19,6 +19,7 @@ internal sealed class FrameServer : IAsyncDisposable
     internal const string ReceiverFeedbackFeature="receiver-feedback-v1";
     internal const string AdaptiveVideoFeature="adaptive-video-v1";
     internal static readonly TimeSpan TelemetryFreshnessWindow=TimeSpan.FromSeconds(5);
+    internal static readonly TimeSpan RegistrationLifetime=TimeSpan.FromMinutes(5);
     public const int Port = 27183;
     public const int MaxPacket = 8 * 1024 * 1024;
     readonly Func<byte[]>? capture;
@@ -35,6 +36,8 @@ internal sealed class FrameServer : IAsyncDisposable
     readonly TcpListener listener = new(IPAddress.Loopback, Port);
     readonly object lifecycleLock = new();
     readonly object statisticsLock = new();
+    readonly object registrationLock = new();
+    readonly Func<long> monotonicMilliseconds;
     readonly FrameSendPerformance sendPerformance = new();
     readonly TaskCompletionSource firstAcceptStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
     Task? run;
@@ -45,6 +48,10 @@ internal sealed class FrameServer : IAsyncDisposable
     long framesSent, bytesSent, presentedFrames, sessionFramesStarted;
     int presentedWidth, presentedHeight;
     bool clientConnected,hasAuthenticatedClient;
+    bool registrationTokenConsumed;
+    string registrationToken;
+    long registrationDeadlineMilliseconds;
+    string? authenticatedDeviceId;
     bool capturePaused;
     DateTime? captureRecoveryStartedUtc;
     TabletDisplayProfile? clientDisplayProfile;
@@ -56,15 +63,35 @@ internal sealed class FrameServer : IAsyncDisposable
     ReceiverFeedbackSnapshot? receiverFeedback;
     DateTime? lastReceiverFeedbackUtc;
     readonly Queue<long> recentVideoPts=new();
-    public string Token { get; } = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+    public string Token { get { lock(registrationLock)return registrationToken; } }
     public int ListeningPort {get{lock(lifecycleLock)return boundEndpoint?.Port??0;}}
     internal Task FirstAcceptStarted=>firstAcceptStarted.Task;
-    public string? NetworkConnectionUri => network?.ConnectionUri(Token);
+    public string? NetworkConnectionUri
+    {
+        get
+        {
+            if(network is null)return null;
+            lock(registrationLock)
+            {
+                if(network.TrustedDevices is not null&&!RegistrationAvailableLocked())return null;
+                return network.ConnectionUri(registrationToken);
+            }
+        }
+    }
+    public bool RegistrationAvailable
+    {
+        get{lock(registrationLock)return network?.TrustedDevices is not null&&RegistrationAvailableLocked();}
+    }
+    public bool CanRefreshRegistration
+    {
+        get{lock(lifecycleLock)return network?.TrustedDevices is not null&&currentClient is null&&disposeTask is null;}
+    }
     public event Action<string>? Status;
     public long FramesSent { get { lock (statisticsLock) return framesSent; } }
     public long BytesSent { get { lock (statisticsLock) return bytesSent; } }
     public bool ClientConnected { get { lock (statisticsLock) return clientConnected; } }
     public bool HasAuthenticatedClient { get { lock (statisticsLock) return hasAuthenticatedClient; } }
+    public string? AuthenticatedDeviceId { get { lock (statisticsLock) return authenticatedDeviceId; } }
     public DateTime? LastFrameUtc { get { lock (statisticsLock) return lastFrameUtc; } }
     public DateTime? LastPresentedUtc { get { lock (statisticsLock) return lastPresentedUtc; } }
     public DateTime? LastSubmittedUtc { get { lock(statisticsLock)return lastSubmittedUtc; } }
@@ -95,32 +122,55 @@ internal sealed class FrameServer : IAsyncDisposable
 
     public FrameServer(Func<byte[]> capture, Action<InputMessage>? input, Action releaseInput, int fps = 20,
         Func<InputDesktopStatus>? queryDesktop=null, int listenPort=Port,AdaptiveVideoSession? quality=null,
-        Func<IPEndPoint,CancellationToken,Task>? wakeListener=null)
+        Func<IPEndPoint,CancellationToken,Task>? wakeListener=null,Func<long>? monotonicMilliseconds=null)
     {
         this.capture = capture; this.input = input; this.releaseInput = releaseInput;
         this.fps = Math.Clamp(fps, 1, 30); this.queryDesktop=queryDesktop??InputDesktopAvailability.Query;
         this.quality=quality;this.wakeListener=wakeListener??ConnectWakeAsync;
+        this.monotonicMilliseconds=monotonicMilliseconds??(()=>Environment.TickCount64);
+        registrationToken=NewRegistrationToken();
+        registrationDeadlineMilliseconds=RegistrationDeadline(this.monotonicMilliseconds());
         listener = new TcpListener(IPAddress.Loopback, listenPort);
     }
 
     public FrameServer(Func<CancellationToken,IAsyncEnumerable<VideoPacket>> video,Action<InputMessage>? input,Action releaseInput,
         Func<InputDesktopStatus>? queryDesktop=null, int listenPort=Port,AdaptiveVideoSession? quality=null,
-        Func<IPEndPoint,CancellationToken,Task>? wakeListener=null)
+        Func<IPEndPoint,CancellationToken,Task>? wakeListener=null,Func<long>? monotonicMilliseconds=null)
     {
         this.video=video;this.input=input;this.releaseInput=releaseInput;
         this.queryDesktop=queryDesktop??InputDesktopAvailability.Query;this.quality=quality;
         this.wakeListener=wakeListener??ConnectWakeAsync;
+        this.monotonicMilliseconds=monotonicMilliseconds??(()=>Environment.TickCount64);
+        registrationToken=NewRegistrationToken();
+        registrationDeadlineMilliseconds=RegistrationDeadline(this.monotonicMilliseconds());
         listener = new TcpListener(IPAddress.Loopback, listenPort);
     }
 
     public FrameServer(NetworkSessionOptions options, Func<TabletDisplayProfile,CancellationToken,Task> prepare,
         Func<CancellationToken,IAsyncEnumerable<VideoPacket>> video, Action<InputMessage>? input, Action releaseInput,
-        Func<InputDesktopStatus>? queryDesktop=null,AdaptiveVideoSession? quality=null)
-        : this(video,input,releaseInput,queryDesktop,quality:quality)
+        Func<InputDesktopStatus>? queryDesktop=null,AdaptiveVideoSession? quality=null,Func<long>? monotonicMilliseconds=null)
+        : this(video,input,releaseInput,queryDesktop,quality:quality,monotonicMilliseconds:monotonicMilliseconds)
     {
         network=options??throw new ArgumentNullException(nameof(options));
         this.prepare=prepare??throw new ArgumentNullException(nameof(prepare));
         listener=new TcpListener(options.LocalAddress,options.Port);
+    }
+
+    public string RefreshRegistrationUri()
+    {
+        if(network?.TrustedDevices is null)throw new InvalidOperationException("当前监听不支持可信设备注册。");
+        lock(lifecycleLock)
+        {
+            ObjectDisposedException.ThrowIf(disposeTask is not null,this);
+            if(currentClient is not null)throw new InvalidOperationException("设备正在认证或传输，暂时不能生成新的配对二维码。");
+            lock(registrationLock)
+            {
+                registrationToken=NewRegistrationToken();
+                registrationTokenConsumed=false;
+                registrationDeadlineMilliseconds=RegistrationDeadline(monotonicMilliseconds());
+                return network.ConnectionUri(registrationToken);
+            }
+        }
     }
 
     public void RequestReconnect()
@@ -162,12 +212,17 @@ internal sealed class FrameServer : IAsyncDisposable
         }
     }
 
-    void SetConnected(bool connected)
+    void SetConnected(bool connected,string? deviceId=null)
     {
         lock (statisticsLock)
         {
             clientConnected = connected;
             if(connected)hasAuthenticatedClient=true;
+            // Keep the last authenticated durable identity for this listener so
+            // revocation can also collect a VDD retained during a bounded
+            // reconnect gap. A later trusted authentication publishes its own
+            // identity before any display preparation.
+            if(connected&&deviceId is not null)authenticatedDeviceId=deviceId;
             capturePaused=false;captureRecoveryStartedUtc=null;
             // Rendering evidence is scoped to one authenticated connection. A
             // disconnected or newly reconnected client must never inherit it.
@@ -179,6 +234,11 @@ internal sealed class FrameServer : IAsyncDisposable
             clientDisplayProfile=null;clientSubmittedFps=clientPresentedFps=0;clientDecoder=null;
             sendPerformance.Reset(connected);
         }
+    }
+
+    void PublishAuthenticatedDevice(string deviceId)
+    {
+        lock(statisticsLock)authenticatedDeviceId=deviceId;
     }
 
     async Task RunAsync(CancellationToken ct)
@@ -214,19 +274,72 @@ internal sealed class FrameServer : IAsyncDisposable
                         AllowRenegotiation=false
                     },authTimeout.Token);
                 var helloPacket = await ReadPacketAsync(stream, 8192, authTimeout.Token);
-                if (helloPacket.Type != 0x10) throw new InvalidDataException("缺少握手");
-                var hello = JsonSerializer.Deserialize<Hello>(helloPacket.Payload, JsonOptions);
-                if (hello?.Protocol != ProtocolVersion || hello.Token is null ||
-                    !CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(hello.Token), Encoding.UTF8.GetBytes(Token)))
-                    throw new InvalidDataException("连接令牌无效");
-                var negotiatedFeatures=NegotiateFeatures(hello.Features);
+                string[] negotiatedFeatures;
+                string? trustedDeviceId=null;
+                if(helloPacket.Type==0x10)
+                {
+                    var hello=TrustedPairingProtocol.ParseInitialHello(helloPacket.Payload);
+                    var requestsTrust=hello.Features.Contains(TrustedPairingProtocol.Feature,StringComparer.Ordinal);
+                    if(hello.Protocol!=ProtocolVersion||!TryConsumeRegistrationToken(hello.Token,requestsTrust))
+                        throw new InvalidDataException("连接令牌无效、已经使用或已经过期，请在电脑端重新生成。");
+                    // A persistent native listener can remain alive indefinitely
+                    // for signed reconnects. Its QR bearer must therefore be
+                    // single-use even when an older client does not request
+                    // durable trust. Ephemeral legacy/test listeners retain the
+                    // historical reconnect behavior.
+                    if(requestsTrust)
+                    {
+                        var registry=network?.TrustedDevices??throw new InvalidDataException("电脑端不支持可信设备注册。");
+                        if(hello.DeviceId is null||hello.DevicePublicKey is null)
+                            throw new InvalidDataException("可信设备注册信息不完整。");
+                        var enrolled=registry.Register(hello.DeviceId,hello.DevicePublicKey,hello.DeviceName);
+                        trustedDeviceId=enrolled.DeviceId;
+                        PublishAuthenticatedDevice(trustedDeviceId);
+                        await WritePacketAsync(stream,TrustedPairingProtocol.TrustEstablishedPacket,
+                            JsonSerializer.SerializeToUtf8Bytes(new{protocol=ProtocolVersion,feature=TrustedPairingProtocol.Feature,
+                                hostId=registry.HostId,deviceId=enrolled.DeviceId}),authTimeout.Token);
+                    }
+                    else if(hello.DeviceId is not null||hello.DevicePublicKey is not null||hello.DeviceName is not null)
+                        throw new InvalidDataException("客户端未协商可信设备注册。");
+                    negotiatedFeatures=NegotiateFeatures(hello.Features,requestsTrust);
+                }
+                else if(helloPacket.Type==TrustedPairingProtocol.TrustedHelloPacket)
+                {
+                    var registry=network?.TrustedDevices??throw new InvalidDataException("电脑端不支持可信设备重连。");
+                    var hello=TrustedPairingProtocol.ParseTrustedHello(helloPacket.Payload);
+                    if(hello.Protocol!=ProtocolVersion||!hello.Features.Contains(TrustedPairingProtocol.Feature,StringComparer.Ordinal)||
+                        !registry.Contains(hello.DeviceId))throw new InvalidDataException("可信设备未登记或已撤销。");
+                    var challenge=TrustedPairingProtocol.CreateChallenge();
+                    await WritePacketAsync(stream,TrustedPairingProtocol.TrustedChallengePacket,
+                        JsonSerializer.SerializeToUtf8Bytes(new{protocol=ProtocolVersion,feature=TrustedPairingProtocol.Feature,
+                            hostId=registry.HostId,deviceId=hello.DeviceId,challenge=Convert.ToBase64String(challenge)}),authTimeout.Token);
+                    var proofPacket=await ReadPacketAsync(stream,4096,authTimeout.Token);
+                    if(proofPacket.Type!=TrustedPairingProtocol.TrustedProofPacket)throw new InvalidDataException("缺少可信设备签名。");
+                    var proof=TrustedPairingProtocol.ParseTrustedProof(proofPacket.Payload);
+                    if(proof.DeviceId!=hello.DeviceId||!registry.Verify(hello.DeviceId,challenge,proof.Signature))
+                        throw new InvalidDataException("可信设备签名无效。");
+                    trustedDeviceId=hello.DeviceId;
+                    PublishAuthenticatedDevice(trustedDeviceId);
+                    negotiatedFeatures=NegotiateFeatures(hello.Features,true);
+                }
+                else throw new InvalidDataException("缺少握手");
 
                 TabletDisplayProfile? initialProfile=null;
                 if(network is not null)
                 {
+                    // Revocation can race the end of signature verification.
+                    // Publish the authenticated identity first so the UI can
+                    // cancel this exact session, then recheck the registry before
+                    // accepting a display profile or invoking any VDD mutation.
+                    if(trustedDeviceId is not null&&network.TrustedDevices is {} registry&&
+                        !registry.Contains(trustedDeviceId))
+                        throw new InvalidDataException("可信设备已撤销。");
                     var profilePacket=await ReadPacketAsync(stream,8192,authTimeout.Token);
                     if(profilePacket.Type!=0x13)throw new InvalidDataException("缺少平板显示参数");
                     initialProfile=TabletDisplayProfile.Parse(Encoding.UTF8.GetString(profilePacket.Payload));
+                    if(trustedDeviceId is not null&&network.TrustedDevices is {} currentRegistry&&
+                        !currentRegistry.Contains(trustedDeviceId))
+                        throw new InvalidDataException("可信设备已撤销。");
                     try { await PrepareAsync(initialProfile,stream,negotiatedFeatures,sessionCts.Token); }
                     catch(Exception error) when(error is not (OperationCanceledException or TimeoutException))
                     {
@@ -240,7 +353,7 @@ internal sealed class FrameServer : IAsyncDisposable
                     }
                 }
                 lock(statisticsLock)sessionQuality=quality;
-                SetConnected(true);
+                SetConnected(true,trustedDeviceId);
                 sessionQuality?.BeginConnection(negotiatedFeatures.Contains(ReceiverFeedbackFeature,StringComparer.Ordinal)&&
                     negotiatedFeatures.Contains(AdaptiveVideoFeature,StringComparer.Ordinal));
                 trustedSession=true;
@@ -385,15 +498,16 @@ internal sealed class FrameServer : IAsyncDisposable
         finally {timeout.Cancel();}
     }
 
-    static string[] NegotiateFeatures(IEnumerable<string>? requestedFeatures)
+    static string[] NegotiateFeatures(IEnumerable<string>? requestedFeatures,bool trustedDeviceAuthenticated=false)
     {
         if(requestedFeatures is null)return [];
         var requested=requestedFeatures.ToHashSet(StringComparer.Ordinal);
-        var negotiated=new List<string>(4);
+        var negotiated=new List<string>(5);
         if(requested.Contains(RenderSubmittedFeature))negotiated.Add(RenderSubmittedFeature);
         if(requested.Contains(DecoderRefreshFeature))negotiated.Add(DecoderRefreshFeature);
         if(requested.Contains(ReceiverFeedbackFeature))negotiated.Add(ReceiverFeedbackFeature);
         if(requested.Contains(AdaptiveVideoFeature))negotiated.Add(AdaptiveVideoFeature);
+        if(trustedDeviceAuthenticated&&requested.Contains(TrustedPairingProtocol.Feature))negotiated.Add(TrustedPairingProtocol.Feature);
         return [.. negotiated];
     }
 
@@ -402,6 +516,35 @@ internal sealed class FrameServer : IAsyncDisposable
 
     static bool IsFresh(DateTime? observedUtc,DateTime nowUtc)=>
         observedUtc is {} observed&&observed>nowUtc-TelemetryFreshnessWindow;
+
+    static bool IsSessionToken(string value)=>value.Length==64&&
+        value.All(character=>character is >= '0' and <= '9' or >= 'a' and <= 'f');
+
+    bool TryConsumeRegistrationToken(string candidate,bool requestsTrust)
+    {
+        if(!IsSessionToken(candidate))return false;
+        lock(registrationLock)
+        {
+            var persistent=network?.TrustedDevices is not null;
+            if(persistent&&!RegistrationAvailableLocked())return false;
+            if(!CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(candidate),
+                    Encoding.ASCII.GetBytes(registrationToken)))return false;
+            if(persistent||requestsTrust)registrationTokenConsumed=true;
+            return true;
+        }
+    }
+
+    bool RegistrationAvailableLocked()=>!registrationTokenConsumed&&
+        monotonicMilliseconds()<registrationDeadlineMilliseconds;
+
+    static string NewRegistrationToken()=>
+        Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+
+    static long RegistrationDeadline(long now)
+    {
+        var lifetime=(long)RegistrationLifetime.TotalMilliseconds;
+        return now>long.MaxValue-lifetime?long.MaxValue:now+lifetime;
+    }
 
     async Task ReadInputsAsync(Stream stream,bool renderSubmittedNegotiated,DecoderRefreshGate? decoderRefresh,
         bool receiverFeedbackNegotiated,CancellationToken ct)
@@ -610,7 +753,6 @@ internal sealed class FrameServer : IAsyncDisposable
     }
 
     internal static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
-    record Hello(int Protocol,string Token,string[]? Features=null);
     record SubmittedAck(string Evidence,long Frames,long PtsUs,int Width,int Height,double Fps=0,string? Decoder=null);
     record PresentedAck(string Kind, long Sequence, int Width, int Height,double Fps=0,string? Codec=null,string? Decoder=null,long DroppedFrames=0);
     record ReceiverFeedbackAck(string Kind,long Sequence,long DecoderEpoch,long RecoveryEpoch,

@@ -23,15 +23,16 @@ public sealed class NetworkFirewall : IAsyncDisposable
     public string RuleName { get; }
     private NetworkFirewall(string ruleName) => RuleName = ruleName;
 
-    public static async Task<NetworkFirewall> OpenAsync(NetworkInterfaceChoice choice, CancellationToken cancellationToken = default, int port = 27184, string protocol = "TCP")
+    public static async Task<NetworkFirewall> OpenAsync(NetworkInterfaceChoice choice, CancellationToken cancellationToken = default,
+        int port = 27184, string protocol = "TCP", bool acceptLocalBroadcast = false)
     {
         ArgumentNullException.ThrowIfNull(choice);
         ValidateChoice(choice);
-        ValidateEndpoint(port, protocol);
+        ValidateEndpoint(port, protocol, acceptLocalBroadcast);
         var program = Environment.ProcessPath ?? throw new InvalidOperationException("无法确定当前 TabLink 程序路径。");
         program = Path.GetFullPath(program);
         if (!File.Exists(program)) throw new FileNotFoundException("找不到当前程序，无法限制防火墙规则。", program);
-        var rule = GetRuleName(choice, program, port, protocol);
+        var rule = GetRuleName(choice, program, port, protocol, acceptLocalBroadcast);
         await Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -40,7 +41,7 @@ public sealed class NetworkFirewall : IAsyncDisposable
                 ActiveLeases[rule] = checked(count + 1);
                 return new(rule);
             }
-            try { await RunAsync(BuildCreateScript(choice, program, rule, port, protocol), cancellationToken).ConfigureAwait(false); }
+            try { await RunAsync(BuildCreateScript(choice, program, rule, port, protocol, acceptLocalBroadcast), cancellationToken).ConfigureAwait(false); }
             catch (Exception original)
             {
                 // Cancellation can arrive after New-NetFirewallRule succeeded.
@@ -84,16 +85,19 @@ public sealed class NetworkFirewall : IAsyncDisposable
             throw new InvalidOperationException("选中接口的 IPv4 地址或子网已变化，请刷新并重新选择。");
     }
 
-    internal static string GetRuleName(NetworkInterfaceChoice choice, string program, int port = 27184, string protocol = "TCP")
+    internal static string GetRuleName(NetworkInterfaceChoice choice, string program, int port = 27184,
+        string protocol = "TCP", bool acceptLocalBroadcast = false)
     {
-        ValidateEndpoint(port, protocol);
-        var data = string.Join('\0', program.ToUpperInvariant(), choice.LocalAddress.ToString(), choice.InterfaceAlias, choice.PrefixLength.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        ValidateEndpoint(port, protocol, acceptLocalBroadcast);
+        var data = string.Join('\0', program.ToUpperInvariant(), choice.LocalAddress.ToString(), choice.InterfaceAlias,
+            choice.PrefixLength.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            acceptLocalBroadcast ? "broadcast" : "unicast");
         return $"TabLink.Session.{protocol}{port}." + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(data)))[..24];
     }
 
-    static void ValidateEndpoint(int port, string protocol)
+    static void ValidateEndpoint(int port, string protocol, bool acceptLocalBroadcast = false)
     {
-        if(port is < 1024 or > 65535 || protocol is not ("TCP" or "UDP"))
+        if(port is < 1024 or > 65535 || protocol is not ("TCP" or "UDP") || acceptLocalBroadcast && protocol != "UDP")
             throw new ArgumentException("必须指定有效的会话端口和协议。");
     }
 
@@ -114,14 +118,24 @@ public sealed class NetworkFirewall : IAsyncDisposable
         return "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
     }
 
-    internal static string BuildCreateScript(NetworkInterfaceChoice choice, string program, string rule, int port = 27184, string protocol = "TCP") =>
+    internal static string BuildCreateScript(NetworkInterfaceChoice choice, string program, string rule, int port = 27184,
+        string protocol = "TCP", bool acceptLocalBroadcast = false)
+    {
+        ValidateEndpoint(port, protocol, acceptLocalBroadcast);
+        // Inbound subnet and limited broadcasts are addressed to a broadcast
+        // destination rather than the selected unicast IPv4. Keep discovery
+        // constrained by program, interface, UDP port and remote subnet, while
+        // allowing those local destination addresses through the firewall.
+        var localAddress = acceptLocalBroadcast ? "Any" : choice.LocalAddress.ToString();
+        return
         BuildRemoveScript(rule) + Environment.NewLine +
         "New-NetFirewallRule -PolicyStore PersistentStore -Name " + Quote(rule) +
         " -DisplayName " + Quote("TabLink local screen session " + choice.LocalAddress) +
         " -Group " + Quote(OwnerGroup) + " -Direction Inbound -Action Allow -Enabled True -Profile Any -Protocol " + protocol + " -LocalPort " + port +
         " -Program " + Quote(program) + " -InterfaceAlias " + Quote(choice.InterfaceAlias) +
-        " -LocalAddress " + Quote(choice.LocalAddress.ToString()) + " -RemoteAddress " + Quote(GetSubnet(choice.LocalAddress, choice.PrefixLength)) +
+        " -LocalAddress " + Quote(localAddress) + " -RemoteAddress " + Quote(GetSubnet(choice.LocalAddress, choice.PrefixLength)) +
         " -EdgeTraversalPolicy Block -ErrorAction Stop | Out-Null";
+    }
 
     internal static string BuildRemoveScript(string rule) =>
         "$ErrorActionPreference = 'Stop'\nImport-Module NetSecurity -ErrorAction Stop\n" +

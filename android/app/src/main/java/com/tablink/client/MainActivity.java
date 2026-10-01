@@ -67,6 +67,7 @@ import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLHandshakeException;
 
 public final class MainActivity extends Activity {
+    private enum ConfigurationDecision { APPLIED, CONFIRMATION_REQUIRED, IGNORED }
     private static final String ACTION_SET_RENDER_PACING = "com.tablink.client.SET_RENDER_PACING";
     private static final int SCAN_REQUEST = 71;
     private static final long METRIC_FRESHNESS_MILLIS = 5000;
@@ -85,12 +86,16 @@ public final class MainActivity extends Activity {
     private TextView settingsStatus;
     private AlertDialog settingsDialog;
     private AlertDialog updateInstallDialog;
+    private AlertDialog pairingReplacementDialog;
     private TextView updateStatus;
     private AndroidUpdateController updater;
     private SharedPreferences preferences;
     private HudStyle hudStyle;
     private String token;
     private PairingLink networkPairing;
+    private PairingLink pendingExternalPairing;
+    private TrustedComputer trustedComputer;
+    private final Object trustedComputerLock = new Object();
     private int port = 27183;
     private String configurationError;
     private volatile boolean renderPacingEnabled = true;
@@ -129,6 +134,9 @@ public final class MainActivity extends Activity {
                 preferences.getInt("hudColor", HudStyle.DEFAULT_COLOR),
                 preferences.getInt("hudTransparency", HudStyle.DEFAULT_TRANSPARENCY));
         createUi();
+        // Versions before 0.8.8 stored a reusable QR bearer token. It is not a
+        // long-term trust record and must never be promoted silently.
+        getSharedPreferences("pairing", MODE_PRIVATE).edit().remove("lastLink").apply();
         updater = new AndroidUpdateController(this, new AndroidUpdateController.Host() {
             @Override public boolean isForeground() { return activityStarted; }
             @Override public boolean hasActiveDisplaySession() { return session != null; }
@@ -142,7 +150,7 @@ public final class MainActivity extends Activity {
                 showUpdateDownloadPrompt(artifact);
             }
         });
-        readConfiguration(getIntent());
+        readConfiguration(getIntent(), false);
         enterImmersive(getWindow());
         if (Build.VERSION.SDK_INT >= 33)
             getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
@@ -154,7 +162,8 @@ public final class MainActivity extends Activity {
         activityStarted = true;
         ((DisplayManager) getSystemService(DISPLAY_SERVICE)).registerDisplayListener(displayListener, ui);
         requestPreferredDisplayMode();
-        connect();
+        if (pendingExternalPairing != null) showPairingReplacementConfirmation();
+        else connect();
         ui.removeCallbacks(performanceTicker);
         ui.post(performanceTicker);
         updater.onForeground();
@@ -177,9 +186,12 @@ public final class MainActivity extends Activity {
             // Keep the original authenticated launch intent and the live TCP session.
             return;
         }
-        setIntent(intent);
-        readConfiguration(intent);
-        if (activityStarted) connect();
+        ConfigurationDecision decision = readConfiguration(intent, true);
+        if (activityStarted) {
+            if (decision == ConfigurationDecision.APPLIED) connect();
+            else if (decision == ConfigurationDecision.CONFIRMATION_REQUIRED)
+                showPairingReplacementConfirmation();
+        }
     }
 
     @Override protected void onStop() {
@@ -195,6 +207,7 @@ public final class MainActivity extends Activity {
     @Override protected void onDestroy() {
         if (settingsDialog != null) settingsDialog.dismiss();
         if (updateInstallDialog != null) updateInstallDialog.dismiss();
+        if (pairingReplacementDialog != null) pairingReplacementDialog.dismiss();
         disconnect();
         updater.close();
         ui.removeCallbacksAndMessages(null);
@@ -218,21 +231,77 @@ public final class MainActivity extends Activity {
         if (focused) enterImmersive(getWindow());
     }
 
-    private void readConfiguration(Intent intent) {
+    private ConfigurationDecision readConfiguration(Intent intent, boolean reentry) {
+        String pairing = intent.getDataString();
+        PairingLink parsedPairing = null;
+        Session activeSession = session;
+        boolean hasLiveSession = activeSession != null && activeSession.running;
+        if (pairing != null) {
+            try {
+                parsedPairing = PairingLink.parse(pairing);
+                TrustedComputer saved = loadTrustedComputer();
+                if (reentry && hasLiveSession) {
+                    String activeCertificate = trustedComputer != null
+                            ? trustedComputer.certificateSha256
+                            : networkPairing != null ? networkPairing.certificateSha256 : null;
+                    if (parsedPairing.certificateSha256.equals(activeCertificate)) {
+                        android.widget.Toast.makeText(this, "当前会话正在使用这台可信电脑", android.widget.Toast.LENGTH_SHORT).show();
+                        return ConfigurationDecision.IGNORED;
+                    }
+                    pendingExternalPairing = parsedPairing;
+                    configurationError = null;
+                    return ConfigurationDecision.CONFIRMATION_REQUIRED;
+                }
+                // MainActivity is exported. Another app may choose any action string,
+                // so every pairing URI delivered through an Activity Intent is external.
+                // Scanner and paste flows call acceptPairing() directly instead.
+                if (PairingIntentPolicy.requiresReplacementConfirmation(true, saved, parsedPairing)) {
+                    pendingExternalPairing = parsedPairing;
+                    configurationError = null;
+                    return ConfigurationDecision.CONFIRMATION_REQUIRED;
+                }
+            } catch (IllegalArgumentException invalid) {
+                if (reentry && hasLiveSession) {
+                    android.widget.Toast.makeText(this, "已忽略无效的 TabLink 连接链接", android.widget.Toast.LENGTH_SHORT).show();
+                    return ConfigurationDecision.IGNORED;
+                }
+                // Invalid initial links follow the normal configuration-error path below.
+            }
+        } else if (reentry && hasLiveSession) {
+            // Tapping the launcher or another app explicitly starting the exported
+            // activity must not tear down a healthy display session. ADB launches
+            // remain accepted while idle, when there is no session to disrupt.
+            return ConfigurationDecision.IGNORED;
+        }
+        pendingExternalPairing = null;
         configurationError = null;
         networkPairing = null;
+        trustedComputer = null;
         renderPacingEnabled = intent.getBooleanExtra("renderPacing", true);
-        String pairing = intent.getDataString();
         if (pairing != null) {
             token = null;
             try {
-                networkPairing = PairingLink.parse(pairing);
-                token = networkPairing.token();
-                port = networkPairing.port;
+                PairingLink parsed = parsedPairing != null ? parsedPairing : PairingLink.parse(pairing);
+                TrustedComputer saved = loadTrustedComputer();
+                if (saved != null && saved.matchesCertificate(parsed)) {
+                    // Android may recreate a singleTask activity with its original VIEW
+                    // intent after the one-time bearer was consumed. Once this certificate
+                    // has been enrolled, treat that URI only as an authenticated route hint
+                    // and reconnect with a fresh signed challenge instead of replaying it.
+                    trustedComputer = saved.withEndpoint(parsed.host, parsed.port);
+                    port = trustedComputer.port;
+                    setIntent(new Intent(this, MainActivity.class).setAction(Intent.ACTION_MAIN));
+                } else {
+                    networkPairing = parsed;
+                    token = parsed.token();
+                    port = parsed.port;
+                    setIntent(intent);
+                }
             } catch (IllegalArgumentException invalid) {
                 configurationError = invalid.getMessage();
+                setIntent(intent);
             }
-            return;
+            return ConfigurationDecision.APPLIED;
         }
         token = intent.getBooleanExtra("profileOnly", false) ? null : intent.getStringExtra("token");
         port = intent.getIntExtra("port", 27183);
@@ -244,6 +313,10 @@ public final class MainActivity extends Activity {
         } else if (token != null && (token.isEmpty() || token.length() > 512)) {
             configurationError = "电脑端提供的连接凭证无效，请重新连接";
         }
+        if (token == null && host == null && !intent.getBooleanExtra("profileOnly", false))
+            trustedComputer = loadTrustedComputer();
+        setIntent(intent);
+        return ConfigurationDecision.APPLIED;
     }
 
     private void createUi() {
@@ -296,8 +369,13 @@ public final class MainActivity extends Activity {
         panel.addView(paste, new LinearLayout.LayoutParams(-1, dp(56)));
         reconnectPairing = button("重连上次配对的电脑");
         reconnectPairing.setOnClickListener(v -> {
-            String saved = getSharedPreferences("pairing", MODE_PRIVATE).getString("lastLink", null);
-            if (saved != null) acceptPairing(saved);
+            TrustedComputer saved = loadTrustedComputer();
+            if (saved != null) {
+                disconnect();token = null;networkPairing = null;trustedComputer = saved;port = saved.port;
+                configurationError = null;
+                setIntent(new Intent(this, MainActivity.class).setAction(Intent.ACTION_MAIN));
+                if (activityStarted) connect();
+            }
         });
         panel.addView(reconnectPairing, new LinearLayout.LayoutParams(-1, dp(56)));
         refreshSavedPairing();
@@ -320,13 +398,98 @@ public final class MainActivity extends Activity {
     }
 
     private void refreshSavedPairing() {
-        String saved = getSharedPreferences("pairing", MODE_PRIVATE).getString("lastLink", null);
+        TrustedComputer previous = loadTrustedComputer();
         try {
-            PairingLink previous = PairingLink.parse(saved);
-            reconnectPairing.setText("重连上次电脑 · " + previous.host);
+            if (previous == null) throw new IllegalArgumentException("missing");
+            reconnectPairing.setText("重连可信电脑 · " + previous.lastHost);
             reconnectPairing.setVisibility(View.VISIBLE);
         } catch (IllegalArgumentException missing) {
             reconnectPairing.setVisibility(View.GONE);
+        }
+    }
+
+    private TrustedComputer loadTrustedComputer() {
+        SharedPreferences saved = getSharedPreferences("trustedComputer", MODE_PRIVATE);
+        try {
+            String hostId = saved.getString("hostId", null);
+            String certificate = saved.getString("certificateSha256", null);
+            String host = saved.getString("lastHost", null);
+            int savedPort = saved.getInt("port", 0);
+            if (hostId == null || certificate == null || host == null) return null;
+            return new TrustedComputer(hostId, certificate, host, savedPort);
+        } catch (IllegalArgumentException | ClassCastException invalid) {
+            // apply() removes the malformed record from this process immediately; disk
+            // cleanup can stay asynchronous because no key material lives in preferences.
+            saved.edit().clear().apply();
+            return null;
+        }
+    }
+
+    private static boolean writeTrustedComputer(SharedPreferences target, TrustedComputer computer) {
+        SharedPreferences.Editor edit = target.edit().clear();
+        if (computer != null) {
+            edit.putString("hostId", computer.hostId)
+                    .putString("certificateSha256", computer.certificateSha256)
+                    .putString("lastHost", computer.lastHost)
+                    .putInt("port", computer.port);
+        }
+        return edit.commit();
+    }
+
+    private void persistTrustedComputerFromSession(Session source, TrustedComputer computer) throws IOException {
+        synchronized (trustedComputerLock) {
+            if (session != source || !source.running)
+                throw new IOException("连接已结束，不保存过期的可信电脑记录");
+            boolean saved = getSharedPreferences("trustedComputer", MODE_PRIVATE).edit()
+                    .putString("hostId", computer.hostId)
+                    .putString("certificateSha256", computer.certificateSha256)
+                    .putString("lastHost", computer.lastHost)
+                    .putInt("port", computer.port).commit();
+            if (!saved) throw new IOException("无法保存可信电脑记录");
+        }
+        ui.post(() -> {
+            if (session != source) return;
+            trustedComputer = computer;
+            token = null;
+            networkPairing = null;
+            port = computer.port;
+            setIntent(new Intent(this, MainActivity.class).setAction(Intent.ACTION_MAIN));
+            refreshSavedPairing();
+        });
+    }
+
+    private TrustedComputerForgetCoordinator.Outcome forgetTrustedComputer() {
+        synchronized (trustedComputerLock) {
+            TrustedComputer previous = loadTrustedComputer();
+            SharedPreferences metadata = getSharedPreferences("trustedComputer", MODE_PRIVATE);
+            TrustedComputerForgetCoordinator.Outcome outcome = TrustedComputerForgetCoordinator.forget(previous,
+                    new TrustedComputerForgetCoordinator.Actions() {
+                        @Override public boolean clearMetadata() {
+                            return writeTrustedComputer(metadata, null);
+                        }
+                        @Override public boolean restoreMetadata(TrustedComputer value) {
+                            return writeTrustedComputer(metadata, value);
+                        }
+                        @Override public TrustedComputerForgetCoordinator.IdentityRemoval deleteIdentity() {
+                            return TrustedDeviceIdentity.delete();
+                        }
+                    });
+            boolean mustDiscardRuntimeTrust = outcome == TrustedComputerForgetCoordinator.Outcome.SUCCESS
+                    || outcome == TrustedComputerForgetCoordinator.Outcome.IDENTITY_STATE_UNKNOWN
+                    || outcome == TrustedComputerForgetCoordinator.Outcome.ROLLBACK_FAILED;
+            if (mustDiscardRuntimeTrust) {
+                // No supported code reads this pre-0.8.8 bearer cache. Remove it
+                // synchronously as hygiene; also discard the current Activity URI so
+                // lifecycle restart cannot recreate a key and replay a pending token.
+                getSharedPreferences("pairing", MODE_PRIVATE).edit().remove("lastLink").commit();
+                trustedComputer = null;
+                pendingExternalPairing = null;
+                token = null;
+                networkPairing = null;
+                configurationError = null;
+                setIntent(new Intent(this, MainActivity.class).setAction(Intent.ACTION_MAIN));
+            }
+            return outcome;
         }
     }
 
@@ -334,11 +497,12 @@ public final class MainActivity extends Activity {
         disconnect();
         token = null;
         networkPairing = null;
+        trustedComputer = null;
         configurationError = null;
         setIntent(new Intent(this, MainActivity.class).setAction(Intent.ACTION_MAIN));
         if (settingsDialog != null) settingsDialog.dismiss();
         refreshSavedPairing();
-        status.setText("请选择连接方式；电脑重新开始会话后，请扫描新的二维码");
+        status.setText("请选择连接方式；已登记电脑可点“重连可信电脑”自动发现");
     }
 
     @SuppressWarnings("deprecation")
@@ -357,7 +521,9 @@ public final class MainActivity extends Activity {
     private boolean acceptPairing(String link) {
         try {
             PairingLink paired = PairingLink.parse(link);
+            pendingExternalPairing = null;
             networkPairing = paired;
+            trustedComputer = null;
             token = paired.token();
             port = paired.port;
             configurationError = null;
@@ -368,6 +534,52 @@ public final class MainActivity extends Activity {
         } catch (IllegalArgumentException invalid) {
             status.setText(invalid.getMessage());
             return false;
+        }
+    }
+
+    private void showPairingReplacementConfirmation() {
+        PairingLink pending = pendingExternalPairing;
+        if (pending == null || isFinishing()) return;
+        if (pairingReplacementDialog != null && pairingReplacementDialog.isShowing()) return;
+        String fingerprint = pending.certificateSha256.substring(0, 12).toUpperCase(Locale.ROOT);
+        Session activeSession = session;
+        boolean replacing = loadTrustedComputer() != null || trustedComputer != null
+                || activeSession != null && activeSession.running;
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(replacing ? "确认更换可信电脑" : "确认连接这台电脑")
+                .setMessage((replacing ? "外部链接请求把当前连接更换为 " : "外部链接请求连接 ") + pending.host + "。\n\n"
+                        + "证书：" + fingerprint + "…\n\n"
+                        + "只有这是你刚刚主动打开的 TabLink 二维码或连接链接时，才继续连接。")
+                .setPositiveButton("允许并连接", (ignored, which) -> {
+                    if (pendingExternalPairing != pending) return;
+                    pendingExternalPairing = null;
+                    acceptPairing(pending.toPrivateUri());
+                })
+                .setNegativeButton(replacing ? "保留当前电脑" : "取消", (ignored, which) -> rejectPairingReplacement(pending))
+                .create();
+        pairingReplacementDialog = dialog;
+        dialog.setOnDismissListener(ignored -> {
+            if (pairingReplacementDialog == dialog) pairingReplacementDialog = null;
+            if (pendingExternalPairing == pending) rejectPairingReplacement(pending);
+            else if (pendingExternalPairing != null && activityStarted)
+                ui.post(this::showPairingReplacementConfirmation);
+        });
+        dialog.show();
+        enterImmersive(dialog.getWindow());
+    }
+
+    private void rejectPairingReplacement(PairingLink rejected) {
+        if (pendingExternalPairing != rejected) return;
+        pendingExternalPairing = null;
+        setIntent(new Intent(this, MainActivity.class).setAction(Intent.ACTION_MAIN));
+        if (session == null) {
+            token = null;
+            networkPairing = null;
+            trustedComputer = loadTrustedComputer();
+            if (trustedComputer != null) port = trustedComputer.port;
+            configurationError = null;
+            status.setText(trustedComputer == null ? "已取消外部连接请求" : "已保留原可信电脑");
+            if (activityStarted) connect();
         }
     }
 
@@ -456,9 +668,26 @@ public final class MainActivity extends Activity {
         options.addView(change, new LinearLayout.LayoutParams(-1, dp(48)));
         Button forget = button("忘记上次配对的电脑");
         forget.setOnClickListener(v -> {
-            getSharedPreferences("pairing", MODE_PRIVATE).edit().remove("lastLink").apply();
+            disconnect();
+            TrustedComputerForgetCoordinator.Outcome outcome = forgetTrustedComputer();
             refreshSavedPairing();
-            forget.setText("已清除保存的配对");
+            if (outcome == TrustedComputerForgetCoordinator.Outcome.SUCCESS) {
+                forget.setText("已删除可信电脑和设备密钥");
+                settingsStatus.setText("可信电脑记录和 Android Keystore 设备密钥均已删除");
+                forget.setEnabled(false);
+            } else if (outcome == TrustedComputerForgetCoordinator.Outcome.METADATA_CLEAR_FAILED) {
+                forget.setText("重试删除可信电脑");
+                settingsStatus.setText("未能写入可信电脑存储；原记录和设备密钥已保留，请释放存储空间后重试");
+            } else if (outcome == TrustedComputerForgetCoordinator.Outcome.IDENTITY_DELETE_FAILED) {
+                forget.setText("重试删除可信电脑");
+                settingsStatus.setText("Android Keystore 设备密钥仍然存在；可信电脑记录已保持删除前状态，请解锁设备后重试");
+            } else if (outcome == TrustedComputerForgetCoordinator.Outcome.IDENTITY_STATE_UNKNOWN) {
+                forget.setText("重试确认设备密钥删除");
+                settingsStatus.setText("无法确认 Android Keystore 密钥状态；为安全起见已删除可信电脑记录和当前配对链接，请重启应用后重试清理，再重新扫码");
+            } else {
+                forget.setText("检查后重试删除");
+                settingsStatus.setText("删除失败且未能完整恢复本地记录；不会报告成功，请重新启动 TabLink 后检查并重试");
+            }
         });
         options.addView(forget, new LinearLayout.LayoutParams(-1, dp(48)));
         options.addView(text("正式版更新", 15, Color.WHITE));
@@ -693,12 +922,20 @@ public final class MainActivity extends Activity {
             status.setText(configurationError);
             return;
         }
-        if (token == null) {
+        if (token == null && trustedComputer == null) {
             status.setText("扫描电脑端二维码连接；Wi-Fi 或 USB 网络共享均无需 USB 调试");
             return;
         }
         if (!activityStarted) return;
-        Session next = new Session(token, port, networkPairing);
+        TrustedDeviceIdentity identity = null;
+        if (networkPairing != null || trustedComputer != null) {
+            try { identity = TrustedDeviceIdentity.loadOrCreate(); }
+            catch (Exception unavailable) {
+                status.setText("无法创建 Android Keystore 设备身份；请解锁设备后重试");
+                return;
+            }
+        }
+        Session next = new Session(token, port, networkPairing, trustedComputer, identity);
         session = next;
         next.reader.start();
         if (updater != null) updater.onSessionChanged();
@@ -814,6 +1051,10 @@ public final class MainActivity extends Activity {
         final String sessionToken;
         final int sessionPort;
         final PairingLink paired;
+        final TrustedDeviceIdentity identity;
+        volatile TrustedComputer trusted;
+        volatile String activeHost;
+        volatile int activePort;
         final ArrayBlockingQueue<WireProtocol.Packet> outgoing = new ArrayBlockingQueue<>(64);
         final Thread reader;
         volatile boolean running = true;
@@ -850,14 +1091,22 @@ public final class MainActivity extends Activity {
         volatile long droppedFrames;
         volatile CapturePauseState captureState = new CapturePauseState();
 
-        Session(String token, int port, PairingLink paired) {
+        Session(String token, int port, PairingLink paired, TrustedComputer trusted,
+                TrustedDeviceIdentity identity) {
             sessionToken = token;
             sessionPort = port;
             this.paired = paired;
+            this.trusted = trusted;
+            this.identity = identity;
+            activeHost = trusted != null ? trusted.lastHost : paired != null ? paired.host : "127.0.0.1";
+            activePort = trusted != null ? trusted.port : port;
             reader = new Thread(this::run, "TabLink-receiver");
         }
 
-        String connectionLabel() { return paired == null ? "USB 调试通道" : "加密网络 · " + paired.host; }
+        String connectionLabel() {
+            if (identity == null) return "USB 调试通道";
+            return trusted != null ? "可信电脑 · " + activeHost : "加密网络 · " + activeHost;
+        }
 
         void stop() {
             running = false;
@@ -902,8 +1151,6 @@ public final class MainActivity extends Activity {
             if (!hasPresentedFrame) {
                 hasPresentedFrame = true;
                 setStatus(this, connectionLabel() + " 已连接 · " + width + " × " + height + " · 触摸控制", true);
-                if (paired != null) getSharedPreferences("pairing", MODE_PRIVATE).edit()
-                        .putString("lastLink", paired.toPrivateUri()).apply();
             }
             final String telemetry = String.format(Locale.ROOT, "%s · 解码 %.1f fps", streamCodec, actualFps);
             ui.post(() -> {
@@ -1219,6 +1466,128 @@ public final class MainActivity extends Activity {
             });
         }
 
+        Socket openAttemptSocket() throws IOException {
+            if (identity == null) {
+                Socket local = new Socket();
+                local.connect(new InetSocketAddress("127.0.0.1", sessionPort), 5000);
+                configureSocket(local);
+                return local;
+            }
+            TrustedComputer current = trusted;
+            if (current == null) return connectPinned(paired.certificateSha256, paired.host, paired.port);
+            IOException firstFailure;
+            try { return connectPinned(current.certificateSha256, current.lastHost, current.port); }
+            catch (IOException failure) { firstFailure = failure; }
+            IOException lastFailure = firstFailure;
+            for (TrustedDiscovery.Endpoint discovered : TrustedDiscovery.discover(current.hostId, 1800)) {
+                if (!running) throw new IOException("连接已停止");
+                if (discovered.host.equals(current.lastHost) && discovered.port == current.port) continue;
+                try {
+                    // Discovery is only a route hint. Every candidate still has to
+                    // complete TLS against the saved exact certificate; the caller
+                    // then performs the signed trusted-device challenge on that socket.
+                    return connectPinned(current.certificateSha256, discovered.host, discovered.port,
+                            1000, 1500);
+                } catch (IOException failure) {
+                    lastFailure = failure;
+                }
+            }
+            throw lastFailure;
+        }
+
+        Socket connectPinned(String certificate, String host, int targetPort) throws IOException {
+            return connectPinned(certificate, host, targetPort, 5000, 8000);
+        }
+
+        Socket connectPinned(String certificate, String host, int targetPort,
+                int connectTimeoutMillis, int handshakeTimeoutMillis) throws IOException {
+            Socket local = PinnedTls.createSocket(certificate);
+            try {
+                local.connect(new InetSocketAddress(host, targetPort), connectTimeoutMillis);
+                local.setTcpNoDelay(true);
+                local.setSoTimeout(handshakeTimeoutMillis);
+                ((SSLSocket) local).startHandshake();
+                configureSocket(local);
+                activeHost = host;activePort = targetPort;
+                return local;
+            } catch (IOException failure) {
+                try { local.close(); } catch (IOException ignored) { }
+                throw failure;
+            }
+        }
+
+        void configureSocket(Socket local) throws IOException {
+            local.setTcpNoDelay(true);
+            local.setSoTimeout(8000);
+        }
+
+        JSONArray requestedFeatures() {
+            return new JSONArray().put(WireProtocol.FEATURE_RENDER_SUBMITTED)
+                    .put(WireProtocol.FEATURE_DECODER_REFRESH)
+                    .put(WireProtocol.FEATURE_RECEIVER_FEEDBACK)
+                    .put(WireProtocol.FEATURE_ADAPTIVE_VIDEO)
+                    .put(WireProtocol.FEATURE_TRUSTED_DEVICE);
+        }
+
+        void sendTrustedAuthentication(DataInputStream input, DataOutputStream output) throws IOException, JSONException {
+            TrustedComputer computer = trusted;
+            if (computer == null || identity == null) throw new IOException("可信设备身份尚未就绪");
+            JSONObject hello = new JSONObject();
+            hello.put("protocol", 1);hello.put("deviceId", identity.deviceId);hello.put("features", requestedFeatures());
+            WireProtocol.write(output, WireProtocol.TRUSTED_HELLO, hello.toString().getBytes(StandardCharsets.UTF_8));
+            WireProtocol.Packet packet = WireProtocol.read(input);
+            if (packet.type != WireProtocol.TRUSTED_CHALLENGE || packet.payload.length > 4096)
+                throw new IOException("电脑未返回可信设备挑战");
+            JSONObject challenge = new JSONObject(new String(packet.payload, StandardCharsets.UTF_8));
+            requireKeys(challenge, "protocol", "feature", "hostId", "deviceId", "challenge");
+            if (challenge.getInt("protocol") != 1 || !WireProtocol.FEATURE_TRUSTED_DEVICE.equals(challenge.getString("feature")) ||
+                    !computer.hostId.equals(challenge.getString("hostId")) || !identity.deviceId.equals(challenge.getString("deviceId")))
+                throw new IOException("电脑返回的可信设备挑战身份不匹配");
+            byte[] nonce;
+            try { nonce = android.util.Base64.decode(challenge.getString("challenge"), android.util.Base64.DEFAULT); }
+            catch (IllegalArgumentException invalid) { throw new IOException("电脑返回的可信设备挑战无效", invalid); }
+            if (nonce.length != TrustedDeviceProtocol.CHALLENGE_BYTES) throw new IOException("电脑返回的可信设备挑战长度无效");
+            byte[] signature;
+            try { signature = identity.sign(computer.hostId, nonce); }
+            catch (java.security.GeneralSecurityException failure) { throw new IOException("Android Keystore 无法签署可信设备挑战", failure); }
+            JSONObject proof = new JSONObject();
+            proof.put("deviceId", identity.deviceId);
+            proof.put("signature", android.util.Base64.encodeToString(signature, android.util.Base64.NO_WRAP));
+            WireProtocol.write(output, WireProtocol.TRUSTED_PROOF, proof.toString().getBytes(StandardCharsets.UTF_8));
+        }
+
+        void acceptTrustEstablished(byte[] payload) throws IOException, JSONException {
+            if (identity == null || paired == null || payload.length > 4096) throw new IOException("收到意外的可信设备登记确认");
+            JSONObject state = new JSONObject(new String(payload, StandardCharsets.UTF_8));
+            requireKeys(state, "protocol", "feature", "hostId", "deviceId");
+            String hostId = state.getString("hostId");
+            if (state.getInt("protocol") != 1 || !WireProtocol.FEATURE_TRUSTED_DEVICE.equals(state.getString("feature")) ||
+                    !identity.deviceId.equals(state.getString("deviceId")) || !paired.certificateSha256.equals(hostId))
+                throw new IOException("可信电脑登记确认与当前二维码不匹配");
+            TrustedComputer enrolled = new TrustedComputer(hostId, paired.certificateSha256, activeHost, activePort);
+            persistTrustedComputerFromSession(this, enrolled);
+            trusted = enrolled;
+        }
+
+        void persistTrustedEndpoint() {
+            TrustedComputer current = trusted;
+            if (current == null) return;
+            if (current.lastHost.equals(activeHost) && current.port == activePort) return;
+            TrustedComputer updated = current.withEndpoint(activeHost, activePort);
+            try {
+                persistTrustedComputerFromSession(this, updated);
+                trusted = updated;
+            }
+            catch (IOException ignored) { }
+        }
+
+        void requireKeys(JSONObject value, String... names) throws IOException {
+            java.util.HashSet<String> expected = new java.util.HashSet<>(java.util.Arrays.asList(names));
+            java.util.HashSet<String> actual = new java.util.HashSet<>();
+            for (java.util.Iterator<String> iterator = value.keys(); iterator.hasNext();) actual.add(iterator.next());
+            if (!actual.equals(expected)) throw new IOException("可信设备认证包含未知、重复或缺失字段");
+        }
+
         void run() {
             int retry = 0;
             while (running) {
@@ -1251,24 +1620,34 @@ public final class MainActivity extends Activity {
                 boolean serverRejected = false;
                 try {
                     setStatus(this, (retry == 0 ? "正在连接 " : "正在重新连接 ") + connectionLabel() + "…", false);
-                    Socket local = paired == null ? new Socket() : PinnedTls.createSocket(paired.certificateSha256);
+                    boolean trustedAttempt = trusted != null;
+                    Socket local = openAttemptSocket();
                     socket = local;
                     if (!running) { local.close(); break; }
-                    local.connect(new InetSocketAddress(paired == null ? "127.0.0.1" : paired.host, sessionPort), 5000);
-                    local.setTcpNoDelay(true);
-                    local.setSoTimeout(8000);
-                    if (local instanceof SSLSocket) ((SSLSocket) local).startHandshake();
                     local.setSoTimeout(15000);
                     DataOutputStream output = new DataOutputStream(new BufferedOutputStream(local.getOutputStream()));
-                    JSONObject hello = new JSONObject();
-                    hello.put("protocol", 1);
-                    hello.put("token", sessionToken);
-                    hello.put("features", new JSONArray()
-                            .put(WireProtocol.FEATURE_RENDER_SUBMITTED)
-                            .put(WireProtocol.FEATURE_DECODER_REFRESH)
-                            .put(WireProtocol.FEATURE_RECEIVER_FEEDBACK)
-                            .put(WireProtocol.FEATURE_ADAPTIVE_VIDEO));
-                    WireProtocol.write(output, WireProtocol.HELLO, hello.toString().getBytes(StandardCharsets.UTF_8));
+                    DataInputStream input = new DataInputStream(new BufferedInputStream(local.getInputStream()));
+                    if (trustedAttempt) sendTrustedAuthentication(input, output);
+                    else {
+                        JSONObject hello = new JSONObject();
+                        hello.put("protocol", 1);
+                        hello.put("token", sessionToken);
+                        hello.put("features", identity == null ? new JSONArray()
+                                .put(WireProtocol.FEATURE_RENDER_SUBMITTED)
+                                .put(WireProtocol.FEATURE_DECODER_REFRESH)
+                                .put(WireProtocol.FEATURE_RECEIVER_FEEDBACK)
+                                .put(WireProtocol.FEATURE_ADAPTIVE_VIDEO) : requestedFeatures());
+                        if (identity != null) {
+                            hello.put("deviceId", identity.deviceId);
+                            hello.put("devicePublicKey", identity.publicKeySpkiBase64());
+                            String deviceName = (Build.MANUFACTURER + " " + Build.MODEL)
+                                    .replaceAll("[\\p{Cntrl}]", " ").trim();
+                            if (deviceName.length() > 64) deviceName = deviceName.substring(0, 64);
+                            hello.put("deviceName", deviceName.isEmpty() ? "Android 设备" : deviceName);
+                        }
+                        WireProtocol.write(output, WireProtocol.HELLO,
+                                hello.toString().getBytes(StandardCharsets.UTF_8));
+                    }
                     // Send the initial native/rotation/requested-Hz profile synchronously,
                     // before any decoder is created or incoming video packet is consumed.
                     lastDisplayProfile = DisplayCapabilities.read(MainActivity.this).toString();
@@ -1277,7 +1656,6 @@ public final class MainActivity extends Activity {
                     connected = true;
                     writer = new Thread(() -> writeLoop(local, output), "TabLink-input");
                     writer.start();
-                    DataInputStream input = new DataInputStream(new BufferedInputStream(local.getInputStream()));
                     setStatus(this, connectionLabel() + " 已连接，等待桌面画面…", false);
                     while (running) {
                         WireProtocol.Packet packet = WireProtocol.read(input);
@@ -1297,10 +1675,13 @@ public final class MainActivity extends Activity {
                             currentVideo.offer(packet.payload);
                             receiverFeedback.observeDecoder(currentVideo.feedbackMetrics());
                             retry = 0;
+                        } else if (packet.type == WireProtocol.TRUST_ESTABLISHED) {
+                            acceptTrustEstablished(packet.payload);
                         } else if (packet.type == WireProtocol.STATUS) {
                             if (packet.payload.length > 16384) throw new IOException("状态数据过长");
                             JSONObject state = new JSONObject(new String(packet.payload, StandardCharsets.UTF_8));
                             acceptHostFeatures(state);
+                            if (trustedAttempt) persistTrustedEndpoint();
                             String message = state.optString("message", connectionLabel() + " 已连接");
                             Object paused = state.opt("capturePaused");
                             captureState = captureState.update(paused instanceof Boolean ? (Boolean) paused : null,
@@ -1319,12 +1700,15 @@ public final class MainActivity extends Activity {
                     }
                 } catch (IOException | JSONException | IllegalArgumentException problem) {
                     if (running) {
-                        boolean certificateFailure = paired != null && problem instanceof SSLHandshakeException;
-                        if (certificateFailure) serverRejected = true;
-                        String message = certificateFailure ? "无法验证电脑证书。请检查平板日期，重新扫描电脑当前二维码；不会使用未验证的连接。"
+                        boolean certificateFailure = identity != null && problem instanceof SSLHandshakeException;
+                        if (certificateFailure && trusted == null) serverRejected = true;
+                        String message = certificateFailure && trusted != null
+                                ? "发现的电脑未通过已保存证书验证，将继续寻找原可信电脑。如电脑已重装或重置，请先忘记可信电脑，再重新扫码。"
+                                : certificateFailure ? "无法验证电脑证书。请检查平板日期，重新扫描电脑当前二维码；不会使用未验证的连接。"
                                 : serverRejected ? "电脑端提示：" + problem.getMessage()
-                                : paired == null ? "连接中断，请检查 USB 调试通道和电脑端；将自动重连"
-                                : "尚未连通电脑，将自动重试。请确认同一 Wi-Fi 或已开启 USB 网络共享，电脑网络会话仍在运行；会话重开后需重新扫码。";
+                                : identity == null ? "连接中断，请检查 USB 调试通道和电脑端；将自动重连"
+                                : trusted != null ? "尚未连通可信电脑，将按已保存地址和局域网发现自动重试；不会信任同名或未验证电脑。"
+                                : "尚未连通电脑，将自动重试。请确认同一 Wi-Fi 或已开启 USB 网络共享，并重新扫描电脑当前二维码。";
                         hasPresentedFrame = false;
                         setStatus(this, message, false);
                     }

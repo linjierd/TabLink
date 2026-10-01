@@ -8,6 +8,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $projectDirectory = $PSScriptRoot
+$expectedPreviewSignerSha256 = 'b0035ffe0539e43ded2f5c40e3b7e4d4edfb5d8f8063459faca911edc7500554'
 if (-not $JavaHome) {
     $javaCandidates = @(
         'C:\Program Files\Android\openjdk\jdk-21.0.8',
@@ -67,12 +68,20 @@ try {
     New-Item -ItemType Directory -Force -Path $signingDirectory | Out-Null
     $keyStore = Join-Path $signingDirectory 'debug.keystore'
     if (-not (Test-Path -LiteralPath $keyStore)) {
+        if ($ReleasePreview) {
+            throw 'The established TabLink preview signing key is missing. Restore the protected key; release builds must never create a replacement identity.'
+        }
         & (Join-Path $JavaHome 'bin\keytool.exe') -genkeypair -keystore $keyStore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=TabLink Development, O=TabLink, C=CN'
         if ($LASTEXITCODE -ne 0) { throw 'Could not generate development signing key.' }
     }
     $testDirectory = Join-Path $projectDirectory 'build\protocol-tests'
     New-Item -ItemType Directory -Force -Path $testDirectory | Out-Null
     $sources = @(
+        (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\TrustedDeviceProtocol.java'),
+        (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\TrustedComputer.java'),
+        (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\PairingIntentPolicy.java'),
+        (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\TrustedComputerForgetCoordinator.java'),
+        (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\DiscoveryCandidateSet.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\WireProtocol.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\FrameGeometry.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\PresentationProgress.java'),
@@ -106,7 +115,12 @@ try {
         (Join-Path $projectDirectory 'tests\DecoderCandidateSelectorTest.java'),
         (Join-Path $projectDirectory 'tests\DisplayUiPolicyTest.java'),
         (Join-Path $projectDirectory 'tests\PairingSecurityTest.java'),
-        (Join-Path $projectDirectory 'tests\StableUpdateSecurityTest.java')
+        (Join-Path $projectDirectory 'tests\StableUpdateSecurityTest.java'),
+        (Join-Path $projectDirectory 'tests\TrustedDeviceProtocolTest.java'),
+        (Join-Path $projectDirectory 'tests\TrustedComputerTest.java'),
+        (Join-Path $projectDirectory 'tests\PairingIntentPolicyTest.java'),
+        (Join-Path $projectDirectory 'tests\TrustedComputerForgetCoordinatorTest.java'),
+        (Join-Path $projectDirectory 'tests\DiscoveryCandidateSetTest.java')
     )
     $zxingDirectory = Join-Path $projectDirectory '.tools\dependencies'
     $zxingJar = Join-Path $zxingDirectory 'zxing-core-3.5.3.jar'
@@ -158,6 +172,16 @@ try {
     }
     & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.StableUpdateSecurityTest $updatePayloadFixture $updateEnvelopeFixture
     if ($LASTEXITCODE -ne 0) { throw 'Stable update security or state test failed.' }
+    & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.TrustedDeviceProtocolTest
+    if ($LASTEXITCODE -ne 0) { throw 'Trusted device protocol test failed.' }
+    & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.TrustedComputerTest
+    if ($LASTEXITCODE -ne 0) { throw 'Trusted computer state test failed.' }
+    & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.PairingIntentPolicyTest
+    if ($LASTEXITCODE -ne 0) { throw 'External pairing intent policy test failed.' }
+    & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.TrustedComputerForgetCoordinatorTest
+    if ($LASTEXITCODE -ne 0) { throw 'Trusted computer removal transaction test failed.' }
+    & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.DiscoveryCandidateSetTest
+    if ($LASTEXITCODE -ne 0) { throw 'Trusted discovery candidate test failed.' }
     $gradleTasks = if ($ReleasePreview) { @('assembleRelease','lintRelease') } else { @('assembleDebug','lintDebug') }
     $gradleArguments = @('--project-dir', $projectDirectory, '--console=plain', '--no-daemon') + $gradleTasks
     if ($ReleasePreview) { $gradleArguments += '-PtablinkPreviewSigning=true' }
@@ -172,11 +196,28 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Android build or lint failed.' }
     $artifactDirectory = Join-Path $projectDirectory 'artifacts'
     New-Item -ItemType Directory -Force -Path $artifactDirectory | Out-Null
-    $apk = Join-Path $artifactDirectory $(if ($ReleasePreview) { 'TabLink-android-0.8.7-preview.apk' } else { 'TabLink-android-0.8.7-debug.apk' })
+    $apk = Join-Path $artifactDirectory $(if ($ReleasePreview) { 'TabLink-android-0.8.8-preview.apk' } else { 'TabLink-android-0.8.8-debug.apk' })
     $builtApk = if ($ReleasePreview) { 'app\build\outputs\apk\release\app-release.apk' } else { 'app\build\outputs\apk\debug\app-debug.apk' }
     Copy-Item -LiteralPath (Join-Path $projectDirectory $builtApk) -Destination $apk -Force
-    & (Join-Path $JavaHome 'bin\java.exe') -jar (Join-Path $AndroidSdk 'build-tools\35.0.0\lib\apksigner.jar') verify --verbose --min-sdk-version 23 $apk
+    $apkSignerJar = Join-Path $AndroidSdk 'build-tools\35.0.0\lib\apksigner.jar'
+    $signatureOutput = @(& (Join-Path $JavaHome 'bin\java.exe') -jar $apkSignerJar verify --verbose --print-certs --min-sdk-version 23 $apk 2>&1)
     if ($LASTEXITCODE -ne 0) { throw 'APK signature verification failed.' }
+    $signatureOutput | Write-Output
+    if ($ReleasePreview) {
+        $signatureMatch = [regex]::Match(($signatureOutput -join [Environment]::NewLine),
+            'Signer #1 certificate SHA-256 digest:\s*(?<digest>[0-9a-fA-F]{64})')
+        if (-not $signatureMatch.Success -or
+            $signatureMatch.Groups['digest'].Value.ToLowerInvariant() -cne $expectedPreviewSignerSha256) {
+            throw 'Preview APK signer does not match the pinned TabLink upgrade identity.'
+        }
+        $badging = @(& (Join-Path $AndroidSdk 'build-tools\35.0.0\aapt.exe') dump badging $apk 2>&1)
+        if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect the preview APK identity.' }
+        $packageLine = $badging | Where-Object { $_ -like 'package:*' } | Select-Object -First 1
+        if ($packageLine -notmatch "name='com\.tablink\.client'" -or
+            $packageLine -notmatch "versionCode='20'" -or $packageLine -notmatch "versionName='0\.8\.8'") {
+            throw 'Preview APK package name or version does not match the 0.8.8 release contract.'
+        }
+    }
     Get-FileHash -Algorithm SHA256 -LiteralPath $apk | Format-List Algorithm, Hash, Path
 } finally {
     $env:JAVA_HOME = $savedJavaHome
