@@ -412,6 +412,26 @@ try
     Check(verified.Count == 3, "explicit empty marker accepts one coherent retired triplet and verifies every state file");
 
     ResetLeaseRoot();
+    var retiredFinalId = Guid.NewGuid();
+    var supersededProvisionalId = Guid.NewGuid();
+    WriteGeneration(retiredFinalId, Guid.Empty, pid: 111, ticks: 222);
+    WriteState(Bootstrap(supersededProvisionalId), supersededProvisionalId, pid: 111, ticks: 222);
+    var sameOwnerVerified = new List<string>();
+    Scan((_, _) => DisplayConfigurationActivity.LeaseOwnerStatus.Running, sameOwnerVerified.Add);
+    Check(sameOwnerVerified.Count == 4,
+        "retired final generation accepts a superseded provisional bootstrap from the exact same process incarnation");
+
+    ResetLeaseRoot();
+    var retiredBeforePidReuseId = Guid.NewGuid();
+    var reusedPidBootstrapId = Guid.NewGuid();
+    WriteGeneration(retiredBeforePidReuseId, Guid.Empty, pid: 111, ticks: 222);
+    WriteState(Bootstrap(reusedPidBootstrapId), reusedPidBootstrapId, pid: 111, ticks: 999);
+    RejectLease(() => Scan((pid, ticks) => pid == 111 && ticks == 999
+        ? DisplayConfigurationActivity.LeaseOwnerStatus.Running
+        : DisplayConfigurationActivity.LeaseOwnerStatus.Exited),
+        "retired marker cannot treat a reused PID with a different process start time as the same owner");
+
+    ResetLeaseRoot();
     var retiredWithExtraId = Guid.NewGuid();
     var extraBootstrapId = Guid.NewGuid();
     WriteGeneration(retiredWithExtraId, Guid.Empty, pid: 111, ticks: 222);
@@ -430,6 +450,14 @@ try
         "marker-referenced live owner");
     Scan((_, _) => DisplayConfigurationActivity.LeaseOwnerStatus.Exited);
     assertions++;
+
+    ResetLeaseRoot();
+    var liveWithSameOwnerExtraId = Guid.NewGuid();
+    var liveSameOwnerExtraBootstrapId = Guid.NewGuid();
+    WriteGeneration(liveWithSameOwnerExtraId, liveWithSameOwnerExtraId, pid: 901, ticks: 902);
+    WriteState(Bootstrap(liveSameOwnerExtraBootstrapId), liveSameOwnerExtraBootstrapId, pid: 901, ticks: 902);
+    RejectLease(() => Scan((_, _) => DisplayConfigurationActivity.LeaseOwnerStatus.Running),
+        "non-empty marker never exempts an extra bootstrap from the same active process incarnation");
 
     ResetLeaseRoot();
     var oldId = Guid.NewGuid();
@@ -451,6 +479,14 @@ try
         "missing marker with unverifiable owner");
     Scan((_, _) => DisplayConfigurationActivity.LeaseOwnerStatus.Exited);
     assertions++;
+
+    ResetLeaseRoot();
+    var noMarkerWithSameOwnerExtraId = Guid.NewGuid();
+    var noMarkerSameOwnerExtraBootstrapId = Guid.NewGuid();
+    WriteGeneration(noMarkerWithSameOwnerExtraId, marker: null, pid: 903, ticks: 904);
+    WriteState(Bootstrap(noMarkerSameOwnerExtraBootstrapId), noMarkerSameOwnerExtraBootstrapId, pid: 903, ticks: 904);
+    RejectLease(() => Scan((_, _) => DisplayConfigurationActivity.LeaseOwnerStatus.Running),
+        "missing marker never exempts an extra bootstrap from the same active process incarnation");
 
     ResetLeaseRoot();
     File.WriteAllText(currentPath + ".lease-id", System.Text.Json.JsonSerializer.Serialize(Guid.Empty));

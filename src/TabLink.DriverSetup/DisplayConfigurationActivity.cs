@@ -121,7 +121,16 @@ internal static class DisplayConfigurationActivity
                 throw new InvalidDataException("空显示租约 marker 缺少匹配的 current/bootstrap 状态。");
             RequireSameOwnerAndLease(current, retired, "已退休显示租约 current/bootstrap 不一致。");
             foreach (var state in bootstraps.Where(pair => pair.Key != current.LeaseId).Select(pair => pair.Value))
+            {
+                // A single allocation can publish a provisional generation,
+                // activate the target, and then publish a final generation for
+                // the same target. Retiring the final generation supersedes an
+                // older bootstrap from the exact same process incarnation: its
+                // watcher has already lost marker authority. PID equality alone
+                // is insufficient because Windows can reuse a process ID.
+                if (SameExactOwner(state, retired)) continue;
                 RequireExitedOwner(state, ownerStatus, "已退休 marker 旁的未引用 bootstrap 仍可能有活动 owner。");
+            }
             return;
         }
 
@@ -164,6 +173,9 @@ internal static class DisplayConfigurationActivity
             left.OwnerStartUtcTicks != right.OwnerStartUtcTicks || left.LeaseJson != right.LeaseJson)
             throw new InvalidDataException(message);
     }
+
+    private static bool SameExactOwner(LeaseState left, LeaseState right) =>
+        left.OwnerPid == right.OwnerPid && left.OwnerStartUtcTicks == right.OwnerStartUtcTicks;
 
     private static LeaseState ReadLeaseState(string path, bool allowLegacyReverseLease)
     {
