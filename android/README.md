@@ -1,4 +1,4 @@
-# TabLink Android 客户端 0.8.2 预览版
+# TabLink Android 客户端 0.8.3 Preview 1
 
 作者：**张林杰（Jey / [@linjierd](https://github.com/linjierd)）** · 博客：[Linjie / 开发笔记](https://linjie.space/)
 
@@ -24,7 +24,7 @@ tablink://connect?host=<IPv4>&port=27184&token=<64 lowercase hex>&cert=<64 hex S
 
 网络连接只启用 TLS 1.2/1.3。`PinnedTls.CertificatePin` 使用常量时间比较验证服务端叶证书完整 DER 的 SHA-256 必须等于二维码的 `cert`，同时检查证书有效期。这里使用二维码中的固定证书作为身份依据，不能用系统可信 CA 的另一张证书替代，也没有跳过验证的回退路径。证书校验失败时不会发送认证包，界面提示检查日期并重扫当前二维码。
 
-TLS 握手成功后，客户端在 `0x10` 认证中声明 `render-submitted-v1` 可选能力，再同步发送 `0x13` 当前原生显示能力和请求刷新率，然后才读取和解码视频。只有电脑端在 `0x02` 状态中回显同一能力后，客户端才会发送 `0x14` 解码提交进度；旧电脑端不回显时继续按原协议工作。旋转或显示模式变化仍会更新 `0x13`；若电脑端因此关闭当前 TCP，客户端沿用当前 URI 的地址、证书和凭证自动重连，不要求重新扫码。电脑端停止或重新创建网络会话后，旧配对失效，应扫描新码。
+TLS 握手成功后，客户端在 `0x10` 认证中声明 `render-submitted-v1`、`decoder-refresh-v1`、`receiver-feedback-v1` 与 `adaptive-video-v1` 四项可选能力，再同步发送 `0x13` 当前原生显示能力和请求刷新率，然后才读取和解码视频。只有电脑端在 `0x02` 状态中回显相应能力后，客户端才会发送对应的 `0x14` 解码提交、`0x15` 关键帧恢复请求或 `0x16` 独立接收端反馈；旧电脑端不回显时继续按原协议工作。旋转或显示模式变化仍会更新 `0x13`；若电脑端因此关闭当前 TCP，客户端沿用当前 URI 的地址、证书和凭证自动重连，不要求重新扫码。电脑端停止或重新创建网络会话后，旧配对失效，应扫描新码。
 
 收到首帧呈现回调后，配对链接保存在应用私有 `SharedPreferences("pairing", MODE_PRIVATE)`。正常启动不会自动使用它；用户可点击“重连上次电脑”。显示设置中可以“忘记上次配对的电脑”，或“更换连接 / 扫描二维码”。Token 不写入应用日志、状态文字或公开的显示能力接口。
 
@@ -68,7 +68,7 @@ Set-Location '<repository-root>\android'
 
 其他电脑可通过三个参数指定工具路径；首次需要下载 Gradle 插件依赖时省略 `-Offline`。脚本只在当前进程设置 Java/SDK 环境变量，并在退出时恢复。
 
-普通构建输出 `artifacts/TabLink-android-0.8.2-debug.apk`。增加 `-ReleasePreview` 会运行 `assembleRelease` / `lintRelease`，输出不可调试的 `artifacts/TabLink-android-0.8.2-preview.apk`。两者均为 `versionCode 14`，并使用本机生成且被 Git 忽略的 `build/signing/debug.keystore` 开发证书，以便覆盖早期 TabLink 测试安装；它不是应用商店生产签名。应安全保留同一份签名文件，绝不能把私钥提交到仓库。
+普通构建输出 `artifacts/TabLink-android-0.8.3-debug.apk`。增加 `-ReleasePreview` 会运行 `assembleRelease` / `lintRelease`，输出不可调试的 `artifacts/TabLink-android-0.8.3-preview.apk`。两者均为 `versionName 0.8.3`、`versionCode 15`，并使用本机生成且被 Git 忽略的 `build/signing/debug.keystore` 开发证书，以便覆盖早期 TabLink 测试安装；它不是应用商店生产签名。应安全保留同一份签名文件，绝不能把私钥提交到仓库。
 
 本机构建时发现系统 SDK 的 build-tools 35.0.0 目录只有未完成安装记录，因此在项目 `.tools/sdk` 中准备了隔离 SDK：复制现有 SDK platform 35，并从 [Google Android 官方仓库](https://dl.google.com/android/repository/build-tools_r35_windows.zip) 下载 build-tools 35.0.0。压缩包使用 [官方 repository 元数据](https://dl.google.com/android/repository/repository2-1.xml) 中 SHA-1 `af059bb67cf7786f45ee0db85e2d24985df1b4b6` 校验。没有修改系统 SDK。`.tools`、`.gradle`、`build` 和 `app/build` 属于本地构建工具或缓存，不应放进用户发行包。
 
@@ -77,7 +77,7 @@ Set-Location '<repository-root>\android'
 电脑端应先检查用户选定的设备未被排除，并且是获准使用的 USB 调试设备。以下命令中的 `SERIAL` 必须是该设备的真实序列号；不要批量对所有设备执行。
 
 ```text
-adb -s SERIAL install -r TabLink-android-0.8.2-preview.apk
+adb -s SERIAL install -r TabLink-android-0.8.3-preview.apk
 adb -s SERIAL reverse --no-rebind tcp:27183 tcp:27183
 adb -s SERIAL shell am start -n com.tablink.client/.MainActivity --es host 127.0.0.1 --ei port 27183 --es token RANDOM_SESSION_TOKEN
 ```
@@ -152,29 +152,32 @@ TCP 双向数据包格式：`type: uint8` + `length: uint32 big-endian` + `paylo
 
 | 方向 | type | 载荷 |
 | --- | --- | --- |
-| 平板 → 电脑 | `0x10` | 首包：`{"protocol":1,"token":"...","features":["render-submitted-v1","decoder-refresh-v1"]}`；`features` 可选 |
+| 平板 → 电脑 | `0x10` | 首包：`{"protocol":1,"token":"...","features":["render-submitted-v1","decoder-refresh-v1","receiver-feedback-v1","adaptive-video-v1"]}`；`features` 可选 |
 | 电脑 → 平板 | `0x01` | 完整 JPEG 图像 |
-| 电脑 → 平板 | `0x02` | `{"protocol":1,"features":["render-submitted-v1","decoder-refresh-v1"],"width":1280,"height":720,"message":"...","capturePaused":true}`；能力与暂停字段可选 |
+| 电脑 → 平板 | `0x02` | `{"protocol":1,"features":["render-submitted-v1","decoder-refresh-v1","receiver-feedback-v1","adaptive-video-v1"],"width":1280,"height":720,"message":"...","capturePaused":true}`；只回显实际协商的能力，能力与暂停字段可选 |
 | 电脑 → 平板 | `0x03` | UTF-8 错误文本，显示后停止自动重连 |
 | 平板 → 电脑 | `0x11` | `{"kind":"down|move|up|scroll","x":0.5,"y":0.5,"delta":120}` |
 | 平板 → 电脑 | `0x12` | `{"kind":"frame-presented","sequence":21,"width":1280,"height":800}` |
 | 平板 → 电脑 | `0x13` | 与能力查询接口相同的屏幕模式 JSON |
 | 平板 → 电脑 | `0x14` | 协商后发送的 `render-submitted` 进度：累计 `frames`、本帧 `ptsUs`、尺寸、`fps` 和 `decoder`；不推进呈现回调计数 |
 | 平板 → 电脑 | `0x15` | 协商 `decoder-refresh-v1` 后发送的 8 字节大端正整数恢复代次；请求当前会话的下一枚新 IDR，不代表呈现成功 |
-| 电脑 → 平板 | `0x20` | `{"codec":"video/avc","width":1200,"height":1920,"fps":90,"csd0":"BASE64_SPS","csd1":"BASE64_PPS"}` |
+| 平板 → 电脑 | `0x16` | 协商 `receiver-feedback-v1` 后发送的独立 JSON 反馈：递增 sequence、接收帧/字节、decoder/recovery epoch、队列深度/容量、提交、呈现和各类丢弃累计值 |
+| 电脑 → 平板 | `0x20` | `{"codec":"video/avc","width":1200,"height":1920,"fps":90,"csd0":"BASE64_SPS","csd1":"BASE64_PPS","bitrateKbps":12000,"generation":2}`；后两项可选 |
 | 电脑 → 平板 | `0x21` | 8 字节大端非负 `ptsUs`，后接一个完整 Annex-B H.264 access unit |
 
 `0x12` 是客户端画面呈现回调进度。JPEG 在成功解码、绘制且 `unlockCanvasAndPost` 正常返回后计数；H.264 只在 `MediaCodec.OnFrameRenderedListener` 通知后计数。首次立即确认，此后有新进展时约每秒确认一次；重绘旧 JPEG 不重复计数，每次 TCP 连接从 1 重新计数。新增 `fps`、`codec`、`decoder`、`droppedFrames` 字段，其中 FPS 由回调时间戳测量。回调可能延迟、成批或少报，不能替代最终可见帧率和实机验收。
 
-`0x14` 只证明某个访问单元已经成功排入 MediaCodec 输入队列。每个 TCP 会话累计 `frames`；第一次提交立即报告，之后最多约每秒一次。解码器重配会保留会话累计帧数，并允许媒体 PTS 从零重新开始；重连才重置累计值。单调回调时钟必须前进，尺寸必须有效，decoder 名称最多 160 字符。暂停采集或能力未协商时不发送。电脑端把 submitted 与 presented 的 FPS、期限和健康阶段分别处理，绝不把 `0x14` 当作 `0x12`。
+`0x14` 只证明某个访问单元已经成功排入 MediaCodec 输入队列。每个 TCP 会话累计 `frames`；第一次提交立即报告，之后最多约每秒一次。解码器重配会保留会话累计帧数；0.8.3 的同连接自适应重配也保持媒体 PTS 严格递增，只有真正重连才重新建立会话计数与媒体时钟。单调回调时钟必须前进，尺寸必须有效，decoder 名称最多 160 字符。暂停采集或能力未协商时不发送。电脑端把 submitted 与 presented 的 FPS、期限和健康阶段分别处理，绝不把 `0x14` 当作 `0x12`。
 
-H.264 必须先发 `0x20` 配置，SPS/PPS 分别为带 Annex-B 起始码的 Base64 字节；随后 `0x21` 中 PTS 严格递增，建议禁用 B 帧并至少每秒发送一个 IDR。客户端按尺寸、目标帧率、性能点、低延迟能力和本进程失败记录为 AVC decoder 排序，优先硬解，并保留其他硬解及软件 decoder 作为兜底。输入队列最多 6 帧；排队超过 150 ms 或队列溢出会放弃相关依赖链并等待新 IDR，避免无限积累延迟。配置变化会重建解码器，Surface 销毁时释放并安全重连。
+`0x16` 与 `0x14`、`0x12` 独立：只要 decoder 活动且队列容量有效，即使提交或呈现暂时停滞，客户端仍最多每秒发送一份最新反馈。该报告只作为自动码率和诊断输入，不会伪造提交、呈现或用户可见画面的健康证据。队列溢出或帧等待超过 150 ms 导致健康参考链丢失时，客户端为新的 recovery epoch 生成限频 `0x15`；首次等待 IDR、主动清空、decoder 重配和正常关闭不会产生队列恢复请求。
+
+H.264 必须先发 `0x20` 配置，SPS/PPS 分别为带 Annex-B 起始码的 Base64 字节；随后 `0x21` 中 PTS 严格递增，建议禁用 B 帧并至少每秒发送一个 IDR。只有双方同时协商 `receiver-feedback-v1` 与 `adaptive-video-v1`，新版电脑端才会为自动、低延迟、均衡或高清晰画质计划切换而在同一 TCP 会话中重复发送 `0x20`；原生方向、分辨率与请求刷新率保持不变。旧电脑端或未完整协商的会话保持固定画质计划，但在安全桌面、DDA 或采集恢复后仍可按既有协议重发同一计划的 `0x20`，客户端继续接受这种兼容重配。客户端按尺寸、目标帧率、性能点、低延迟能力和本进程失败记录为 AVC decoder 排序，优先硬解，并保留其他硬解及软件 decoder 作为兜底。输入队列最多 6 帧；排队超过 150 ms 或队列溢出会放弃相关依赖链并等待新 IDR，避免无限积累延迟。配置变化会重建解码器，Surface 销毁时释放并安全重连。
 
 某个 MediaCodec 在创建、配置、启动或运行中失败时，客户端会在同一个 TLS/TCP 会话和同一块副屏上尝试下一候选。备用 decoder 成功启动后才进入“等待关键帧”状态并发送一次 `0x15`；电脑端暂停该会话的 P 帧，等编码器自然产生下一枚新 IDR，再在同一个 `0x21` 中补齐缺失的 SPS/PPS。电脑不会重启编码器、重新认证、重新安装驱动或新建副屏。只有备用 decoder 的真实 `OnFrameRenderedListener` 回调才结束等待状态；`0x14` 提交不算恢复成功。旧电脑端未回显该能力时，客户端不会发送未知消息，只等待原视频的自然 IDR。
 
 电脑暂时无法采集桌面（例如安全桌面正在使用）时，可在 `0x02` 中发送 `capturePaused:true` 和简短 `message`。客户端保留同一 TCP 连接、Surface、解码器和最后画面，只显示暂停提示，不将心跳当成新画面或推进 `0x12`。电脑必须持续发送间隔短于 15 秒的状态心跳，并在其守护逻辑中区分这种已确认的暂时暂停。普通状态包缺少 `capturePaused` 时保留原暂停状态，明确 `false` 才清除暂停提示。
 
-恢复时可继续原视频，或重新发送 `0x20` 建立新解码器后发送新 IDR；新配置的 PTS 可以从 0 开始。只要仍是同一 TCP 会话，客户端的 `0x12 sequence` 会继续递增，不重置 `PresentationProgress`。真正关闭或重建 TCP 连接才重置该序号。这个状态扩展向后兼容已有协议，不绕过 Windows 安全桌面的采集限制。
+恢复时可继续原视频，也可按既有协议重发 `0x20` 建立新解码器再发送新 IDR；完整协商自适应能力后，新版电脑端还可用相同机制切换画质计划。只要仍是同一 TCP 会话，Windows 的连接级媒体时钟保证新配置后的 PTS 大于此前所有 PTS，客户端的 `0x12 sequence` 也继续递增，不重置 `PresentationProgress`。真正关闭或重建 TCP 连接才重置这些会话状态。这个扩展向后兼容已有协议，不绕过 Windows 安全桌面的采集限制。
 
 `delta` 仅用于 scroll，每个标准滚轮刻度为 120，与 Windows `WHEEL_DELTA` 一致。`x`、`y` 为画面范围内的 0–1 坐标；图片使用 contain 缩放，四周黑边不产生点击。单指移动最多约每 16 ms 发送一次；拖动离开画面、触摸取消或被系统中断时会发送 up。第二根手指不会产生额外鼠标按下。
 
@@ -188,7 +191,7 @@ H.264 必须先发 `0x20` 配置，SPS/PPS 分别为带 Annex-B 起始码的 Bas
 
 最终 0.4.2（APK SHA-256 `4F6FBBD8D22447A1D2702B2028A4868CC779D89124074E8923BBE667DFCD58FC`）已通过正常安装、默认开关开启的长时间真机验证：Windows 控制窗口最小化，原生 1200×1920 / 90 Hz，120.433 秒实际呈现 **89.702 fps**，四段 30 秒为 89.800 / 89.667 / 89.733 / 89.567 fps，P99 11.147 ms，最大间隔 33.295 ms，没有断线或采样覆盖缺口。该结果来自 SurfaceFlinger 实际呈现时间戳，而非计划帧率。完整方法和保留的未通过候选结果见根目录 `VERIFICATION.md` 与发行目录 `diagnostics/final042-driftfixed-*`。
 
-- 0.8.2 Preview 2 的纯 JVM 断言覆盖双能力协商、解码提交限频与累计、固定宽度恢复请求、候选评分、失败降权、非法尺寸和旧回调保护；它不运行真实 MediaCodec，create / configure / start / runtime callback 故障后的真机切换仍须实机验证。最终断言数量以 `VERIFICATION-0.8.2.md` 中本次构建输出为准。
+- 0.8.3 Preview 1 的纯 JVM 断言覆盖四项能力协商、解码提交限频与累计、队列 recovery epoch、关键帧请求令牌桶、暂停竞态、独立接收端反馈、候选评分、失败降权、非法尺寸和旧回调保护；它不运行真实 MediaCodec，真实队列拥塞、自动码率切换和 create / configure / start / runtime callback 故障后的真机恢复仍须实机验证。最终断言数量以 `VERIFICATION-0.8.3.md` 中本次构建输出为准。
 - 20 项纯 JVM HUD / 暂停状态断言：透明度与不透明度方向、持久化数值边界、九宫格位置、颜色格式，以及暂停、普通心跳、恢复和同会话序号延续。0.5.0 的设置手势、沉浸显示和电脑采集暂停恢复仍需真机联合验证；不能用这些逻辑测试替代运行中的画面验收。
 - 26,024 项独立纯 JVM RenderClock 断言覆盖稳定 90 fps、解码抖动、较慢输入、首批突发、长停顿、固定硬件流水线延迟、重复/倒序 PTS、极大 PTS 跳变、重连重置，以及不同帧率下未来排程不超过 25 ms。新增 100 秒缓慢时钟偏移、持续到达延迟和正负 5 ms 交替抖动用例；后者检查计划间隔均匀且不会反复触发上下限修正。逻辑测试仅验证时钟行为，不能替代最终实际呈现率验收。
 - `assembleDebug` / `assembleRelease` 与 `lintDebug` / `lintRelease` 成功；release Lint 为 0 error / 18 warning，警告仍涉及目标 SDK 版本、较新 XML 属性和中文界面可翻译性等兼容/维护项。

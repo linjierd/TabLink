@@ -16,6 +16,8 @@ internal sealed class FrameServer : IAsyncDisposable
     internal const int ProtocolVersion=1;
     internal const string RenderSubmittedFeature="render-submitted-v1";
     internal const string DecoderRefreshFeature="decoder-refresh-v1";
+    internal const string ReceiverFeedbackFeature="receiver-feedback-v1";
+    internal const string AdaptiveVideoFeature="adaptive-video-v1";
     internal static readonly TimeSpan TelemetryFreshnessWindow=TimeSpan.FromSeconds(5);
     public const int Port = 27183;
     public const int MaxPacket = 8 * 1024 * 1024;
@@ -26,6 +28,7 @@ internal sealed class FrameServer : IAsyncDisposable
     readonly Func<InputDesktopStatus> queryDesktop;
     readonly NetworkSessionOptions? network;
     readonly Func<TabletDisplayProfile,CancellationToken,Task>? prepare;
+    AdaptiveVideoSession? quality;
     readonly int fps;
     readonly CancellationTokenSource cts = new();
     readonly TcpListener listener = new(IPAddress.Loopback, Port);
@@ -47,6 +50,8 @@ internal sealed class FrameServer : IAsyncDisposable
     DateTime? lastFrameUtc, lastPresentedUtc;
     DateTime? lastSubmittedUtc;
     long submittedFrames;
+    ReceiverFeedbackSnapshot? receiverFeedback;
+    DateTime? lastReceiverFeedbackUtc;
     readonly Queue<long> recentVideoPts=new();
     public string Token { get; } = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
     public int ListeningPort => listener.LocalEndpoint is IPEndPoint endpoint ? endpoint.Port : 0;
@@ -75,6 +80,8 @@ internal sealed class FrameServer : IAsyncDisposable
     // two measurements explicitly rather than treating decoder submission as display.
     public double ClientReportedFps {get{lock(statisticsLock){var now=DateTime.UtcNow;return IsFresh(lastPresentedUtc,now)?clientPresentedFps:IsFresh(lastSubmittedUtc,now)?clientSubmittedFps:0;}}}
     public string? ClientDecoder {get{lock(statisticsLock)return clientDecoder;}}
+    public ReceiverFeedbackSnapshot? ReceiverFeedback {get{lock(statisticsLock)return receiverFeedback;}}
+    public bool HasRecentReceiverFeedback {get{lock(statisticsLock)return IsFresh(lastReceiverFeedbackUtc,DateTime.UtcNow);}}
     public bool CapturePaused { get { lock(statisticsLock) return capturePaused; } }
     public DateTime? CaptureRecoveryStartedUtc { get { lock(statisticsLock) return captureRecoveryStartedUtc; } }
     // Fixed cumulative counters permit interval deltas without per-frame logs.
@@ -82,25 +89,26 @@ internal sealed class FrameServer : IAsyncDisposable
     public FrameSendPerformanceSnapshot SendPerformance { get { lock(statisticsLock) return sendPerformance.Snapshot(); } }
 
     public FrameServer(Func<byte[]> capture, Action<InputMessage>? input, Action releaseInput, int fps = 20,
-        Func<InputDesktopStatus>? queryDesktop=null, int listenPort=Port)
+        Func<InputDesktopStatus>? queryDesktop=null, int listenPort=Port,AdaptiveVideoSession? quality=null)
     {
         this.capture = capture; this.input = input; this.releaseInput = releaseInput;
         this.fps = Math.Clamp(fps, 1, 30); this.queryDesktop=queryDesktop??InputDesktopAvailability.Query;
+        this.quality=quality;
         listener = new TcpListener(IPAddress.Loopback, listenPort);
     }
 
     public FrameServer(Func<CancellationToken,IAsyncEnumerable<VideoPacket>> video,Action<InputMessage>? input,Action releaseInput,
-        Func<InputDesktopStatus>? queryDesktop=null, int listenPort=Port)
+        Func<InputDesktopStatus>? queryDesktop=null, int listenPort=Port,AdaptiveVideoSession? quality=null)
     {
         this.video=video;this.input=input;this.releaseInput=releaseInput;
-        this.queryDesktop=queryDesktop??InputDesktopAvailability.Query;
+        this.queryDesktop=queryDesktop??InputDesktopAvailability.Query;this.quality=quality;
         listener = new TcpListener(IPAddress.Loopback, listenPort);
     }
 
     public FrameServer(NetworkSessionOptions options, Func<TabletDisplayProfile,CancellationToken,Task> prepare,
         Func<CancellationToken,IAsyncEnumerable<VideoPacket>> video, Action<InputMessage>? input, Action releaseInput,
-        Func<InputDesktopStatus>? queryDesktop=null)
-        : this(video,input,releaseInput,queryDesktop)
+        Func<InputDesktopStatus>? queryDesktop=null,AdaptiveVideoSession? quality=null)
+        : this(video,input,releaseInput,queryDesktop,quality:quality)
     {
         network=options??throw new ArgumentNullException(nameof(options));
         this.prepare=prepare??throw new ArgumentNullException(nameof(prepare));
@@ -116,6 +124,17 @@ internal sealed class FrameServer : IAsyncDisposable
         // acquire lifecycleLock. Never cancel or close under that lock.
         try { session?.Cancel(); } catch(ObjectDisposedException) { }
         client?.Close();
+    }
+
+    internal void AttachQualitySession(AdaptiveVideoSession session)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        lock(statisticsLock)
+        {
+            if(clientConnected)
+                throw new InvalidOperationException("画质控制器必须在媒体连接开始前绑定。");
+            quality=session;
+        }
     }
 
     public void Start()
@@ -141,6 +160,7 @@ internal sealed class FrameServer : IAsyncDisposable
             presentedWidth = presentedHeight = 0;
             lastPresentedUtc = null;
             lastSubmittedUtc=null;submittedFrames=0;recentVideoPts.Clear();
+            receiverFeedback=null;lastReceiverFeedbackUtc=null;
             clientDisplayProfile=null;clientSubmittedFps=clientPresentedFps=0;clientDecoder=null;
             sendPerformance.Reset(connected);
         }
@@ -151,6 +171,7 @@ internal sealed class FrameServer : IAsyncDisposable
         while (!ct.IsCancellationRequested)
         {
             var trustedSession=false;
+            AdaptiveVideoSession? sessionQuality=null;
             try
             {
                 // Disposal wakes this accept before closing the listener, to
@@ -201,7 +222,10 @@ internal sealed class FrameServer : IAsyncDisposable
                         throw new IOException("电脑未能准备副屏。",error);
                     }
                 }
+                lock(statisticsLock)sessionQuality=quality;
                 SetConnected(true);
+                sessionQuality?.BeginConnection(negotiatedFeatures.Contains(ReceiverFeedbackFeature,StringComparer.Ordinal)&&
+                    negotiatedFeatures.Contains(AdaptiveVideoFeature,StringComparer.Ordinal));
                 trustedSession=true;
                 if(initialProfile is not null)lock(statisticsLock)clientDisplayProfile=initialProfile;
                 Status?.Invoke("平板已连接，正在传输副屏");
@@ -210,7 +234,8 @@ internal sealed class FrameServer : IAsyncDisposable
                 var decoderRefresh=negotiatedFeatures.Contains(DecoderRefreshFeature,StringComparer.Ordinal)
                     ?new DecoderRefreshGate():null;
                 var receive = ReadInputsAsync(stream,
-                    negotiatedFeatures.Contains(RenderSubmittedFeature,StringComparer.Ordinal),decoderRefresh,sessionCts.Token);
+                    negotiatedFeatures.Contains(RenderSubmittedFeature,StringComparer.Ordinal),decoderRefresh,
+                    negotiatedFeatures.Contains(ReceiverFeedbackFeature,StringComparer.Ordinal),sessionCts.Token);
                 // A peer disconnect/reconnect must also interrupt a blocked encoder.
                 var cancelOnReceiveEnd=receive.ContinueWith(_=>sessionCts.Cancel(),CancellationToken.None,
                     TaskContinuationOptions.ExecuteSynchronously,TaskScheduler.Default);
@@ -310,6 +335,7 @@ internal sealed class FrameServer : IAsyncDisposable
             {
                 lock(lifecycleLock){currentClient=null;currentSession=null;}
                 SetConnected(false);
+                sessionQuality?.EndConnection();
                 if(trustedSession)releaseInput();
             }
         }
@@ -346,9 +372,11 @@ internal sealed class FrameServer : IAsyncDisposable
     {
         if(requestedFeatures is null)return [];
         var requested=requestedFeatures.ToHashSet(StringComparer.Ordinal);
-        var negotiated=new List<string>(2);
+        var negotiated=new List<string>(4);
         if(requested.Contains(RenderSubmittedFeature))negotiated.Add(RenderSubmittedFeature);
         if(requested.Contains(DecoderRefreshFeature))negotiated.Add(DecoderRefreshFeature);
+        if(requested.Contains(ReceiverFeedbackFeature))negotiated.Add(ReceiverFeedbackFeature);
+        if(requested.Contains(AdaptiveVideoFeature))negotiated.Add(AdaptiveVideoFeature);
         return [.. negotiated];
     }
 
@@ -358,7 +386,8 @@ internal sealed class FrameServer : IAsyncDisposable
     static bool IsFresh(DateTime? observedUtc,DateTime nowUtc)=>
         observedUtc is {} observed&&observed>nowUtc-TelemetryFreshnessWindow;
 
-    async Task ReadInputsAsync(Stream stream,bool renderSubmittedNegotiated,DecoderRefreshGate? decoderRefresh,CancellationToken ct)
+    async Task ReadInputsAsync(Stream stream,bool renderSubmittedNegotiated,DecoderRefreshGate? decoderRefresh,
+        bool receiverFeedbackNegotiated,CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
@@ -396,6 +425,54 @@ internal sealed class FrameServer : IAsyncDisposable
                 }
                 // This weaker evidence is deliberately separate from physical
                 // presentation; never fire FramePresented or increment its count.
+                continue;
+            }
+            if(packet.Type==0x16)
+            {
+                if(!receiverFeedbackNegotiated)
+                    throw new InvalidDataException("客户端未协商接收端反馈功能");
+                var report=JsonSerializer.Deserialize<ReceiverFeedbackAck>(packet.Payload,JsonOptions);
+                if(report is null||report.Kind!="receiver-feedback"||report.Sequence<1||report.DecoderEpoch<0||
+                    report.RecoveryEpoch<0||report.ReceivedVideoFrames<0||report.ReceivedVideoBytes<0||
+                    report.SubmittedFrames<0||report.PresentedFrames<0||report.PresentedFrames>report.SubmittedFrames||
+                    report.SubmittedFrames>report.ReceivedVideoFrames||report.QueueCapacity is <1 or >64||
+                    report.QueueDepth<0||report.QueueDepth>report.QueueCapacity||report.QueueHighWaterMark<0||
+                    report.QueueHighWaterMark>report.QueueCapacity||report.InputDroppedFrames<0||
+                    report.BackpressureTimeouts<0||report.OverflowEvents<0||
+                    report.OverflowDrops<0||report.ExpiredDrops<0||report.AwaitingKeyFrameDrops<0||
+                    report.RenderDrops<0||report.DecoderFallbacks<0)
+                    throw new InvalidDataException("无效的接收端反馈");
+                lock(statisticsLock)
+                {
+                    if(report.ReceivedVideoFrames>sessionFramesStarted)
+                        throw new InvalidDataException("接收端反馈超过本次连接发送的画面");
+                    if(receiverFeedback is {} prior)
+                    {
+                        if(report.Sequence<=prior.Sequence||report.DecoderEpoch<prior.DecoderEpoch||
+                            report.RecoveryEpoch<prior.RecoveryEpoch||report.ReceivedVideoFrames<prior.ReceivedVideoFrames||
+                            report.ReceivedVideoBytes<prior.ReceivedVideoBytes||report.SubmittedFrames<prior.SubmittedFrames||
+                            report.PresentedFrames<prior.PresentedFrames||report.DecoderFallbacks<prior.DecoderFallbacks||
+                            report.QueueHighWaterMark<prior.QueueHighWaterMark||
+                            report.InputDroppedFrames<prior.InputDroppedFrames||
+                            report.BackpressureTimeouts<prior.BackpressureTimeouts)
+                            throw new InvalidDataException("接收端反馈计数发生回退");
+                        if(report.DecoderEpoch==prior.DecoderEpoch&&
+                            (report.OverflowEvents<prior.OverflowEvents||report.OverflowDrops<prior.OverflowDrops||
+                             report.ExpiredDrops<prior.ExpiredDrops||
+                             report.AwaitingKeyFrameDrops<prior.AwaitingKeyFrameDrops||report.RenderDrops<prior.RenderDrops))
+                            throw new InvalidDataException("当前解码代次的接收端反馈计数发生回退");
+                    }
+                    var now=DateTime.UtcNow;
+                    receiverFeedback=new(report.Sequence,report.DecoderEpoch,report.RecoveryEpoch,
+                        report.ReceivedVideoFrames,report.ReceivedVideoBytes,report.SubmittedFrames,
+                        report.PresentedFrames,report.QueueDepth,report.QueueCapacity,report.QueueHighWaterMark,
+                        report.InputDroppedFrames,report.BackpressureTimeouts,report.OverflowEvents,
+                        report.OverflowDrops,report.ExpiredDrops,report.AwaitingKeyFrameDrops,report.RenderDrops,
+                        report.DecoderFallbacks,report.AwaitingKeyFrame,now);
+                    lastReceiverFeedbackUtc=now;
+                }
+                // Receiver feedback is an adaptive-control input only. It does
+                // not refresh submitted/presented evidence or the display lease.
                 continue;
             }
             if (packet.Type == 0x12)
@@ -507,10 +584,22 @@ internal sealed class FrameServer : IAsyncDisposable
     record Hello(int Protocol,string Token,string[]? Features=null);
     record SubmittedAck(string Evidence,long Frames,long PtsUs,int Width,int Height,double Fps=0,string? Decoder=null);
     record PresentedAck(string Kind, long Sequence, int Width, int Height,double Fps=0,string? Codec=null,string? Decoder=null,long DroppedFrames=0);
+    record ReceiverFeedbackAck(string Kind,long Sequence,long DecoderEpoch,long RecoveryEpoch,
+        long ReceivedVideoFrames,long ReceivedVideoBytes,long SubmittedFrames,long PresentedFrames,
+        int QueueDepth,int QueueCapacity,int QueueHighWaterMark,long InputDroppedFrames,
+        long BackpressureTimeouts,long OverflowEvents,long OverflowDrops,long ExpiredDrops,
+        long AwaitingKeyFrameDrops,long RenderDrops,long DecoderFallbacks,bool AwaitingKeyFrame);
 }
 
 internal record InputMessage(string Kind, double X, double Y, double Delta = 0);
-internal record VideoPacket(byte Type,byte[] Payload,bool IsFrame,bool? CapturePaused=null);
+internal record VideoPacket(byte Type,byte[] Payload,bool IsFrame,bool? CapturePaused=null,int? SourceFps=null);
+
+internal sealed record ReceiverFeedbackSnapshot(long Sequence,long DecoderEpoch,long RecoveryEpoch,
+    long ReceivedVideoFrames,long ReceivedVideoBytes,long SubmittedFrames,long PresentedFrames,
+    int QueueDepth,int QueueCapacity,int QueueHighWaterMark,long InputDroppedFrames,
+    long BackpressureTimeouts,long OverflowEvents,long OverflowDrops,long ExpiredDrops,
+    long AwaitingKeyFrameDrops,long RenderDrops,long DecoderFallbacks,bool AwaitingKeyFrame,
+    DateTime ReceivedUtc);
 
 internal enum DecoderRefreshRequestResult { Accepted, Duplicate, Coalesced, RateLimited }
 

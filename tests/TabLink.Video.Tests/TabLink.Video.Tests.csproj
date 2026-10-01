@@ -15,6 +15,7 @@
     <Compile Include="../../src/TabLink.Windows/FrameServer.cs" Link="FrameServer.cs" />
     <Compile Include="../../src/TabLink.Windows/NetworkSessionOptions.cs" Link="NetworkSessionOptions.cs" />
     <Compile Include="../../src/TabLink.Windows/VideoPipeline.cs" Link="VideoPipeline.cs" />
+    <Compile Include="../../src/TabLink.Windows/VideoQuality.cs" Link="VideoQuality.cs" />
     <Compile Include="../../src/TabLink.Windows/SelfTests.cs" Link="SelfTests.cs" />
     <ProjectReference Include="../../src/TabLink.Core/TabLink.Core.csproj" />
   </ItemGroup>

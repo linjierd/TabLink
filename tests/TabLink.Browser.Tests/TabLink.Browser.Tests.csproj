@@ -3,6 +3,7 @@
   <ItemGroup>
     <Compile Include="../../src/TabLink.Windows/Browser*.cs" Link="%(Filename)%(Extension)" />
     <Compile Include="../../src/TabLink.Windows/FrameServer.cs" Link="FrameServer.cs" />
+    <Compile Include="../../src/TabLink.Windows/VideoQuality.cs" Link="VideoQuality.cs" />
     <Compile Include="../../src/TabLink.Windows/NetworkSessionOptions.cs" Link="NetworkSessionOptions.cs" />
     <Compile Include="../../src/TabLink.Windows/InputDesktopAvailability.cs" Link="InputDesktopAvailability.cs" />
     <Compile Include="../../src/TabLink.Windows/SessionPresentationDeadline.cs" Link="SessionPresentationDeadline.cs" />

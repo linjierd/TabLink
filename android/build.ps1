@@ -86,6 +86,9 @@ try {
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\StreamingBrightnessPolicy.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\DecoderCandidateSelector.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\DecoderRefreshRequest.java'),
+        (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\KeyFrameRequestController.java'),
+        (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\PendingDecoderRefresh.java'),
+        (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\ReceiverFeedbackProgress.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\PairingLink.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\PinnedTls.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\ReleaseManifest.java'),
@@ -94,6 +97,9 @@ try {
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\QrCodeDecoder.java'),
         (Join-Path $projectDirectory 'tests\ProtocolSmokeTest.java'),
         (Join-Path $projectDirectory 'tests\VideoFrameQueueTest.java'),
+        (Join-Path $projectDirectory 'tests\KeyFrameRequestControllerTest.java'),
+        (Join-Path $projectDirectory 'tests\PendingDecoderRefreshTest.java'),
+        (Join-Path $projectDirectory 'tests\ReceiverFeedbackProgressTest.java'),
         (Join-Path $projectDirectory 'tests\RenderClockTest.java'),
         (Join-Path $projectDirectory 'tests\DecoderCandidateSelectorTest.java'),
         (Join-Path $projectDirectory 'tests\DisplayUiPolicyTest.java'),
@@ -127,6 +133,12 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Protocol or coordinate test failed.' }
     & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.VideoFrameQueueTest
     if ($LASTEXITCODE -ne 0) { throw 'Bounded video input queue test failed.' }
+    & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.KeyFrameRequestControllerTest
+    if ($LASTEXITCODE -ne 0) { throw 'Key-frame request limiter test failed.' }
+    & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.PendingDecoderRefreshTest
+    if ($LASTEXITCODE -ne 0) { throw 'Pending decoder refresh race test failed.' }
+    & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.ReceiverFeedbackProgressTest
+    if ($LASTEXITCODE -ne 0) { throw 'Receiver feedback test failed.' }
     & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.RenderClockTest
     if ($LASTEXITCODE -ne 0) { throw 'Bounded render clock test failed.' }
     & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.DecoderCandidateSelectorTest
@@ -156,7 +168,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Android build or lint failed.' }
     $artifactDirectory = Join-Path $projectDirectory 'artifacts'
     New-Item -ItemType Directory -Force -Path $artifactDirectory | Out-Null
-    $apk = Join-Path $artifactDirectory $(if ($ReleasePreview) { 'TabLink-android-0.8.2-preview.apk' } else { 'TabLink-android-0.8.2-debug.apk' })
+    $apk = Join-Path $artifactDirectory $(if ($ReleasePreview) { 'TabLink-android-0.8.3-preview.apk' } else { 'TabLink-android-0.8.3-debug.apk' })
     $builtApk = if ($ReleasePreview) { 'app\build\outputs\apk\release\app-release.apk' } else { 'app\build\outputs\apk\debug\app-debug.apk' }
     Copy-Item -LiteralPath (Join-Path $projectDirectory $builtApk) -Destination $apk -Force
     & (Join-Path $JavaHome 'bin\java.exe') -jar (Join-Path $AndroidSdk 'build-tools\35.0.0\lib\apksigner.jar') verify --verbose --min-sdk-version 23 $apk

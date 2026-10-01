@@ -64,6 +64,17 @@ static byte[] AccessUnit(long pts,byte type,bool includeSps=false,bool includePp
     return payload;
 }
 static byte[] Generation(long value){var bytes=new byte[8];BinaryPrimitives.WriteInt64BigEndian(bytes,value);return bytes;}
+static byte[] Feedback(long sequence=1,long decoderEpoch=1,long recoveryEpoch=0,long receivedVideoFrames=0,
+    long receivedVideoBytes=0,long submittedFrames=0,long presentedFrames=0,int queueDepth=0,int queueCapacity=12,
+    int queueHighWaterMark=0,long inputDroppedFrames=0,long backpressureTimeouts=0,
+    long overflowEvents=0,long overflowDrops=0,long expiredDrops=0,long awaitingKeyFrameDrops=0,
+    long renderDrops=0,long decoderFallbacks=0,bool awaitingKeyFrame=false)=>JsonSerializer.SerializeToUtf8Bytes(new
+    {
+        kind="receiver-feedback",sequence,decoderEpoch,recoveryEpoch,receivedVideoFrames,receivedVideoBytes,
+        submittedFrames,presentedFrames,queueDepth,queueCapacity,queueHighWaterMark,inputDroppedFrames,
+        backpressureTimeouts,overflowEvents,overflowDrops,expiredDrops,
+        awaitingKeyFrameDrops,renderDrops,decoderFallbacks,awaitingKeyFrame
+    });
 static string[] CheckNegotiationStatus((byte Type,byte[] Payload) packet,string reason)
 {
     Check(packet.Type==0x02,reason+": negotiation status did not precede media");
@@ -290,10 +301,13 @@ await using(var refreshServer=new FrameServer(RefreshVideo,_=>Interlocked.Increm
         await client.ConnectAsync(IPAddress.Loopback,refreshServer.ListeningPort,ct);
         var stream=client.GetStream();
         var endpoint=client.Client.LocalEndPoint;
-        await Hello(stream,refreshServer.Token,ct,[FrameServer.RenderSubmittedFeature,FrameServer.DecoderRefreshFeature,"unknown-refresh-v9"]);
+        await Hello(stream,refreshServer.Token,ct,[FrameServer.RenderSubmittedFeature,FrameServer.DecoderRefreshFeature,
+            FrameServer.ReceiverFeedbackFeature,FrameServer.AdaptiveVideoFeature,"unknown-refresh-v9"]);
         var status=await FrameServer.ReadPacketAsync(stream,8192,ct);
         Check(CheckNegotiationStatus(status,"decoder refresh HELLO").SequenceEqual(
-            [FrameServer.RenderSubmittedFeature,FrameServer.DecoderRefreshFeature]),"decoder refresh feature intersection or order changed");
+            [FrameServer.RenderSubmittedFeature,FrameServer.DecoderRefreshFeature,
+             FrameServer.ReceiverFeedbackFeature,FrameServer.AdaptiveVideoFeature]),
+            "receiver feedback/adaptive video feature intersection or order changed");
         await FrameServer.WritePacketAsync(stream,0x13,Profile(),ct);
         var config=await FrameServer.ReadPacketAsync(stream,8192,ct);
         Check(config.Type==0x20,"initial decoder configuration missing");
@@ -301,6 +315,17 @@ await using(var refreshServer=new FrameServer(RefreshVideo,_=>Interlocked.Increm
         var initial=await FrameServer.ReadPacketAsync(stream,FrameServer.MaxPacket,ct);
         Check(initial.Type==0x21,"initial IDR missing");
         await WaitFor(()=>refreshServer.FramesSent==1,ct);
+        await FrameServer.WritePacketAsync(stream,0x16,Feedback(sequence:1,decoderEpoch:1,recoveryEpoch:0,
+            receivedVideoFrames:1,receivedVideoBytes:initial.Payload.Length,queueDepth:1,
+            queueHighWaterMark:2,inputDroppedFrames:3,backpressureTimeouts:1),ct);
+        await WaitFor(()=>refreshServer.ReceiverFeedback?.Sequence==1,ct);
+        var feedback=refreshServer.ReceiverFeedback;
+        Check(feedback is {Sequence:1,DecoderEpoch:1,ReceivedVideoFrames:1,SubmittedFrames:0,PresentedFrames:0,
+                  QueueDepth:1,QueueCapacity:12,QueueHighWaterMark:2,InputDroppedFrames:3,
+                  BackpressureTimeouts:1}&&refreshServer.HasRecentReceiverFeedback&&
+              refreshServer.PresentedFrames==0&&refreshServer.LastPresentedUtc is null&&
+              refreshServer.SubmittedFrames==0&&refreshServer.LastSubmittedUtc is null,
+            "legal receiver feedback was not retained separately from submitted/presented health");
         await FrameServer.WritePacketAsync(stream,0x12,JsonSerializer.SerializeToUtf8Bytes(new{kind="frame-presented",sequence=1,width=1200,height=1920}),ct);
         await WaitFor(()=>refreshServer.PresentedFrames==1,ct);
         var presentedAt=refreshServer.LastPresentedUtc;
@@ -354,6 +379,52 @@ await using(var refreshServer=new FrameServer(RefreshVideo,_=>Interlocked.Increm
     }
     await WaitFor(()=>!refreshServer.ClientConnected,ct);
 
+    using(var legacyFeedback=new TcpClient())
+    {
+        await legacyFeedback.ConnectAsync(IPAddress.Loopback,refreshServer.ListeningPort,ct);
+        var stream=legacyFeedback.GetStream();await Hello(stream,refreshServer.Token,ct);
+        Check(CheckNegotiationStatus(await FrameServer.ReadPacketAsync(stream,8192,ct),"legacy feedback HELLO").Length==0,
+            "legacy peer received unsolicited feedback/adaptive features");
+        await ReadUntil(stream,0x20,ct);
+        await FrameServer.WritePacketAsync(stream,0x16,Feedback(),ct);
+        await Closed(stream,ct);
+    }
+    await WaitFor(()=>!refreshServer.ClientConnected,ct);
+
+    using(var structurallyInvalid=new TcpClient())
+    {
+        await structurallyInvalid.ConnectAsync(IPAddress.Loopback,refreshServer.ListeningPort,ct);
+        var stream=structurallyInvalid.GetStream();
+        await Hello(stream,refreshServer.Token,ct,[FrameServer.ReceiverFeedbackFeature,FrameServer.AdaptiveVideoFeature]);
+        Check(CheckNegotiationStatus(await FrameServer.ReadPacketAsync(stream,8192,ct),"invalid feedback HELLO")
+            .SequenceEqual([FrameServer.ReceiverFeedbackFeature,FrameServer.AdaptiveVideoFeature]),
+            "feedback/adaptive-only feature negotiation changed");
+        await ReadUntil(stream,0x20,ct);
+        await FrameServer.WritePacketAsync(stream,0x16,Feedback(queueHighWaterMark:13,queueCapacity:12),ct);
+        await Closed(stream,ct);
+    }
+    await WaitFor(()=>!refreshServer.ClientConnected,ct);
+
+    using(var regressingFeedback=new TcpClient())
+    {
+        await regressingFeedback.ConnectAsync(IPAddress.Loopback,refreshServer.ListeningPort,ct);
+        var stream=regressingFeedback.GetStream();
+        await Hello(stream,refreshServer.Token,ct,[FrameServer.ReceiverFeedbackFeature,FrameServer.AdaptiveVideoFeature]);
+        Check(CheckNegotiationStatus(await FrameServer.ReadPacketAsync(stream,8192,ct),"regressing feedback HELLO")
+            .SequenceEqual([FrameServer.ReceiverFeedbackFeature,FrameServer.AdaptiveVideoFeature]),
+            "regression test did not negotiate feedback/adaptive features");
+        await ReadUntil(stream,0x20,ct);
+        await FrameServer.WritePacketAsync(stream,0x16,Feedback(sequence:1,decoderEpoch:2,recoveryEpoch:1,
+            queueHighWaterMark:6,inputDroppedFrames:5,backpressureTimeouts:3,
+            overflowEvents:5,overflowDrops:5),ct);
+        await WaitFor(()=>refreshServer.ReceiverFeedback?.Sequence==1,ct);
+        await FrameServer.WritePacketAsync(stream,0x16,Feedback(sequence:2,decoderEpoch:2,recoveryEpoch:1,
+            queueHighWaterMark:5,inputDroppedFrames:4,backpressureTimeouts:2,
+            overflowEvents:5,overflowDrops:5),ct);
+        await Closed(stream,ct);
+    }
+    await WaitFor(()=>!refreshServer.ClientConnected,ct);
+
     foreach(var invalidPayload in new[]{new byte[7],Generation(0),Generation(-1)})
     {
         using var invalid=new TcpClient();
@@ -370,6 +441,8 @@ await using(var refreshServer=new FrameServer(RefreshVideo,_=>Interlocked.Increm
 Console.WriteLine("PASS negotiated 0x15 keeps one authenticated TCP/media source, suppresses P frames and sends SPS/PPS+fresh IDR without synthetic ACK evidence");
 Console.WriteLine("PASS skipped P frames do not enter frame counters or recent-PTS evidence");
 Console.WriteLine("PASS legacy clients negotiate no decoder feature; unnegotiated, non-8-byte, zero and negative decoder refresh requests fail closed");
+Console.WriteLine("PASS receiver-feedback-v1 and adaptive-video-v1 negotiate explicitly; legal 0x16 is retained without advancing presentation health");
+Console.WriteLine("PASS unnegotiated, structurally invalid and regressing queue/drop/backpressure 0x16 feedback fail closed");
 
 var harmonyOptions=new NetworkSessionOptions(IPAddress.Loopback,FreePort());
 async IAsyncEnumerable<VideoPacket> HarmonyVideo([EnumeratorCancellation]CancellationToken token)

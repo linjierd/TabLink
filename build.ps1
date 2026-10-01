@@ -30,7 +30,7 @@ if ($PSBoundParameters.ContainsKey('OutputDirectory')) {
 else {
     $publishRoot = Join-Path $projectRoot 'dist\TabLink'
 }
-$apkPath = Join-Path $projectRoot $(if ($PublicRelease) { 'android\artifacts\TabLink-android-0.8.2-preview.apk' } else { 'android\artifacts\TabLink-android-0.8.2-debug.apk' })
+$apkPath = Join-Path $projectRoot $(if ($PublicRelease) { 'android\artifacts\TabLink-android-0.8.3-preview.apk' } else { 'android\artifacts\TabLink-android-0.8.3-debug.apk' })
 $ffmpegRoot = Join-Path $projectRoot 'third_party\ffmpeg-tablink'
 $ffmpegBinary = Join-Path $ffmpegRoot 'bin\ffmpeg.exe'
 $ffmpegSourceBundle = Join-Path $ffmpegRoot 'source-bundle.tar.gz'
@@ -301,8 +301,8 @@ Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md') -Destination $publis
 Copy-Item -LiteralPath (Join-Path $projectRoot 'AUTHORS.md') -Destination $publishRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot 'LICENSE') -Destination $publishRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot 'THIRD_PARTY_NOTICES.md') -Destination $publishRoot
-Copy-Item -LiteralPath (Join-Path $projectRoot 'RELEASE-0.8.2.md') -Destination $publishRoot
-Copy-Item -LiteralPath (Join-Path $projectRoot 'VERIFICATION-0.8.2.md') -Destination $publishRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot 'RELEASE-0.8.3.md') -Destination $publishRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot 'VERIFICATION-0.8.3.md') -Destination $publishRoot
 if ($PublicRelease) {
     Copy-Item -LiteralPath (Join-Path $projectRoot 'PUBLIC-RELEASE.md') -Destination $publishRoot
     Copy-Item -LiteralPath (Join-Path $projectRoot 'ADB-SETUP.md') -Destination $publishRoot

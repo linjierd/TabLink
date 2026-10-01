@@ -25,6 +25,7 @@ internal sealed class H264Encoder : IAsyncDisposable
     readonly H264CapturePreference capturePreference;
     readonly int syntheticFrames;
     readonly bool browserCompatible;
+    readonly VideoEncodingPlan? encodingPlan;
     readonly object lifecycle = new();
     readonly object errorLock = new();
     readonly StringBuilder errorTail = new();
@@ -47,8 +48,9 @@ internal sealed class H264Encoder : IAsyncDisposable
 
     internal H264Encoder(VirtualDisplayInfo display, int width, int height, int fps, string ffmpegPath,
         H264EncoderKind kind = H264EncoderKind.Nvenc,
-        H264CapturePreference capturePreference = H264CapturePreference.GdiGrab,DisplayLease? identity=null,bool browserCompatible=false)
-        : this(width, height, fps, ffmpegPath, kind, 0,browserCompatible)
+        H264CapturePreference capturePreference = H264CapturePreference.GdiGrab,DisplayLease? identity=null,
+        bool browserCompatible=false,VideoEncodingPlan? encodingPlan=null)
+        : this(width, height, fps, ffmpegPath, kind, 0,browserCompatible,encodingPlan)
     {
         ArgumentNullException.ThrowIfNull(display);
         if (!display.IsTabLinkCompatible || display.IsPrimary || display.Bounds.Width < 1 || display.Bounds.Height < 1)
@@ -58,7 +60,8 @@ internal sealed class H264Encoder : IAsyncDisposable
         this.capturePreference = capturePreference;
     }
 
-    H264Encoder(int width, int height, int fps, string ffmpegPath, H264EncoderKind kind, int syntheticFrames,bool browserCompatible=false)
+    H264Encoder(int width, int height, int fps, string ffmpegPath, H264EncoderKind kind, int syntheticFrames,
+        bool browserCompatible=false,VideoEncodingPlan? encodingPlan=null)
     {
         if (width is < 64 or > 8192 || height is < 64 or > 8192 || (width & 1) != 0 || (height & 1) != 0)
             throw new ArgumentOutOfRangeException(nameof(width), "H.264 尺寸必须是 64–8192 范围的偶数");
@@ -69,6 +72,15 @@ internal sealed class H264Encoder : IAsyncDisposable
         this.kind = kind;
         this.syntheticFrames = syntheticFrames;
         this.browserCompatible=browserCompatible;
+        this.encodingPlan=encodingPlan;
+        if(encodingPlan is not null)
+        {
+            if(encodingPlan.Width!=width||encodingPlan.Height!=height||encodingPlan.Fps!=fps||
+                encodingPlan.BitrateKbps is <1000 or >100000||encodingPlan.BufferKbits is <128 or >16000||
+                encodingPlan.GopFrames is <1 or >1000||encodingPlan.Generation<1)
+                throw new ArgumentOutOfRangeException(nameof(encodingPlan),"编码计划参数无效。");
+            if(browserCompatible)throw new ArgumentException("浏览器编码暂不接受原生自适应计划。",nameof(encodingPlan));
+        }
         if(browserCompatible&&(Math.Max(width,height)>1920||Math.Min(width,height)>1080||fps>60))
             throw new ArgumentOutOfRangeException(nameof(width),"浏览器编码上限为 1080p / 60 fps。");
     }
@@ -76,8 +88,9 @@ internal sealed class H264Encoder : IAsyncDisposable
     // This finite source benchmarks the complete process/parser path without
     // reading any desktop pixel or changing display settings.
     internal static H264Encoder CreateSynthetic(int width, int height, int fps, string ffmpegPath,
-        H264EncoderKind kind = H264EncoderKind.Nvenc, int frameCount = 300,bool browserCompatible=false) =>
-        new(width, height, fps, ffmpegPath, kind, Math.Clamp(frameCount, 1, 10000),browserCompatible);
+        H264EncoderKind kind = H264EncoderKind.Nvenc, int frameCount = 300,bool browserCompatible=false,
+        VideoEncodingPlan? encodingPlan=null) =>
+        new(width, height, fps, ffmpegPath, kind, Math.Clamp(frameCount, 1, 10000),browserCompatible,encodingPlan);
 
     internal void Start()
     {
@@ -222,17 +235,23 @@ internal sealed class H264Encoder : IAsyncDisposable
                 arguments.AddRange(["-vf", $"scale={N(Width)}:{N(Height)}:flags=fast_bilinear"]);
         }
         arguments.AddRange(["-an", "-sn", "-dn", "-c:v", CodecName]);
-        var bitrate=browserCompatible?(Width*Height>1280*720?"8M":"4M"):"30M";
+        var bitrate=encodingPlan is null
+            ?browserCompatible?(Width*Height>1280*720?"8M":"4M"):"30M"
+            :N(encodingPlan.BitrateKbps)+"k";
+        var buffer=encodingPlan is null?"1M":N(encodingPlan.BufferKbits)+"k";
         if (kind == H264EncoderKind.Nvenc)
             arguments.AddRange(["-preset", "p1", "-tune", "ull", "-rc", "cbr", "-b:v", bitrate, "-maxrate", bitrate,
-                "-bufsize", "1M", "-rc-lookahead", "0", "-zerolatency", "1", "-delay", "0",
+                "-bufsize", buffer, "-rc-lookahead", "0", "-zerolatency", "1", "-delay", "0",
                 "-profile:v", browserCompatible?"baseline":"high", "-aud", "1", "-forced-idr", "1"]);
-        else
+        else if(encodingPlan is null)
             arguments.AddRange(["-preset", "ultrafast", "-tune", "zerolatency", "-crf", "20", "-maxrate", "30M",
                 "-bufsize", "2M", "-x264-params", "aud=1:repeat-headers=1:scenecut=0"]);
+        else
+            arguments.AddRange(["-preset", "ultrafast", "-tune", "zerolatency", "-b:v", bitrate, "-maxrate", bitrate,
+                "-bufsize", buffer, "-x264-params", "aud=1:repeat-headers=1:scenecut=0"]);
         if(browserCompatible)arguments.AddRange(["-profile:v","baseline","-level:v","4.2"]);
         if (dxgiTarget is null) arguments.AddRange(["-pix_fmt", "yuv420p"]);
-        arguments.AddRange(["-bf", "0", "-g", N(Fps), "-fps_mode", "passthrough",
+        arguments.AddRange(["-bf", "0", "-g", N(encodingPlan?.GopFrames??Fps), "-fps_mode", "passthrough",
             "-flush_packets", "1", "-f", "h264", "pipe:1"]);
         return arguments;
     }

@@ -7,6 +7,7 @@ internal sealed partial class MainForm : Form
 {
     readonly Color ink=Color.FromArgb(30,43,65), muted=Color.FromArgb(90,107,128), accent=Color.FromArgb(31,105,210);
     readonly SettingsStore store=new(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"TabLink","settings.json"));
+    readonly VideoQualityPreferences qualityPreferences=new(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"TabLink","video-settings.json"));
     DevicePolicySettings settings = new();
     DevicePolicy policy=null!;
     AdbClient? adb;
@@ -25,6 +26,8 @@ internal sealed partial class MainForm : Form
     TabletDisplayProfile? lastRequestedProfile;
     ActiveDisplayPower? activePower;
     TabletDisplayProfile? tabletProfile;
+    AdaptiveVideoSession? videoQuality;
+    VideoQualityPreset selectedQuality=VideoQualityPreset.Automatic;
     bool adaptingDisplay;
     long previousPresented;
     DateTime previousSampleUtc;
@@ -52,6 +55,7 @@ internal sealed partial class MainForm : Form
     readonly TextBox log=new(){Multiline=true,ReadOnly=true,Dock=DockStyle.Fill,ScrollBars=ScrollBars.Vertical,BorderStyle=BorderStyle.None};
     readonly TabControl mainTabs=new(){Dock=DockStyle.Fill,Multiline=false,Padding=new Point(16,7),Margin=new Padding(0,8,0,6)};
     readonly ComboBox connectionMode=new(){DropDownStyle=ComboBoxStyle.DropDownList,Width=280};
+    readonly ComboBox qualityMode=new(){DropDownStyle=ComboBoxStyle.DropDownList,Width=150};
     readonly Label connectionModeHint=new(){AutoSize=true,ForeColor=Color.FromArgb(90,107,128),MaximumSize=new Size(820,0)};
     readonly Panel connectionHost=new(){Dock=DockStyle.Fill,BackColor=Color.White};
     Control? clientConnectionPanel,browserConnectionPanel,usbDebugConnectionPanel;
@@ -68,6 +72,7 @@ internal sealed partial class MainForm : Form
         this.diagnosticPairing=diagnosticPairing;
         Text="TabLink · 平板副屏"; AutoScaleMode=AutoScaleMode.Dpi; Size=new Size(960,680); MinimumSize=new Size(760,640);
         StartPosition=FormStartPosition.CenterScreen; Font=new Font("Microsoft YaHei UI",10); BackColor=Color.FromArgb(244,247,251); ForeColor=ink;
+        if(!verification)selectedQuality=qualityPreferences.Load();
         BuildUi();
         var showWindow=new ToolStripMenuItem("打开主窗口");
         var exit=new ToolStripMenuItem("退出 TabLink");
@@ -196,6 +201,11 @@ internal sealed partial class MainForm : Form
         var modeRow=new FlowLayoutPanel{AutoSize=true,WrapContents=true,Margin=Padding.Empty};
         modeRow.Controls.Add(new Label{Text="连接方式",AutoSize=true,Font=new Font("Microsoft YaHei UI",10,FontStyle.Bold),Margin=new Padding(0,7,14,0)});
         connectionMode.Items.AddRange(["TabLink 客户端（推荐）","浏览器接入","USB 调试（兼容）"]);modeRow.Controls.Add(connectionMode);
+        modeRow.Controls.Add(new Label{Text="画质",AutoSize=true,Font=new Font("Microsoft YaHei UI",10,FontStyle.Bold),Margin=new Padding(22,7,10,0)});
+        qualityMode.Items.AddRange(Enum.GetValues<VideoQualityPreset>().Select(value=>(object)new QualityChoice(value)).ToArray());
+        qualityMode.SelectedItem=qualityMode.Items.OfType<QualityChoice>().First(item=>item.Preset==selectedQuality);
+        qualityMode.SelectedIndexChanged+=(_,_)=>ChangeVideoQuality();
+        modeRow.Controls.Add(qualityMode);
         touch.Margin=new Padding(0,8,0,8);
         modeHeader.Controls.Add(modeRow);modeHeader.Controls.Add(connectionModeHint);modeHeader.Controls.Add(touch);
         connectionLayout.Controls.Add(modeHeader,0,0);connectionLayout.Controls.Add(connectionHost,0,1);connectionPage.Controls.Add(connectionLayout);
@@ -269,7 +279,38 @@ internal sealed partial class MainForm : Form
             metrics.Text=connectionMode.SelectedIndex switch{1=>"本地 HTTPS + WebRTC · 单设备",2=>"兼容连接 · 按需启用唯一副屏",_=>"本地加密连接 · 无需 USB 调试"};
         }
         if(selected is not null){selected.Visible=true;selected.BringToFront();}
+        UpdateButtons();
     }
+
+    void ChangeVideoQuality()
+    {
+        if(qualityMode.SelectedItem is not QualityChoice choice)return;
+        selectedQuality=choice.Preset;
+        try{qualityPreferences.Save(selectedQuality);}
+        catch(Exception ex) when(ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {Log("画质偏好暂时无法保存："+ex.Message);}
+        if(videoQuality is null)
+        {
+            Log("画质已设置为“"+VideoQualitySessionName(selectedQuality)+"”，将在下一次原生客户端连接时使用。");
+            return;
+        }
+        var changed=videoQuality.SetPreset(selectedQuality,DateTime.UtcNow);
+        var snapshot=videoQuality.Snapshot();
+        if(changed)
+            SetStatus($"正在切换到{VideoQualitySessionName(selectedQuality)}：保持连接和唯一副屏，仅重建编码器");
+        else if(!snapshot.RuntimeChangesEnabled)
+            SetStatus("画质偏好已保存；当前客户端不支持同连接切换，将在下次连接生效");
+    }
+
+    static string VideoQualitySessionName(VideoQualityPreset value)=>VideoQualitySessionNameCore(value);
+    static string VideoQualitySessionNameCore(VideoQualityPreset value)=>value switch
+    {
+        VideoQualityPreset.Automatic=>"自动画质",
+        VideoQualityPreset.LowLatency=>"低延迟",
+        VideoQualityPreset.Balanced=>"均衡画质",
+        VideoQualityPreset.HighQuality=>"高清晰",
+        _=>VideoQualityPreset.Automatic.ToString()
+    };
     static void SyncNetworkSelection(ComboBox source,ComboBox destination)
     {
         if(source.SelectedItem is not NetworkInterfaceChoice selected)return;
@@ -365,7 +406,10 @@ internal sealed partial class MainForm : Form
             capture=new DesktopCapture(current,identity:captureIdentity);
             MarkHealthPipelineStarting("正在启动桌面捕获与 H.264 编码器");
             var profile=tabletProfile;
-            server=new FrameServer(ct=>VideoPipeline.StreamAsync(current,profile,ct,Log,captureIdentity),touch.Checked?capture.Input:null,capture.ReleaseInput);
+            var quality=new AdaptiveVideoSession(profile,selectedQuality,VideoTransportKind.Usb);
+            videoQuality=quality;
+            server=new FrameServer(ct=>VideoPipeline.StreamAsync(current,profile,ct,Log,captureIdentity,quality:quality),
+                touch.Checked?capture.Input:null,capture.ReleaseInput,quality:quality);
             var newServer=server;
             server.DisplayProfileChanged+=p=>{if(!IsDisposed)BeginInvoke(async()=>await AdaptDisplayAsync(newServer,p));};
             sessionStartedUtc=DateTime.UtcNow;
@@ -504,7 +548,7 @@ internal sealed partial class MainForm : Form
         displayGuard=null;
         primaryReservation=null;primaryTargetKey=null;
         activePower=null;
-        networkFirewall=null;networkChoice=null;networkDisplay=null;tabletProfile=null;ClearPairing();
+        networkFirewall=null;networkChoice=null;networkDisplay=null;tabletProfile=null;videoQuality=null;ClearPairing();
         welcome?.Close();welcome=null;
         if(running is null&&ownedCapture is null&&ownedApproval is null&&ownedGuard is null&&ownedFirewall is null)
         {
@@ -613,9 +657,27 @@ internal sealed partial class MainForm : Form
                 var sample=DateTime.UtcNow;var delta=server.PresentedFrames-previousPresented;
                 var measuredFps=delta<0?0:delta/Math.Max(0.001,(sample-previousSampleUtc).TotalSeconds);
                 previousPresented=server.PresentedFrames;previousSampleUtc=sample;
-                var progressText=capturePaused?"画面暂停 · 会话保留":server.HasRecentPresentation?"设备已实际显示":server.HasRecentSubmission?"解码提交正常 · 呈现待验证":server.FramesSent>0?"电脑已发送 · 等待解码":"等待画面";
-                metrics.Text=$"{progressText} · {tabletProfile?.Width} × {tabletProfile?.Height} · 屏幕 {server.ClientDisplayProfile?.RefreshRate??tabletProfile?.RefreshRate:F0} / 目标 {tabletProfile?.RequestedRefreshRate} Hz · 提交 {server.ClientSubmittedFps:F1} / 呈现 {server.ClientPresentedFps:F1} 帧/秒";
-                Diagnostics.Save("session-health.json",()=>new{timestamp=DateTimeOffset.Now,pid=Environment.ProcessId,serial=approved?.Serial,transport=networkChoice is null?"ADB":"TLS",networkInterface=networkChoice?.InterfaceAlias,receiving,capturePaused,inputDesktop,resumeDeadlineUtc,windowVisible=Visible,measuredPresentedFps=measuredFps,server.ClientSubmittedFps,server.ClientPresentedFps,server.ClientDecoder,targetProfile=tabletProfile,clientProfile=server.ClientDisplayProfile,server.FramesSent,server.PresentedFrames,server.PresentedWidth,server.PresentedHeight,server.LastPresentedUtc,server.SubmittedFrames,server.LastSubmittedUtc,server.HasRecentSubmission,server.HasRecentPresentation,sendPerformance=server.SendPerformance,displays=VirtualDisplayManager.GetDisplays()},Log);
+                var progressText=capturePaused?"画面暂停 · 会话保留":server.HasRecentPresentation?"设备呈现回调正常":server.HasRecentSubmission?"解码提交正常 · 呈现待验证":server.FramesSent>0?"电脑已发送 · 等待解码":"等待画面";
+                var sendPerformance=server.SendPerformance;
+                var feedback=server.ReceiverFeedback;
+                VideoQualitySnapshot? qualitySnapshot=null;
+                if(videoQuality is {} activeQuality)
+                {
+                    qualitySnapshot=activeQuality.Observe(new(sendPerformance.ConnectionId,now,capturePaused,
+                        sendPerformance.CompletedFrames,sendPerformance.PayloadBytesWritten,
+                        sendPerformance.PacketWrite.Count,sendPerformance.PacketWrite.TotalMs,
+                        sendPerformance.PacketWrite.SlowCount,server.HasRecentReceiverFeedback,
+                        feedback?.Sequence??0,feedback?.ReceivedVideoFrames??0,feedback?.SubmittedFrames??0,
+                        feedback?.PresentedFrames??0,feedback?.DecoderEpoch??0,feedback?.QueueDepth??0,
+                        feedback?.QueueCapacity??1,feedback?.QueueHighWaterMark??0,
+                        feedback?.InputDroppedFrames??0,feedback?.BackpressureTimeouts??0,
+                        feedback?.OverflowDrops??0,feedback?.ExpiredDrops??0,
+                        feedback?.AwaitingKeyFrameDrops??0,feedback?.RenderDrops??0,
+                        feedback?.AwaitingKeyFrame??false));
+                }
+                var qualityText=qualitySnapshot is null?"":$" · {VideoQualitySessionName(qualitySnapshot.Preset)} · 目标 {qualitySnapshot.Plan.BitrateKbps/1000d:F1} Mbps";
+                metrics.Text=$"{progressText} · {tabletProfile?.Width} × {tabletProfile?.Height} · 屏幕 {server.ClientDisplayProfile?.RefreshRate??tabletProfile?.RefreshRate:F0} / 目标 {tabletProfile?.RequestedRefreshRate} Hz · 提交 {server.ClientSubmittedFps:F1} / 呈现 {server.ClientPresentedFps:F1} 帧/秒{qualityText}";
+                Diagnostics.Save("session-health.json",()=>new{timestamp=DateTimeOffset.Now,pid=Environment.ProcessId,serial=approved?.Serial,transport=networkChoice is null?"ADB":"TLS",networkInterface=networkChoice?.InterfaceAlias,receiving,capturePaused,inputDesktop,resumeDeadlineUtc,windowVisible=Visible,measuredPresentedFps=measuredFps,server.ClientSubmittedFps,server.ClientPresentedFps,server.ClientDecoder,targetProfile=tabletProfile,clientProfile=server.ClientDisplayProfile,server.FramesSent,server.PresentedFrames,server.PresentedWidth,server.PresentedHeight,server.LastPresentedUtc,server.SubmittedFrames,server.LastSubmittedUtc,server.HasRecentSubmission,server.HasRecentPresentation,server.HasRecentReceiverFeedback,receiverFeedback=feedback,videoQuality=qualitySnapshot,sendPerformance,displays=VirtualDisplayManager.GetDisplays()},Log);
                 RefreshPrimaryConnectionHealth(server);
             }
         }
@@ -674,6 +736,8 @@ internal sealed partial class MainForm : Form
     {
         var idle=!busy&&!stopping&&!closing&&!HasAnySessions&&settingsValid;
         connectionMode.Enabled=!busy&&!stopping&&!closing&&!HasAnySessions;
+        qualityMode.Enabled=!busy&&!stopping&&!closing&&connectionMode.SelectedIndex!=1&&browserHost is null&&
+            !additionalSessions.Any(session=>!session.IsStopped);
         refresh.Enabled=idle;chooseAdb.Enabled=idle;connect.Enabled=idle&&adb is not null;installApk.Enabled=idle&&adb is not null;
         devices.Enabled=idle;displays.Enabled=idle;touch.Enabled=idle;stop.Enabled=!busy&&!stopping&&server is not null;
         trayStop.Enabled=!closing&&HasAnySessions;
@@ -687,4 +751,13 @@ internal sealed partial class MainForm : Form
     sealed record DeviceChoice(AdbDevice Device,DevicePolicyDecision Decision){public override string ToString()=>$"{Device.Model?.Replace('_',' ')??"Android"} · {Device.Serial}  {(Decision.Allowed?"USB 已验证":"[已阻止] "+Decision.Reason)}";}
     sealed record DisplayChoice(VirtualDisplayInfo Info){public override string ToString()=>$"{Info.FriendlyName} · {Info.Bounds.Width} × {Info.Bounds.Height} · {Info.DeviceName}";}
     sealed record RuleChoice(DeviceExclusionRule Rule){public override string ToString()=>$"{Rule.Label??"排除设备"}     {(Rule.Serial is null?"":"序列号 "+Rule.Serial)}  {(Rule.Vid is null?"":"VID:PID "+Rule.Vid+":"+Rule.Pid)}";}
+    sealed record QualityChoice(VideoQualityPreset Preset){public override string ToString()=>VideoQualityPresetDisplay(Preset);}
+    static string VideoQualityPresetDisplay(VideoQualityPreset value)=>value switch
+    {
+        VideoQualityPreset.Automatic=>"自动",
+        VideoQualityPreset.LowLatency=>"低延迟",
+        VideoQualityPreset.Balanced=>"均衡",
+        VideoQualityPreset.HighQuality=>"高清晰",
+        _=>value.ToString()
+    };
 }

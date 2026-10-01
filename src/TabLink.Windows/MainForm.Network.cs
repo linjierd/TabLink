@@ -179,6 +179,15 @@ internal sealed partial class MainForm
                 MarkHealthDisplayReady(networkDisplay);
             }
             tabletProfile=profile;
+            var quality=new AdaptiveVideoSession(profile,selectedQuality,networkChoice?.Kind switch
+            {
+                NetworkInterfaceKind.WiFi=>VideoTransportKind.WiFi,
+                NetworkInterfaceKind.Usb=>VideoTransportKind.Usb,
+                NetworkInterfaceKind.Ethernet=>VideoTransportKind.Ethernet,
+                _=>VideoTransportKind.Unknown
+            });
+            source.AttachQualitySession(quality);
+            videoQuality=quality;
             MarkHealthPipelineStarting("正在启动桌面捕获与 H.264 编码器");
             sessionStartedUtc=DateTime.UtcNow;presentationDeadline.Reset(sessionStartedUtc);
             previousPresented=0;previousSampleUtc=sessionStartedUtc;
@@ -203,7 +212,8 @@ internal sealed partial class MainForm
         var display=networkDisplay??throw new IOException("网络副屏尚未准备好。");
         var profile=tabletProfile??throw new IOException("尚未收到平板屏幕参数。");
         var lease=displayGuard?.Lease??throw new IOException("副屏保护组件未启动。");
-        return VideoPipeline.StreamAsync(display,profile,ct,Log,lease);
+        var quality=videoQuality??throw new IOException("本次连接的画质控制器尚未准备好。");
+        return VideoPipeline.StreamAsync(display,profile,ct,Log,lease,quality:quality);
     }
 
     async Task<bool> IsNetworkAvailableAsync()

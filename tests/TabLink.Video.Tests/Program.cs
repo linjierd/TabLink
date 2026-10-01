@@ -105,6 +105,7 @@ if (args.Length == 2 && args[0] == "--hold-owned-encoder")
 var results = new List<string>();
 void Check(bool value, string message) { if (!value) throw new InvalidOperationException(message); }
 void Pass(string message) => results.Add("PASS " + message);
+foreach (var result in VideoQualityTests.Run()) Pass(result);
 byte[] Join(params byte[][] chunks) => chunks.SelectMany(x => x).ToArray();
 byte[] aud = [0,0,0,1,9,0xf0], sps = [0,0,0,1,0x67,0x42,0,0x1f], pps = [0,0,1,0x68,0xab,0xcd];
 byte[] idr = [0,0,1,0x65,0x88,0,0,3,1,0x90], predicted = [0,0,0,1,0x41,0x88,0x90];

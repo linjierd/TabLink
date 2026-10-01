@@ -20,7 +20,8 @@ internal static class VideoPipeline
     }
 
     internal static async IAsyncEnumerable<VideoPacket> StreamAsync(VirtualDisplayInfo display,TabletDisplayProfile profile,
-        [EnumeratorCancellation] CancellationToken cancellationToken,Action<string>? status=null,DisplayLease? identity=null,bool browserCompatible=false)
+        [EnumeratorCancellation] CancellationToken cancellationToken,Action<string>? status=null,DisplayLease? identity=null,
+        bool browserCompatible=false,AdaptiveVideoSession? quality=null)
     {
         var lease=identity??VirtualDisplayManager.CaptureLease(display);
         var current=display;
@@ -35,22 +36,50 @@ internal static class VideoPipeline
                 throw new CaptureUnavailableException("虚拟副屏位置已移动，正在恢复同一副屏画面。");
             }
         }
-        long sequence=0;
+        var timestamps=new MediaTimestampClock();
         await foreach(var packet in CaptureRecovery.StreamAsync(
-            ct=>EncodeAsync(current,profile,ct,status,lease,browserCompatible),ValidateIdentity,InputDesktopAvailability.Query,cancellationToken))
+            ct=>EncodeAdaptiveAsync(current,profile,ct,status,lease,browserCompatible,quality),
+            ValidateIdentity,InputDesktopAvailability.Query,cancellationToken))
         {
             if(packet.IsFrame)
-                BinaryPrimitives.WriteInt64BigEndian(packet.Payload,checked(sequence++*1_000_000L/profile.RequestedRefreshRate));
+                BinaryPrimitives.WriteInt64BigEndian(packet.Payload,timestamps.Next(packet.SourceFps??profile.RequestedRefreshRate));
             if(packet.CapturePaused is bool paused)status?.Invoke(paused?"Windows 桌面切换，USB 连接保持，等待画面恢复。":"USB 副屏画面已恢复。");
             yield return packet;
         }
     }
 
-    static async IAsyncEnumerable<VideoPacket> EncodeAsync(VirtualDisplayInfo display,TabletDisplayProfile profile,
-        [EnumeratorCancellation] CancellationToken cancellationToken,Action<string>? status,DisplayLease identity,bool browserCompatible)
+    static async IAsyncEnumerable<VideoPacket> EncodeAdaptiveAsync(VirtualDisplayInfo display,TabletDisplayProfile profile,
+        [EnumeratorCancellation] CancellationToken cancellationToken,Action<string>? status,DisplayLease identity,
+        bool browserCompatible,AdaptiveVideoSession? quality)
     {
-        await using var encoder=new H264Encoder(display,profile.Width,profile.Height,profile.RequestedRefreshRate,FindFfmpeg(),
-            H264EncoderKind.Nvenc,H264CapturePreference.PreferDesktopDuplication,identity,browserCompatible);
+        while(true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var plan=quality?.CurrentPlan;
+            var changed=false;
+            await foreach(var packet in EncodeAsync(display,profile,cancellationToken,status,identity,browserCompatible,plan))
+            {
+                yield return packet;
+                if(plan is not null&&quality!.CurrentPlan.Generation!=plan.Generation)
+                {
+                    changed=true;
+                    status?.Invoke($"画质计划已更新：{quality.CurrentPlan.BitrateKbps/1000d:F1} Mbps；保持同一连接与唯一副屏，重建本次编码器。");
+                    break;
+                }
+            }
+            if(!changed)yield break;
+        }
+    }
+
+    static async IAsyncEnumerable<VideoPacket> EncodeAsync(VirtualDisplayInfo display,TabletDisplayProfile profile,
+        [EnumeratorCancellation] CancellationToken cancellationToken,Action<string>? status,DisplayLease identity,
+        bool browserCompatible,VideoEncodingPlan? plan)
+    {
+        var width=plan?.Width??profile.Width;
+        var height=plan?.Height??profile.Height;
+        var fps=plan?.Fps??profile.RequestedRefreshRate;
+        await using var encoder=new H264Encoder(display,width,height,fps,FindFfmpeg(),
+            H264EncoderKind.Nvenc,H264CapturePreference.PreferDesktopDuplication,identity,browserCompatible,plan);
         if(status is not null)encoder.Status+=status;
         encoder.Start();
         var configured=false;
@@ -59,12 +88,13 @@ internal static class VideoPipeline
             if(!configured||unit.ConfigurationChanged)
             {
                 var config=JsonSerializer.SerializeToUtf8Bytes(new{codec="video/avc",width=encoder.Width,height=encoder.Height,fps=encoder.Fps,
+                    bitrateKbps=plan?.BitrateKbps,generation=plan?.Generation,
                     csd0=Convert.ToBase64String(unit.Sps),csd1=Convert.ToBase64String(unit.Pps)});
                 yield return new(0x20,config,false);configured=true;
             }
             var payload=new byte[unit.Data.Length+8];
             BinaryPrimitives.WriteInt64BigEndian(payload,unit.PtsUs);unit.Data.CopyTo(payload,8);
-            yield return new(0x21,payload,true);
+            yield return new(0x21,payload,true,SourceFps:encoder.Fps);
         }
     }
 }

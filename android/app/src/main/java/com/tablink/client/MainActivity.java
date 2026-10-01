@@ -102,7 +102,10 @@ public final class MainActivity extends Activity {
         @Override public void run() {
             if (!activityStarted) return;
             Session current = session;
-            if (current != null) updatePerformance(current);
+            if (current != null) {
+                updatePerformance(current);
+                current.sendReceiverFeedback();
+            }
             ui.postDelayed(this, 1000);
         }
     };
@@ -778,7 +781,9 @@ public final class MainActivity extends Activity {
             String submitted = formatFps(source.submittedFps, source.lastSubmittedMillis, now);
             String presented = formatFps(source.actualFps, source.lastPresentedMillis, now);
             String decoder = source.decoderName.isEmpty() ? "正在选择" : source.decoderName;
-            String state = source.waitingForKeyFrame ? "解码恢复中 · 等待关键帧"
+            DecoderRecoveryState.Snapshot recovery = source.decoderRecovery.snapshot();
+            String state = recovery != null
+                    ? ("network".equals(recovery.kind) ? "网络恢复中 · 等待关键帧" : "解码恢复中 · 等待关键帧")
                     : source.decoderSelection.isEmpty() ? "等待首帧" : source.decoderSelection;
             performance.setText("面板 " + panel + " · 请求 " + requested
                     + "\n解码提交 " + submitted + " · 呈现回调 " + presented
@@ -819,8 +824,15 @@ public final class MainActivity extends Activity {
         volatile SubmissionProgress submission;
         volatile boolean submissionAckNegotiated;
         volatile boolean decoderRefreshNegotiated;
-        private final AtomicLong decoderRefreshGeneration = new AtomicLong();
-        volatile long pendingDecoderRefresh;
+        volatile boolean receiverFeedbackNegotiated;
+        volatile boolean adaptiveVideoNegotiated;
+        volatile long transportGeneration;
+        private final PendingDecoderRefresh pendingDecoderRefresh = new PendingDecoderRefresh();
+        private final DecoderRecoveryState decoderRecovery = new DecoderRecoveryState();
+        volatile KeyFrameRequestController keyFrameRequests = new KeyFrameRequestController();
+        volatile ReceiverFeedbackProgress receiverFeedback = new ReceiverFeedbackProgress();
+        private long lastQueueRecoveryVideoGeneration = -1;
+        private long lastQueueRecoveryEpoch;
         volatile boolean hasPresentedFrame;
         private String lastDisplayProfile;
         private final AtomicLong frameIds = new AtomicLong();
@@ -835,7 +847,6 @@ public final class MainActivity extends Activity {
         volatile String streamCodec = "JPEG";
         volatile String decoderName = "";
         volatile String decoderSelection = "";
-        volatile boolean waitingForKeyFrame;
         volatile long droppedFrames;
         volatile CapturePauseState captureState = new CapturePauseState();
 
@@ -931,6 +942,7 @@ public final class MainActivity extends Activity {
         void frameSubmitted(SubmissionProgress progress, long ptsUs, long submittedNanos,
                 int width, int height, String decoder) {
             if (!running || !connected || session != this || submission != progress) return;
+            receiverFeedback.submitted();
             lastSubmittedMillis = SystemClock.elapsedRealtime();
             SubmissionProgress.Report report = progress.submitted(ptsUs, width, height, submittedNanos,
                     lastSubmittedMillis, decoder);
@@ -962,42 +974,94 @@ public final class MainActivity extends Activity {
             if (features == null || features.length() > 64) return;
             for (int index = 0; index < features.length(); index++) {
                 String feature = features.optString(index, null);
-                if ("render-submitted-v1".equals(feature)) submissionAckNegotiated = true;
-                else if ("decoder-refresh-v1".equals(feature)) decoderRefreshNegotiated = true;
+                if (WireProtocol.FEATURE_RENDER_SUBMITTED.equals(feature)) submissionAckNegotiated = true;
+                else if (WireProtocol.FEATURE_DECODER_REFRESH.equals(feature)) decoderRefreshNegotiated = true;
+                else if (WireProtocol.FEATURE_RECEIVER_FEEDBACK.equals(feature)) receiverFeedbackNegotiated = true;
+                else if (WireProtocol.FEATURE_ADAPTIVE_VIDEO.equals(feature)) adaptiveVideoNegotiated = true;
             }
-            long pending = pendingDecoderRefresh;
-            if (decoderRefreshNegotiated && pending > 0) enqueueDecoderRefresh(pending, true);
         }
 
-        void requestDecoderRefresh() {
-            if (!running || !connected || session != this) return;
-            long generation = decoderRefreshGeneration.incrementAndGet();
-            if (generation <= 0) {
-                decoderRefreshGeneration.set(1);
-                generation = 1;
-            }
-            pendingDecoderRefresh = generation;
-            if (decoderRefreshNegotiated) enqueueDecoderRefresh(generation, true);
+        void requestDecoderRefresh(String kind) {
+            if (!running || session != this) return;
+            long recoveryEpoch = receiverFeedback.recoveryStarted();
+            if (!decoderRecovery.start(recoveryEpoch, kind)) return;
+            long allowed = keyFrameRequests.request(recoveryEpoch, SystemClock.elapsedRealtime(),
+                    maySendKeyFrameRequest());
+            if (allowed > 0) issueDecoderRefresh(allowed);
         }
 
-        void enqueueDecoderRefresh(long generation, boolean retry) {
+        void retryKeyFrameRequest() {
+            long pendingWireGeneration = pendingDecoderRefresh.get();
+            if (pendingWireGeneration > 0 && maySendKeyFrameRequest()) {
+                enqueueDecoderRefresh(pendingWireGeneration, false, transportGeneration);
+                if (pendingDecoderRefresh.get() == 0) return;
+            }
+            long allowed = keyFrameRequests.retry(SystemClock.elapsedRealtime(), maySendKeyFrameRequest());
+            if (allowed > 0) issueDecoderRefresh(allowed);
+        }
+
+        boolean maySendKeyFrameRequest() {
+            return shouldRetainKeyFrameRequest() && !captureState.paused;
+        }
+
+        boolean shouldRetainKeyFrameRequest() {
+            return running && connected && session == this && decoderRefreshNegotiated
+                    && decoderRecovery.isWaiting();
+        }
+
+        void issueDecoderRefresh(long recoveryEpoch) {
+            long generation = decoderRecovery.issue(recoveryEpoch);
+            if (generation <= 0) return;
+            pendingDecoderRefresh.set(generation);
+            enqueueDecoderRefresh(generation, true, transportGeneration);
+        }
+
+        void enqueueDecoderRefresh(long generation, boolean retry, long connectionGeneration) {
             if (!running || !connected || session != this || !decoderRefreshNegotiated
-                    || generation <= 0 || pendingDecoderRefresh != generation) return;
+                    || captureState.paused || connectionGeneration != transportGeneration
+                    || generation <= 0 || pendingDecoderRefresh.get() != generation) return;
+            // Claim before publishing to outgoing. A writer that immediately
+            // defers this packet on a pause must not be cleared afterwards.
+            if (!pendingDecoderRefresh.claim(generation)) return;
             WireProtocol.Packet control = new WireProtocol.Packet(WireProtocol.DECODER_REFRESH,
                     DecoderRefreshRequest.encode(generation));
             boolean queued = outgoing.offer(control);
             if (!queued) {
                 for (WireProtocol.Packet candidate : outgoing) {
-                    if (candidate.type != WireProtocol.RENDER_SUBMITTED && candidate.type != WireProtocol.PRESENTED)
+                    if (candidate.type != WireProtocol.RENDER_SUBMITTED && candidate.type != WireProtocol.PRESENTED
+                            && candidate.type != WireProtocol.RECEIVER_FEEDBACK)
                         continue;
                     if (outgoing.remove(candidate) && outgoing.offer(control)) { queued = true; break; }
                 }
             }
-            if (queued) {
-                if (pendingDecoderRefresh == generation) pendingDecoderRefresh = 0;
-            } else if (retry) {
-                ui.postDelayed(() -> enqueueDecoderRefresh(generation, false), 100);
+            if (!queued) {
+                pendingDecoderRefresh.defer(generation);
             }
+            if (!queued && retry) {
+                ui.postDelayed(() -> enqueueDecoderRefresh(generation, false, connectionGeneration), 100);
+            }
+        }
+
+        void deferDecoderRefresh(long generation) {
+            pendingDecoderRefresh.defer(generation);
+        }
+
+        void sendReceiverFeedback() {
+            if (!running || !connected || session != this) return;
+            retryKeyFrameRequest();
+            if (!receiverFeedbackNegotiated) return;
+            VideoDecoder currentVideo = video;
+            if (currentVideo == null) return;
+            receiverFeedback.observeDecoder(currentVideo.feedbackMetrics());
+            ReceiverFeedbackProgress.Report report = receiverFeedback.report(SystemClock.elapsedRealtime(),
+                    decoderRecovery.isWaiting());
+            if (report == null) return;
+            WireProtocol.Packet packet = new WireProtocol.Packet(WireProtocol.RECEIVER_FEEDBACK,
+                    report.toJson().getBytes(StandardCharsets.UTF_8));
+            for (WireProtocol.Packet candidate : outgoing) {
+                if (candidate.type == WireProtocol.RECEIVER_FEEDBACK) outgoing.remove(candidate);
+            }
+            outgoing.offer(packet);
         }
 
         synchronized void sendDisplayProfile() {
@@ -1012,7 +1076,12 @@ public final class MainActivity extends Activity {
             videoGeneration++;
             VideoDecoder previous = video;
             video = null;
-            waitingForKeyFrame = false;
+            if (previous != null) receiverFeedback.observeDecoder(previous.feedbackMetrics());
+            receiverFeedback.decoderStopped();
+            DecoderRecoveryState.Completion cancelled = decoderRecovery.cancel();
+            keyFrameRequests.cancelPendingThrough(cancelled.epoch);
+            pendingDecoderRefresh.cancelThrough(cancelled.wireGenerationCutoff);
+            removeDecoderRefreshThrough(cancelled.wireGenerationCutoff);
             decoderName = "";
             decoderSelection = "";
             actualFps = submittedFps = 0;
@@ -1046,7 +1115,6 @@ public final class MainActivity extends Activity {
             lastPresentedMillis = lastSubmittedMillis = 0;
             decoderName = "";
             decoderSelection = "";
-            waitingForKeyFrame = false;
             droppedFrames = 0;
             final VideoDecoder[] holder = new VideoDecoder[1];
             VideoDecoder next = new VideoDecoder(configuration, new VideoDecoder.Listener() {
@@ -1059,12 +1127,26 @@ public final class MainActivity extends Activity {
                         double fps, String decoder, long dropped) {
                     if (!running || !connected || session != Session.this || generation != videoGeneration
                             || video != holder[0] || presentation != progress) return;
+                    receiverFeedback.presented();
+                    ReceiverFeedbackProgress.DecoderMetrics metrics = holder[0].feedbackMetrics();
+                    receiverFeedback.observeDecoder(metrics);
                     actualFps = fps;
                     lastPresentedMillis = SystemClock.elapsedRealtime();
                     decoderName = decoder;
-                    boolean recovered = waitingForKeyFrame;
-                    waitingForKeyFrame = false;
-                    if (recovered) decoderSelection += " · 已恢复";
+                    DecoderRecoveryState.Snapshot recovery = decoderRecovery.snapshot();
+                    boolean recoveryFrame = recovery != null && (!"network".equals(recovery.kind)
+                            || !metrics.awaitingKeyFrame && metrics.recoveryKeyFramePtsUs >= 0
+                            && ptsUs >= metrics.recoveryKeyFramePtsUs);
+                    DecoderRecoveryState.Completion completed = recoveryFrame
+                            ? decoderRecovery.complete(recovery) : null;
+                    boolean recovered = completed != null;
+                    if (completed != null) {
+                        keyFrameRequests.cancelPendingThrough(completed.epoch);
+                        pendingDecoderRefresh.cancelThrough(completed.wireGenerationCutoff);
+                        removeDecoderRefreshThrough(completed.wireGenerationCutoff);
+                    }
+                    if (recovered && !decoderSelection.endsWith(" · 已恢复"))
+                        decoderSelection += " · 已恢复";
                     droppedFrames = dropped;
                     framePresented(progress, frameIds.incrementAndGet(), width, height);
                 }
@@ -1078,6 +1160,7 @@ public final class MainActivity extends Activity {
                     if (!running || !connected || session != Session.this || generation != videoGeneration
                             || video != holder[0] || presentation != progress || submission != submittedProgress) return;
                     decoderName = selectedDecoder;
+                    receiverFeedback.decoderSelected(fallback);
                     String tierLabel = "hardware".equals(tier) ? "硬解"
                             : "software".equals(tier) ? "软件解码" : "解码器";
                     decoderSelection = fallback
@@ -1086,8 +1169,7 @@ public final class MainActivity extends Activity {
                     if (fallback) {
                         actualFps = submittedFps = 0;
                         lastPresentedMillis = lastSubmittedMillis = 0;
-                        waitingForKeyFrame = true;
-                        requestDecoderRefresh();
+                        requestDecoderRefresh("decoder");
                     }
                     ui.post(() -> {
                         if (session != Session.this || generation != videoGeneration || video != holder[0]
@@ -1097,6 +1179,25 @@ public final class MainActivity extends Activity {
                             status.setText(message);
                             if (settingsStatus != null) settingsStatus.setText(message);
                         }
+                        updatePerformance(Session.this);
+                    });
+                }
+                @Override public void onKeyFrameRequired(long queueRecoveryEpoch, String reason) {
+                    if (!running || !connected || session != Session.this || generation != videoGeneration
+                            || video != holder[0] || presentation != progress || submission != submittedProgress) return;
+                    synchronized (Session.this) {
+                        if (lastQueueRecoveryVideoGeneration == generation
+                                && queueRecoveryEpoch <= lastQueueRecoveryEpoch) return;
+                        lastQueueRecoveryVideoGeneration = generation;
+                        lastQueueRecoveryEpoch = queueRecoveryEpoch;
+                    }
+                    requestDecoderRefresh("network");
+                    ui.post(() -> {
+                        if (session != Session.this || generation != videoGeneration || video != holder[0]
+                                || !activityStarted) return;
+                        String message = "视频队列正在等待新的关键帧；连接与副屏保持不变";
+                        status.setText(message);
+                        if (settingsStatus != null) settingsStatus.setText(message);
                         updatePerformance(Session.this);
                     });
                 }
@@ -1121,16 +1222,23 @@ public final class MainActivity extends Activity {
         void run() {
             int retry = 0;
             while (running) {
+                transportGeneration++;
+                if (transportGeneration <= 0) transportGeneration = 1;
                 PresentationProgress progress = new PresentationProgress();
                 SubmissionProgress submittedProgress = new SubmissionProgress();
                 presentation = progress;
                 submission = submittedProgress;
                 submissionAckNegotiated = false;
                 decoderRefreshNegotiated = false;
-                decoderRefreshGeneration.set(0);
-                pendingDecoderRefresh = 0;
+                receiverFeedbackNegotiated = false;
+                adaptiveVideoNegotiated = false;
+                pendingDecoderRefresh.reset();
+                decoderRecovery.reset();
+                keyFrameRequests = new KeyFrameRequestController();
+                receiverFeedback = new ReceiverFeedbackProgress();
+                lastQueueRecoveryVideoGeneration = -1;
+                lastQueueRecoveryEpoch = 0;
                 hasPresentedFrame = false;
-                waitingForKeyFrame = false;
                 decoderName = "";
                 decoderSelection = "";
                 actualFps = submittedFps = 0;
@@ -1156,8 +1264,10 @@ public final class MainActivity extends Activity {
                     hello.put("protocol", 1);
                     hello.put("token", sessionToken);
                     hello.put("features", new JSONArray()
-                            .put("render-submitted-v1")
-                            .put("decoder-refresh-v1"));
+                            .put(WireProtocol.FEATURE_RENDER_SUBMITTED)
+                            .put(WireProtocol.FEATURE_DECODER_REFRESH)
+                            .put(WireProtocol.FEATURE_RECEIVER_FEEDBACK)
+                            .put(WireProtocol.FEATURE_ADAPTIVE_VIDEO));
                     WireProtocol.write(output, WireProtocol.HELLO, hello.toString().getBytes(StandardCharsets.UTF_8));
                     // Send the initial native/rotation/requested-Hz profile synchronously,
                     // before any decoder is created or incoming video packet is consumed.
@@ -1183,7 +1293,9 @@ public final class MainActivity extends Activity {
                         } else if (packet.type == WireProtocol.VIDEO_FRAME) {
                             VideoDecoder currentVideo = video;
                             if (currentVideo == null) throw new IOException("H.264 configuration must precede video frames");
+                            receiverFeedback.receivedVideo(packet.payload.length);
                             currentVideo.offer(packet.payload);
+                            receiverFeedback.observeDecoder(currentVideo.feedbackMetrics());
                             retry = 0;
                         } else if (packet.type == WireProtocol.STATUS) {
                             if (packet.payload.length > 16384) throw new IOException("状态数据过长");
@@ -1193,6 +1305,7 @@ public final class MainActivity extends Activity {
                             Object paused = state.opt("capturePaused");
                             captureState = captureState.update(paused instanceof Boolean ? (Boolean) paused : null,
                                     visibleMessage(message));
+                            retryKeyFrameRequest();
                             // Keep the same decoder, Surface, last frame and presentation sequence.
                             // Only actual JPEG/codec rendering may advance an acknowledgement.
                             setStatus(this, visibleMessage(message), hasPresentedFrame);
@@ -1219,7 +1332,8 @@ public final class MainActivity extends Activity {
                     connected = false;
                     submissionAckNegotiated = false;
                     decoderRefreshNegotiated = false;
-                    pendingDecoderRefresh = 0;
+                    receiverFeedbackNegotiated = false;
+                    adaptiveVideoNegotiated = false;
                     submission = null;
                     stopVideo();
                     closeSocket();
@@ -1229,6 +1343,7 @@ public final class MainActivity extends Activity {
                         try { currentWriter.join(1500); } catch (InterruptedException ignored) { }
                     }
                     outgoing.clear();
+                    pendingDecoderRefresh.reset();
                     desktop.clearFrame(this);
                 }
                 if (serverRejected) { running = false; break; }
@@ -1242,12 +1357,35 @@ public final class MainActivity extends Activity {
             try {
                 while (running && !local.isClosed()) {
                     WireProtocol.Packet packet = outgoing.take();
+                    if (packet.type == WireProtocol.DECODER_REFRESH) {
+                        long generation = DecoderRefreshRequest.decode(packet.payload);
+                        if (pendingDecoderRefresh.isCancelled(generation)) continue;
+                        if (!maySendKeyFrameRequest()) {
+                            if (!pendingDecoderRefresh.isCancelled(generation)
+                                    && shouldRetainKeyFrameRequest()) deferDecoderRefresh(generation);
+                            continue;
+                        }
+                        if (pendingDecoderRefresh.isCancelled(generation)) continue;
+                    }
+                    if (packet.type == WireProtocol.RECEIVER_FEEDBACK && !receiverFeedbackNegotiated) continue;
                     WireProtocol.write(output, packet.type, packet.payload);
                 }
             } catch (InterruptedException ignored) {
                 Thread.currentThread().interrupt();
             } catch (IOException ignored) {
                 try { local.close(); } catch (IOException alsoIgnored) { }
+            }
+        }
+
+        void removeDecoderRefreshThrough(long cutoff) {
+            if (cutoff <= 0) return;
+            for (WireProtocol.Packet candidate : outgoing) {
+                if (candidate.type != WireProtocol.DECODER_REFRESH) continue;
+                try {
+                    if (DecoderRefreshRequest.decode(candidate.payload) <= cutoff) outgoing.remove(candidate);
+                } catch (IOException invalidInternalPacket) {
+                    outgoing.remove(candidate);
+                }
             }
         }
     }

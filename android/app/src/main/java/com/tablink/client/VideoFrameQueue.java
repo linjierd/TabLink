@@ -11,6 +11,9 @@ public final class VideoFrameQueue {
     private long dropped;
     private boolean closed;
     private long generation;
+    private long recoveryEpoch;
+    private long recoveryKeyFramePtsUs = -1;
+    private String recoveryReason = "";
     private int highWaterMark;
     private long overflowEvents, overflowDrops, awaitingKeyFrameDrops, expiredDrops, reorderedDrops;
     private long backpressureWaits, backpressureTimeouts, backpressureWaitNanos, longestBackpressureWaitNanos;
@@ -30,6 +33,8 @@ public final class VideoFrameQueue {
             throws InterruptedException {
         if (closed) return false;
         if (frame.ptsUs <= lastPts) { dropped++; reorderedDrops++; return false; }
+        boolean hadDependencyChain = !needsKeyFrame;
+        String lostDependencyReason = null;
         long budget = Math.max(0, Math.min(25_000_000L, requestedWaitNanos));
         long epoch = generation;
         if (frames.size() >= capacity && budget > 0) {
@@ -60,11 +65,19 @@ public final class VideoFrameQueue {
             dropped += frames.size();
             frames.clear();
             needsKeyFrame = true;
+            lostDependencyReason = "queue-overflow";
         }
         if (needsKeyFrame && !frame.keyFrame) {
-            dropped++; awaitingKeyFrameDrops++; notifyAll(); return false;
+            dropped++; awaitingKeyFrameDrops++;
+            if (hadDependencyChain && lostDependencyReason != null)
+                beginRecovery(lostDependencyReason);
+            notifyAll(); return false;
         }
-        if (frame.keyFrame) needsKeyFrame = false;
+        if (frame.keyFrame) {
+            boolean recovered = needsKeyFrame && recoveryEpoch > 0;
+            needsKeyFrame = false;
+            if (recovered) recoveryKeyFramePtsUs = frame.ptsUs;
+        }
         frames.add(frame);
         highWaterMark = Math.max(highWaterMark, frames.size());
         notifyAll();
@@ -72,18 +85,27 @@ public final class VideoFrameQueue {
     }
 
     public synchronized VideoAccessUnit poll(long nowNanos) {
+        boolean hadDependencyChain = !needsKeyFrame;
+        boolean expiredDependency = false;
         while (!frames.isEmpty()) {
             VideoAccessUnit frame = frames.remove();
             notifyAll();
             if (nowNanos - frame.receivedNanos > 150_000_000L) {
                 dropped++; expiredDrops++;
                 needsKeyFrame = true;
+                expiredDependency = true;
                 continue;
             }
             if (needsKeyFrame && !frame.keyFrame) { dropped++; awaitingKeyFrameDrops++; continue; }
-            if (frame.keyFrame) needsKeyFrame = false;
+            if (frame.keyFrame) {
+                boolean recovered = needsKeyFrame && recoveryEpoch > 0;
+                needsKeyFrame = false;
+                if (recovered) recoveryKeyFramePtsUs = frame.ptsUs;
+            }
             return frame;
         }
+        if (hadDependencyChain && expiredDependency && needsKeyFrame)
+            beginRecovery("expired-chain");
         return null;
     }
 
@@ -97,22 +119,41 @@ public final class VideoFrameQueue {
     public synchronized Snapshot snapshot() {
         return new Snapshot(frames.size(), highWaterMark, overflowEvents, overflowDrops, awaitingKeyFrameDrops,
                 expiredDrops, reorderedDrops, backpressureWaits, backpressureTimeouts,
-                backpressureWaitNanos, longestBackpressureWaitNanos);
+                backpressureWaitNanos, longestBackpressureWaitNanos, capacity, needsKeyFrame,
+                recoveryEpoch, recoveryKeyFramePtsUs, recoveryReason, dropped);
+    }
+
+    private void beginRecovery(String reason) {
+        recoveryEpoch++;
+        if (recoveryEpoch <= 0) recoveryEpoch = 1;
+        recoveryKeyFramePtsUs = -1;
+        recoveryReason = reason;
     }
 
     public static final class Snapshot {
         public final int size, highWaterMark;
         public final long overflowEvents, overflowDrops, awaitingKeyFrameDrops, expiredDrops, reorderedDrops;
         public final long backpressureWaits, backpressureTimeouts, backpressureWaitNanos, longestBackpressureWaitNanos;
+        public final int capacity;
+        public final boolean awaitingKeyFrame;
+        public final long recoveryEpoch, recoveryKeyFramePtsUs;
+        public final long droppedFrames;
+        public final String recoveryReason;
         Snapshot(int size, int highWaterMark, long overflowEvents, long overflowDrops, long awaitingKeyFrameDrops,
                 long expiredDrops, long reorderedDrops, long backpressureWaits, long backpressureTimeouts,
-                long backpressureWaitNanos, long longestBackpressureWaitNanos) {
+                long backpressureWaitNanos, long longestBackpressureWaitNanos, int capacity,
+                boolean awaitingKeyFrame, long recoveryEpoch, long recoveryKeyFramePtsUs,
+                String recoveryReason, long droppedFrames) {
             this.size = size; this.highWaterMark = highWaterMark; this.overflowEvents = overflowEvents;
             this.overflowDrops = overflowDrops; this.awaitingKeyFrameDrops = awaitingKeyFrameDrops;
             this.expiredDrops = expiredDrops; this.reorderedDrops = reorderedDrops;
             this.backpressureWaits = backpressureWaits; this.backpressureTimeouts = backpressureTimeouts;
             this.backpressureWaitNanos = backpressureWaitNanos;
             this.longestBackpressureWaitNanos = longestBackpressureWaitNanos;
+            this.capacity = capacity; this.awaitingKeyFrame = awaitingKeyFrame;
+            this.recoveryEpoch = recoveryEpoch; this.recoveryKeyFramePtsUs = recoveryKeyFramePtsUs;
+            this.recoveryReason = recoveryReason;
+            this.droppedFrames = droppedFrames;
         }
     }
 }

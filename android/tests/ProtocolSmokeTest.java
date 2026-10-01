@@ -109,6 +109,17 @@ public final class ProtocolSmokeTest {
                 "render-submitted packet type round trips");
 
         check(WireProtocol.DECODER_REFRESH == 0x15, "decoder refresh keeps its negotiated protocol type");
+        check(WireProtocol.RECEIVER_FEEDBACK == 0x16, "receiver feedback keeps its negotiated protocol type");
+        check(WireProtocol.FEATURE_RENDER_SUBMITTED.equals("render-submitted-v1")
+                        && WireProtocol.FEATURE_DECODER_REFRESH.equals("decoder-refresh-v1")
+                        && WireProtocol.FEATURE_RECEIVER_FEEDBACK.equals("receiver-feedback-v1")
+                        && WireProtocol.FEATURE_ADAPTIVE_VIDEO.equals("adaptive-video-v1"),
+                "optional feature names remain stable across old and adaptive peers");
+        ByteArrayOutputStream feedbackBytes = new ByteArrayOutputStream();
+        WireProtocol.write(new DataOutputStream(feedbackBytes), WireProtocol.RECEIVER_FEEDBACK,
+                "{\"kind\":\"receiver-feedback\"}".getBytes(StandardCharsets.UTF_8));
+        check(WireProtocol.read(input(feedbackBytes.toByteArray())).type == WireProtocol.RECEIVER_FEEDBACK,
+                "receiver feedback packet type round trips without changing protocol v1 framing");
         byte[] refresh = DecoderRefreshRequest.encode(0x0102030405060708L);
         check(refresh.length == 8 && refresh[0] == 1 && refresh[7] == 8,
                 "decoder refresh generation uses fixed-width big-endian encoding");

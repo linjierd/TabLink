@@ -19,6 +19,7 @@ public final class VideoFrameQueueTest {
         interruptedWait();
         reorderedAndExpired();
         duplicateDuringWait();
+        recoveryEpochs();
         System.out.println("VideoFrameQueue: " + assertions + " assertions passed");
     }
 
@@ -148,6 +149,61 @@ public final class VideoFrameQueueTest {
         check(failure.get() == null && Boolean.FALSE.equals(accepted.get()), "waiter rechecks PTS ordering before commit");
         check(queue.snapshot().reorderedDrops == 1 && queue.snapshot().overflowEvents == 0,
                 "duplicate wake-up does not evict full but valid reference chain");
+    }
+
+    private static void recoveryEpochs() throws Exception {
+        VideoFrameQueue initial = new VideoFrameQueue(2);
+        check(initial.snapshot().awaitingKeyFrame && initial.snapshot().recoveryEpoch == 0,
+                "initial IDR wait is not a recovery request");
+        check(!initial.offer(frame(1, false, System.nanoTime()))
+                        && initial.snapshot().recoveryEpoch == 0,
+                "initial dependent frames do not manufacture a recovery epoch");
+        check(initial.offer(frame(2, true, System.nanoTime()))
+                        && !initial.snapshot().awaitingKeyFrame,
+                "initial IDR establishes a healthy dependency chain");
+        check(initial.offer(frame(3, false, System.nanoTime())), "healthy dependent frame fills queue");
+        check(!initial.offer(frame(4, false, System.nanoTime())), "overflowing P frame invalidates chain");
+        VideoFrameQueue.Snapshot overflow = initial.snapshot();
+        check(overflow.awaitingKeyFrame && overflow.recoveryEpoch == 1
+                        && overflow.recoveryReason.equals("queue-overflow"),
+                "overflow advances exactly one recovery epoch");
+        check(!initial.offer(frame(5, false, System.nanoTime()))
+                        && initial.snapshot().recoveryEpoch == 1,
+                "additional P frames in the same broken chain are coalesced");
+        check(initial.offer(frame(6, true, System.nanoTime()))
+                        && !initial.snapshot().awaitingKeyFrame
+                        && initial.snapshot().recoveryKeyFramePtsUs == 6,
+                "fresh IDR closes the queue recovery epoch");
+        long beforeClear = initial.snapshot().recoveryEpoch;
+        initial.clear();
+        check(initial.snapshot().recoveryEpoch == beforeClear,
+                "intentional clear does not create a recovery epoch");
+
+        VideoFrameQueue expired = new VideoFrameQueue(6);
+        check(expired.offer(frame(10, true, 0)) && expired.offer(frame(11, false, 1)),
+                "expired fixture starts with a valid chain");
+        check(expired.poll(200_000_000L) == null, "expired chain produces no late frame");
+        VideoFrameQueue.Snapshot stale = expired.snapshot();
+        check(stale.awaitingKeyFrame && stale.recoveryEpoch == 1
+                        && stale.recoveryReason.equals("expired-chain"),
+                "expired healthy chain advances one recovery epoch");
+
+        VideoFrameQueue alreadyRecovered = new VideoFrameQueue(6);
+        check(alreadyRecovered.offer(frame(20, true, 0))
+                        && alreadyRecovered.offer(frame(21, false, 1))
+                        && alreadyRecovered.offer(frame(22, true, 190_000_000L)),
+                "fresh IDR may already be queued behind stale frames");
+        check(alreadyRecovered.poll(200_000_000L).ptsUs == 22
+                        && alreadyRecovered.snapshot().recoveryEpoch == 0,
+                "queued fresh IDR avoids an unnecessary recovery request");
+
+        VideoFrameQueue idrOverflow = new VideoFrameQueue(2);
+        check(idrOverflow.offer(frame(30, true, 0)) && idrOverflow.offer(frame(31, false, 1)),
+                "IDR overflow fixture is full");
+        check(idrOverflow.offer(frame(32, true, 2))
+                        && idrOverflow.snapshot().recoveryEpoch == 0
+                        && !idrOverflow.snapshot().awaitingKeyFrame,
+                "overflowing IDR immediately rebuilds the chain without a request");
     }
 
     private static VideoFrameQueue filled() throws Exception {

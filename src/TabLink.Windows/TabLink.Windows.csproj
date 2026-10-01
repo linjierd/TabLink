@@ -7,7 +7,7 @@
     <Nullable>enable</Nullable>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>TabLink</AssemblyName>
-    <Version>0.8.2</Version>
+    <Version>0.8.3</Version>
     <Authors>张林杰（Jey / @linjierd）</Authors>
     <Company>张林杰（Jey / @linjierd）</Company>
     <Product>TabLink</Product>

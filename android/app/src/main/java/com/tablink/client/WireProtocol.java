@@ -7,6 +7,10 @@ import java.io.IOException;
 /** Dependency-free framing, shared by the Android transport and the JVM smoke tests. */
 public final class WireProtocol {
     public static final int MAX_PAYLOAD = 8 * 1024 * 1024;
+    public static final String FEATURE_RENDER_SUBMITTED = "render-submitted-v1";
+    public static final String FEATURE_DECODER_REFRESH = "decoder-refresh-v1";
+    public static final String FEATURE_RECEIVER_FEEDBACK = "receiver-feedback-v1";
+    public static final String FEATURE_ADAPTIVE_VIDEO = "adaptive-video-v1";
     public static final int FRAME = 0x01;
     public static final int STATUS = 0x02;
     public static final int ERROR = 0x03;
@@ -16,8 +20,10 @@ public final class WireProtocol {
     public static final int DISPLAY_PROFILE = 0x13;
     public static final int RENDER_SUBMITTED = 0x14;
     public static final int DECODER_REFRESH = 0x15;
+    public static final int RECEIVER_FEEDBACK = 0x16;
     public static final int VIDEO_CONFIG = 0x20;
     public static final int VIDEO_FRAME = 0x21;
+
 
     private WireProtocol() {}
 

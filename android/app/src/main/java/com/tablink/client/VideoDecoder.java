@@ -38,6 +38,8 @@ public final class VideoDecoder implements AutoCloseable {
         /** Called only after a codec has configured and started successfully, including the first choice. */
         default void onDecoderSelected(String selectedDecoder, String tier, boolean fallback,
                 String failedDecoder, String reason) { }
+        /** A previously healthy compressed dependency chain now needs a fresh IDR. */
+        default void onKeyFrameRequired(long recoveryEpoch, String reason) { }
         void onError(String message);
     }
 
@@ -104,6 +106,8 @@ public final class VideoDecoder implements AutoCloseable {
     private final VideoFrameQueue pending = new VideoFrameQueue(6);
     private final ArrayDeque<Integer> inputSlots = new ArrayDeque<>();
     private final AtomicBoolean pumpPosted = new AtomicBoolean();
+    private final AtomicLong notifiedRecoveryEpoch = new AtomicLong();
+    private final AtomicLong cumulativeRenderDrops = new AtomicLong();
     private final CountDownLatch released = new CountDownLatch(1);
     private FrameRateMeter rate = new FrameRateMeter();
     private volatile boolean closed;
@@ -182,6 +186,16 @@ public final class VideoDecoder implements AutoCloseable {
             if (pumpPosted.compareAndSet(false, true))
                 handler.post(() -> { pumpPosted.set(false); pumpInputs(); });
         }
+        publishQueueRecovery();
+    }
+
+    ReceiverFeedbackProgress.DecoderMetrics feedbackMetrics() {
+        VideoFrameQueue.Snapshot queue = pending.snapshot();
+        return new ReceiverFeedbackProgress.DecoderMetrics(diagnosticId, queue.size, queue.capacity,
+                queue.highWaterMark, queue.awaitingKeyFrame, queue.recoveryKeyFramePtsUs,
+                queue.droppedFrames, queue.overflowEvents,
+                queue.overflowDrops, queue.expiredDrops, queue.awaitingKeyFrameDrops,
+                queue.backpressureTimeouts, cumulativeRenderDrops.get());
     }
 
     private void initialize(Surface surface) {
@@ -317,10 +331,14 @@ public final class VideoDecoder implements AutoCloseable {
                     if ((info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0)
                         source.releaseOutputBuffer(index, false);
                     else {
+                        long droppedBefore = renderClock.droppedFrames();
                         RenderClock.Decision decision = renderClock.plan(info.presentationTimeUs,
                                 latestInputPtsUs, System.nanoTime());
                         if (decision.render) source.releaseOutputBuffer(index, decision.renderNanos);
                         else source.releaseOutputBuffer(index, false);
+                        long droppedAfter = renderClock.droppedFrames();
+                        if (droppedAfter > droppedBefore)
+                            cumulativeRenderDrops.addAndGet(droppedAfter - droppedBefore);
                         publishPacingDiagnostics(false);
                     }
                 } catch (IllegalStateException problem) { scheduleFallback(source, generation, problem); }
@@ -460,6 +478,7 @@ public final class VideoDecoder implements AutoCloseable {
         try {
             while (!inputSlots.isEmpty()) {
                 VideoAccessUnit frame = pending.poll(System.nanoTime());
+                publishQueueRecovery();
                 if (frame == null) return;
                 int index = inputSlots.remove();
                 ByteBuffer target = codec.getInputBuffer(index);
@@ -482,6 +501,20 @@ public final class VideoDecoder implements AutoCloseable {
             MediaCodec failed = codec;
             long generation = codecGeneration;
             if (failed != null) scheduleFallback(failed, generation, problem);
+        }
+    }
+
+    private void publishQueueRecovery() {
+        VideoFrameQueue.Snapshot snapshot = pending.snapshot();
+        long observed = snapshot.recoveryEpoch;
+        if (!snapshot.awaitingKeyFrame || observed <= 0) return;
+        while (true) {
+            long previous = notifiedRecoveryEpoch.get();
+            if (observed <= previous) return;
+            if (!notifiedRecoveryEpoch.compareAndSet(previous, observed)) continue;
+            try { listener.onKeyFrameRequired(observed, snapshot.recoveryReason); }
+            catch (RuntimeException ignored) { }
+            return;
         }
     }
 

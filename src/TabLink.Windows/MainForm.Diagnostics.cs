@@ -178,7 +178,7 @@ internal sealed partial class MainForm
         if(source.PresentedFrames>healthPresentedFrames)
         {
             healthPresentedFrames=source.PresentedFrames;
-            connectionHealth.FramePresented(healthAttempt,source.PresentedFrames,$"Surface 已确认显示 {source.PresentedFrames:N0} 帧");
+            connectionHealth.FramePresented(healthAttempt,source.PresentedFrames,$"收到 Surface 呈现回调 {source.PresentedFrames:N0} 帧");
             // A physical presentation is also current proof that decode completed,
             // while decoder submission alone can never prove presentation.
             healthSubmissionFresh=healthPresentationFresh=true;
