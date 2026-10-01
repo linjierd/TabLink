@@ -2,7 +2,7 @@
 
 <!-- tablink-version-contract: version=0.8.9; channel=preview; preview=1; androidVersionCode=21 -->
 
-TabLink 0.8.9 Preview 1 当前是完成核心 W202DS 实机验收和受保护 USB 会话连续重连验收的源码候选。它把 0.8.8 发布后的线路恢复、安全清理、脱敏诊断和公开兼容性证据归入新的版本身份：Windows 为 `0.8.9`，Android 为 `0.8.9` / `versionCode 21`。保留数据覆盖安装、唯一副屏、设备实际 1920 × 1200 / 90 Hz 模式、位置变化不断线、物理呈现测量、连续两轮 Windows 会话交接和退出后的 VDD 回收已经通过；最终发布提交的公共构建、tag、Release 和公开回下载核验仍待完成。GitHub 上可下载的最新预览仍是 0.8.8 Preview 1；已签名的公网 `stable` 自动更新频道仍保持 0.8.0。
+TabLink 0.8.9 Preview 1 已完成核心 W202DS 实机验收、受保护 USB 会话连续重连验收和公共预发行闭环。它把 0.8.8 发布后的线路恢复、安全清理、脱敏诊断和公开兼容性证据归入新的版本身份：Windows 为 `0.8.9`，Android 为 `0.8.9` / `versionCode 21`。保留数据覆盖安装、唯一副屏、设备实际 1920 × 1200 / 90 Hz 模式、位置变化不断线、物理呈现测量、连续两轮 Windows 会话交接、退出后的 VDD 回收、最终提交构建、精确 CI、annotated tag、GitHub prerelease 和公开回下载核验均已通过。已签名的公网 `stable` 自动更新频道在预发行后重新验签，仍保持 0.8.0。
 
 ## 受保护的 USB 会话交接
 
@@ -30,7 +30,7 @@ Windows 的“检测与日志”页可以由用户主动导出支持包。保存
 
 `compatibility/catalog.json` 是人工审核的静态证据目录，并由严格验证器生成 Schema 和 Markdown 视图。目录拒绝未知字段、不一致的能力组合、缺少文档或提交闭环的证据、常见地址/路径/token/设备标识模式、reparse 边界逃逸以及非原子写入。它没有遥测，不会自动导入 Issue 或支持包，客户端也不会下载它。
 
-当前公开兼容性目录仍只包含精确绑定 0.8.8 Preview 1 的 W202DS 记录。本轮已经取得 0.8.9 核心实机证据，但新的兼容性记录必须在最终发布提交和 tag 确定后，以新的记录 ID、精确 `sourceCommit` 和实际测量值添加；不会改写旧记录，也不会提前把任何发布前候选写成最终发布证据。
+当前公开兼容性目录仍只包含精确绑定 0.8.8 Preview 1 的 W202DS 记录。本轮 0.8.9 核心实机证据记录在本文和验证记录中，但尚未作为新的兼容性目录条目提交；以后添加时必须使用新的记录 ID、精确 `sourceCommit` 和实际测量值，不会改写旧记录，也不会把发布前候选写成最终发布证据。
 
 ## 构建与版本门禁
 
@@ -38,7 +38,7 @@ Windows 的“检测与日志”页可以由用户主动导出支持包。保存
 
 CI 同时覆盖 Windows 两种浏览器功能配置、DriverSetup、所有 managed 测试、Android JVM 测试、`assembleDebug`、`lintDebug` 和 APK 签名验证。完整、逐项的当前结果和尚未完成的硬件边界见 [0.8.9 验证记录](VERIFICATION-0.8.9.md)。
 
-受保护交接与 USB 恢复修复提交 `6dcc75e65c848643d200787ec9271051e3701a14` 对应的 [GitHub Actions run 36926091128](https://github.com/linjierd/TabLink/actions/runs/36926091128) 已成功完成 Windows 与 Android 两个 job。本文实机记录提交后形成的最终发布提交仍须取得自己的成功 CI，当前 run 不替代最终 tag 提交的门禁。
+受保护交接与 USB 恢复修复提交 `6dcc75e65c848643d200787ec9271051e3701a14` 对应的 [GitHub Actions run 36926091128](https://github.com/linjierd/TabLink/actions/runs/36926091128) 已成功完成 Windows 与 Android 两个 job。包含最终实机记录的发布提交 `2a1c3aced048315e3171489fc410c6adeb2eed66` 又由 [GitHub Actions run 36927438600](https://github.com/linjierd/TabLink/actions/runs/36927438600) 独立通过同样的两个 job；annotated tag `v0.8.9-preview.1` 精确指向该提交。
 
 ## 安卓安装兼容与帧率证据
 
@@ -46,9 +46,9 @@ ADB 兼容页先读取 Android 当前前台用户。安装操作把 APK 明确�
 
 物理呈现测量工具同时修复了与 `session-health.json` 的字段漂移。0.8.9 分别记录 SurfaceFlinger actual-present 物理呈现、Windows 呈现回调增量、Android 解码提交和 Android 呈现回调，后三项都不能替代物理呈现。ADB 会话健康数据使用带域分隔的设备序列号 SHA-256 绑定测量目标，测量 JSON 不再保存原始序列号；该跨 C# / PowerShell 规范和字段映射已经加入根构建与 CI 门禁。
 
-## W202DS 核心实机候选结果
+## W202DS 核心实机结果
 
-唯一授权的 W202DS 先从 0.8.8 / build 20 保留数据覆盖安装到 0.8.9 / build 21；加入受保护 USB 会话交接后，又以相同固定 Preview 签名原位覆盖最终代码候选。最后一次事务使用 `--no-streaming -r` 并返回独立 `Success`，首次安装时间保持不变、更新时间推进。设备回拉 APK 为 346,098 字节，SHA-256 `34DB1B9F2FD808D8BA7958F1744AA8915677F93FA7DABD820A62C86823F07C7D`，与提交 `6dcc75e65c848643d200787ec9271051e3701a14` 的完整 PublicRelease APK 逐字一致；新增的受保护 Provider 也已在安装包状态中出现。
+唯一授权的 W202DS 先从 0.8.8 / build 20 保留数据覆盖安装到 0.8.9 / build 21；加入受保护 USB 会话交接后，又以相同固定 Preview 签名原位覆盖最终代码候选。最后一次事务使用 `--no-streaming -r` 并返回独立 `Success`，首次安装时间保持不变、更新时间推进。设备回拉 APK 为 346,098 字节，SHA-256 `34DB1B9F2FD808D8BA7958F1744AA8915677F93FA7DABD820A62C86823F07C7D`；最终发布提交生成、GitHub 公开下载的 APK 与设备回拉 APK 三者逐字一致。新增的受保护 Provider 也已在安装包状态中出现。
 
 本轮 ADB 兼容连接只创建一块 TabLink VDD 和一个 Android 视频 Surface。W202DS 实际报告横屏逻辑 1920 × 1200、原生 1200 × 1920、旋转 1/4 圈、支持 60 / 90 Hz，当前与请求均为 90 Hz；NVENC 硬件编码的请求和有效速率均为 90 fps。把副屏位置沿相邻边缘移动 100 像素并恢复时，同一会话保持连接、帧计数持续推进，VDD 与 Surface 数量始终各为 1。退出 TabLink 后约 7.205 秒内 VDD 从 1 回到 0，活动桌面从 2 回到 1，ToDesk 的虚拟显示适配器未受影响。
 
@@ -67,13 +67,15 @@ ADB 兼容页先读取 Android 当前前台用户。安装操作把 APK 明确�
 - 公共 Windows 程序仍未做 Authenticode 代码签名，启动时 Windows 会显示未知发布者；随包驱动的既有签名与系统策略边界不变。
 - 公开包仍不包含 Google ADB 二进制，也不包含受地域分发限制的浏览器 WebRTC 依赖；Android 原生接收不受此限制。
 
-## 发布资产状态
+## 公共发布资产
 
-计划中的公共资产名为：
+[GitHub Release `v0.8.9-preview.1`](https://github.com/linjierd/TabLink/releases/tag/v0.8.9-preview.1) 已作为 prerelease 发布；`latest` 和签名 `stable` 更新频道都没有被推进。
 
-- `TabLink-Windows-x64-0.8.9-preview.1.zip`
-- `TabLink-Android-0.8.9-preview.1.apk`
-- `TabLink-FFmpeg-7.0.2-corresponding-source.tar.gz`
-- `SHA256SUMS.txt`
+| 资产 | 字节数 | SHA-256 |
+| --- | ---: | --- |
+| `TabLink-Windows-x64-0.8.9-preview.1.zip` | 97,320,509 | `4448CCA4151247F535139DBEC5A9D62331E9EB66E89491E0AEB47481D2726206` |
+| `TabLink-Android-0.8.9-preview.1.apk` | 346,098 | `34DB1B9F2FD808D8BA7958F1744AA8915677F93FA7DABD820A62C86823F07C7D` |
+| `TabLink-FFmpeg-7.0.2-corresponding-source.tar.gz` | 28,919,316 | `FD7977F53EDD262D55C49F200EB5F54B1B12F5FFA547770380448708D75EA6F2` |
+| `SHA256SUMS.txt` | 326 | `D120A47FA25634F6F8AC33071D5039FB4339A3AE9E6D4EAEC6D9EBAD00B07EA5` |
 
-这些文件目前尚未作为 0.8.9 Release 发布，因此本文件不预填 tag、字节数或 SHA-256。只有从干净的最终提交完成 `-PublicRelease`、核对 Windows/APK 身份、创建精确指向该提交的 `v0.8.9-preview.1` annotated tag、发布 prerelease，并从公开 HTTPS 地址重新下载逐项比对后，才会记录最终值并把 README 下载入口切换到 0.8.9。
+四个文件都从 Release 的公开 HTTPS 地址下载到新的 E 盘目录后复核。前三项与 `SHA256SUMS.txt` 完全一致，校验文件本身也与发布前固定哈希一致。下载的 Windows ZIP 解压后共有 463 个文件，内部清单覆盖其余 462 项；路径、大小和 SHA-256 全部与最终提交 `2a1c3aced048315e3171489fc410c6adeb2eed66` 的 PublicRelease 相同。包内 `TabLink.exe` 为 FileVersion `0.8.9.0`、ProductVersion `0.8.9+2a1c3aced048315e3171489fc410c6adeb2eed66`，SHA-256 为 `CAA9678795270275B0EB5CA2439C6F2C00C342DA93A7FA8E58AFE8184D167C3B`；没有 PDB、Google ADB 三件套或 SIPSorcery 二进制。

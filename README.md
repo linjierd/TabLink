@@ -5,17 +5,17 @@
 [![CI](https://github.com/linjierd/TabLink/actions/workflows/ci.yml/badge.svg)](https://github.com/linjierd/TabLink/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/TabLink%20code-MIT-blue.svg)](LICENSE)
 
-仓库 `main` 当前是 **0.8.9 Preview 1 源码候选**，Android 身份为 **0.8.9 / build 21**。它在 0.8.8 的可信设备协议和单副屏生命周期之上，增加稳定线路的有界恢复、迁移中一次性登记 token 的剩余期限保护、用户主动导出的脱敏支持包、人工审核的兼容性目录，以及统一的跨平台版本门禁。协议主版本仍为 v1，全局仍只允许一块 TabLink 副屏。见 [0.8.9 发布说明](RELEASE-0.8.9.md) 与 [0.8.9 验证记录](VERIFICATION-0.8.9.md)。
+GitHub 已发布 **0.8.9 Preview 1**，Android 身份为 **0.8.9 / build 21**。它在 0.8.8 的可信设备协议和单副屏生命周期之上，增加稳定线路的有界恢复、迁移中一次性登记 token 的剩余期限保护、用户主动导出的脱敏支持包、人工审核的兼容性目录，以及统一的跨平台版本门禁。协议主版本仍为 v1，全局仍只允许一块 TabLink 副屏。发布 tag `v0.8.9-preview.1` 精确指向提交 `2a1c3aced048315e3171489fc410c6adeb2eed66`；见 [0.8.9 发布说明](RELEASE-0.8.9.md) 与 [0.8.9 验证记录](VERIFICATION-0.8.9.md)。
 
-0.8.9 尚未创建 tag、公共资产或公开回下载证据，因此目前可下载的最新预览仍是下面的 **0.8.8 Preview 1**。已签名的公网稳定自动更新频道继续保持 **0.8.0**，不会仅因 GitHub 预览包而自动切换；0.8.0 的签名更新设计见 [0.8.0 发布说明](RELEASE-0.8.0.md)、[自动更新设计与发布说明](AUTO-UPDATE.md) 及 [0.8.0 验证记录](VERIFICATION-0.8.0.md)。
+四项公共资产已从 GitHub Release 的公开 HTTPS 地址重新下载并逐项核对；Windows ZIP 解压后的 463 个文件与最终 PublicRelease 逐字节一致。已签名的公网稳定自动更新频道在发布后重新下载并验签，仍保持 **0.8.0**，不会仅因 GitHub 预览包而自动切换；0.8.0 的签名更新设计见 [0.8.0 发布说明](RELEASE-0.8.0.md)、[自动更新设计与发布说明](AUTO-UPDATE.md) 及 [0.8.0 验证记录](VERIFICATION-0.8.0.md)。
 
-## 下载 0.8.8 Preview 1
+## 下载 0.8.9 Preview 1
 
-- [Windows x64 完整包](https://github.com/linjierd/TabLink/releases/download/v0.8.8-preview.1/TabLink-Windows-x64-0.8.8-preview.1.zip)
-- [Android APK](https://github.com/linjierd/TabLink/releases/download/v0.8.8-preview.1/TabLink-Android-0.8.8-preview.1.apk)
-- [FFmpeg 7.0.2 对应源码](https://github.com/linjierd/TabLink/releases/download/v0.8.8-preview.1/TabLink-FFmpeg-7.0.2-corresponding-source.tar.gz)
-- [SHA-256 校验文件](https://github.com/linjierd/TabLink/releases/download/v0.8.8-preview.1/SHA256SUMS.txt)
-- [完整 Release 页面与发布说明](https://github.com/linjierd/TabLink/releases/tag/v0.8.8-preview.1)
+- [Windows x64 完整包](https://github.com/linjierd/TabLink/releases/download/v0.8.9-preview.1/TabLink-Windows-x64-0.8.9-preview.1.zip)
+- [Android APK](https://github.com/linjierd/TabLink/releases/download/v0.8.9-preview.1/TabLink-Android-0.8.9-preview.1.apk)
+- [FFmpeg 7.0.2 对应源码](https://github.com/linjierd/TabLink/releases/download/v0.8.9-preview.1/TabLink-FFmpeg-7.0.2-corresponding-source.tar.gz)
+- [SHA-256 校验文件](https://github.com/linjierd/TabLink/releases/download/v0.8.9-preview.1/SHA256SUMS.txt)
+- [完整 Release 页面与发布说明](https://github.com/linjierd/TabLink/releases/tag/v0.8.9-preview.1)
 
 这是预发行版本。Windows ZIP 完整解压后运行 `TabLink.exe`；Android 安装上面的 APK。三个二进制资产都应先用 `SHA256SUMS.txt` 核对，稳定自动更新频道仍保持在 0.8.0。
 
@@ -58,7 +58,7 @@ TabLink 自有源码采用 [MIT License](LICENSE)。公开仓库只跟踪源码�
 
 ## 当前验证状态
 
-截至 2026-10-01 的开发验证已观察到：
+截至 2026-10-02 的开发验证已观察到：
 
 - 0.8.4 的普通桌面发送约为 **65.09 fps**；0.8.5 候选修复后，Android 接收/提交/解码约为 **89.98 fps**，呈现回调约为 **89.95 fps**，该窗口所有输入、队列、调度与背压丢帧均为 0。
 - 同一 0.8.5 候选的原生 D3D11 动态源测试中，Android 接收约 **90.04 fps**、解码与回调约 **90.01 fps**；SurfaceFlinger 的最终实际呈现约为 **87.98 fps**。面板 Hz、编码输出、解码回调和最终可见呈现始终分别报告。
@@ -73,7 +73,7 @@ TabLink 自有源码采用 [MIT License](LICENSE)。公开仓库只跟踪源码�
 
 ## 运行与使用
 
-既有版本已在 Windows 11 x64、中兴 W202DS 平板和 NVIDIA RTX 4060 Laptop GPU 上完成过显示与性能验证；0.8.8 Preview 1 的 W202DS 验收状态单独记录在 [VERIFICATION-0.8.8.md](VERIFICATION-0.8.8.md)。当前 0.8.9 候选必须按 [VERIFICATION-0.8.9.md](VERIFICATION-0.8.9.md) 重新验证，不能借用旧版本结果。GitHub Release 的 Windows x64 公共包为 self-contained，不需要另装 .NET；从源码运行或使用普通 framework-dependent 构建时需要 .NET 10 Desktop Runtime。0.8.8 起会在每次新连接开始前实际探测可用 H.264 后端；当前 NVIDIA 主机的 Auto 路径已选择 NVENC。QSV 已编入 helper，但本机没有可用的 Intel MFX 实现；AMF 已编入 helper，但本机没有 AMD AMF 运行库。两者都明确失败并保持强制后端不变，仍需在相应 Intel / AMD 电脑上做实机验证。APK 支持 Android 6.0 / API 23 及以上，实际解码能力和刷新率由设备决定。
+既有版本已在 Windows 11 x64、中兴 W202DS 平板和 NVIDIA RTX 4060 Laptop GPU 上完成过显示与性能验证；0.8.8 Preview 1 的历史验收记录在 [VERIFICATION-0.8.8.md](VERIFICATION-0.8.8.md)，0.8.9 Preview 1 的独立验收与公共发布闭环记录在 [VERIFICATION-0.8.9.md](VERIFICATION-0.8.9.md)。GitHub Release 的 Windows x64 公共包为 self-contained，不需要另装 .NET；从源码运行或使用普通 framework-dependent 构建时需要 .NET 10 Desktop Runtime。0.8.8 起会在每次新连接开始前实际探测可用 H.264 后端；当前 NVIDIA 主机的 Auto 路径已选择 NVENC。QSV 已编入 helper，但本机没有可用的 Intel MFX 实现；AMF 已编入 helper，但本机没有 AMD AMF 运行库。两者都明确失败并保持强制后端不变，仍需在相应 Intel / AMD 电脑上做实机验证。APK 支持 Android 6.0 / API 23 及以上，实际解码能力和刷新率由设备决定。
 
 ### 正式版自动更新
 
@@ -176,7 +176,7 @@ H.264 的解码提交和客户端呈现回调分开统计。`render-submitted` �
 
 ### 画质预设与自动码率
 
-当前 0.8.9 Preview 1 候选保留“自动、低延迟、均衡、高清晰”四种画质预设。这里的“自动画质”与“Auto 编码器”是两个独立设置：前者按链路反馈调整码率/GOP，后者在连接开始时挑选编码后端。无论画质计划怎样重建，本次连接选定的后端都保持不变。
+当前 0.8.9 Preview 1 保留“自动、低延迟、均衡、高清晰”四种画质预设。这里的“自动画质”与“Auto 编码器”是两个独立设置：前者按链路反馈调整码率/GOP，后者在连接开始时挑选编码后端。无论画质计划怎样重建，本次连接选定的后端都保持不变。
 
 本预览只调整 H.264 目标码率与 GOP。平板报告的原生方向、分辨率和请求刷新率保持不变，自动模式不会降低虚拟显示模式，也不会创建额外显示器。安全桌面暂停、反馈过期或证据不足时冻结判断。`0x16` 接收端反馈包含本会话的接收、队列、提交、呈现和丢弃累计值，但只用于自适应与诊断，不会推进解码提交、呈现回调或显示租约的健康期限。
 

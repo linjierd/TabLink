@@ -2,9 +2,9 @@
 
 <!-- tablink-version-contract: version=0.8.9; channel=preview; preview=1; androidVersionCode=21 -->
 
-验证开始日期：2026-10-02。候选身份为 Windows `0.8.9`、Android `0.8.9` / `versionCode 21`，计划 tag 为 `v0.8.9-preview.1`。本文把离线源码门禁、实机结果和公共发布结果分开记录；0.8.8 的构建哈希、W202DS 帧率、线路表现或 Release 回下载结果不能替代 0.8.9 验证。
+验证日期：2026-10-02。发布身份为 Windows `0.8.9`、Android `0.8.9` / `versionCode 21`，tag 为 `v0.8.9-preview.1`。本文把离线源码门禁、实机结果和公共发布结果分开记录；0.8.8 的构建哈希、W202DS 帧率、线路表现或 Release 回下载结果不能替代 0.8.9 验证。
 
-当前结论：**0.8.9 Preview 1 已完成提交 `6dcc75e65c848643d200787ec9271051e3701a14` 候选的 W202DS 核心实机验收与受保护 USB 会话连续交接验收，最终发布提交的公共构建、tag、Release 与公开回下载仍待完成。** 已通过范围包括保留数据覆盖安装、最终 APK 逐字回读、唯一副屏、设备实际显示参数、90 fps 编解码链路、位置变化不断线、物理呈现测量、没有强停 APK 的连续两轮 Windows 连接，以及每轮退出后的精确 VDD 与反向映射回收。一次性 token 重放、二维码轮换、撤销、整机重启、真实线路迁移和支持包真实 UI 仍是明确未测边界，不属于本次通过声明。公开下载仍为 0.8.8 Preview 1，签名 `stable` 清单仍为 0.8.0。
+当前结论：**0.8.9 Preview 1 已完成 W202DS 核心实机验收、受保护 USB 会话连续交接验收和公共预发行闭环。** 发布 tag 精确指向提交 `2a1c3aced048315e3171489fc410c6adeb2eed66`；该提交的完整 PublicRelease、精确 CI、四项 GitHub prerelease 资产、公开回下载和 Windows ZIP 全文件比对均通过。实机通过范围包括保留数据覆盖安装、最终 APK 逐字回读、唯一副屏、设备实际显示参数、90 fps 编解码链路、位置变化不断线、物理呈现测量、没有强停 APK 的连续两轮 Windows 连接，以及每轮退出后的精确 VDD 与反向映射回收。一次性 token 重放、二维码轮换、撤销、整机重启、真实线路迁移和支持包真实 UI 仍是明确未测边界，不属于本次通过声明。签名 `stable` 清单已重新下载并验签，仍为 0.8.0。
 
 ## 本版验证范围
 
@@ -28,18 +28,18 @@
 | Android JVM、`assembleDebug`、`lintDebug`、APK 签名 | 通过；debug APK 为 430,494 字节，SHA-256 `9F672878F77B642B7CC5FD2C2103D2F59174AD8C873215EE1CFA3C2E75CD19E8` | 包名 `com.tablink.client`、0.8.9 / build 21、minSdk 23、targetSdk 35；不运行真实 Android Keystore、MediaCodec 或网络迁移 |
 | `git diff --check` 与 18 个候选文件的隐私扫描 | 通过 | 覆盖 15 个已跟踪修改文件和 3 个新增文件；未发现个人用户目录、项目绝对路径、真实设备序列号、MAC 或配对秘密；命中项仅为回环/文档地址、固定工具哈希和明确标注的测试向量。只覆盖仓库文本与生成内容 |
 
-受保护会话交接与 USB 恢复修复候选 `6dcc75e65c848643d200787ec9271051e3701a14` 对应的 GitHub Actions run 为 [`36926091128`](https://github.com/linjierd/TabLink/actions/runs/36926091128)，`windows-managed-tests` 与 `android-debug-tests` 均成功。后续实机记录提交会形成新的发布提交，因此创建 tag 前仍须等待精确最终提交对应的新 CI；这里的成功只证明该次候选提交。
+受保护会话交接与 USB 恢复修复候选 `6dcc75e65c848643d200787ec9271051e3701a14` 对应的 GitHub Actions run 为 [`36926091128`](https://github.com/linjierd/TabLink/actions/runs/36926091128)，`windows-managed-tests` 与 `android-debug-tests` 均成功。包含最终实机记录的发布提交 `2a1c3aced048315e3171489fc410c6adeb2eed66` 对应的 run 为 [`36927438600`](https://github.com/linjierd/TabLink/actions/runs/36927438600)，同样由两个 job 完成且成功；annotated tag `v0.8.9-preview.1` 精确指向该提交。
 
-本轮 Windows、managed 和 Android 日志位于 E 盘 `artifacts/v0.8.9-offline-20261002-031634/`；版本契约的隔离负例结果位于 `artifacts/tmp/v089-contract-tests/`。首次 Windows 本地构建发生在版本提交之前，回读 FileVersion 为 `0.8.9.0`，ProductVersion 中的源修订仍是变更前基线 `7049c73dd934dd4d4927797d9b04b9c09aa560d8`；该记录只证明版本字段已经生效，不能作为最终发布提交证据。最终公共构建仍必须从干净提交重新生成并核对精确 ProductVersion。
+本轮 Windows、managed 和 Android 日志位于 E 盘 `artifacts/v0.8.9-offline-20261002-031634/`；版本契约的隔离负例结果位于 `artifacts/tmp/v089-contract-tests/`。首次 Windows 本地构建发生在版本提交之前，回读 FileVersion 为 `0.8.9.0`，ProductVersion 中的源修订仍是变更前基线 `7049c73dd934dd4d4927797d9b04b9c09aa560d8`；该记录只证明版本字段已经生效，不能作为最终发布提交证据。最终公共构建随后已从干净提交 `2a1c3aced048315e3171489fc410c6adeb2eed66` 重新生成，精确 ProductVersion、完整文件清单和公开回下载结果见下文。
 
 根构建入口随后以 `-SkipAndroid` 使用刚完成的 0.8.9 debug APK，在 E 盘 `artifacts/v0.8.9-package-smoke-20261002-032100/` 完成非公共打包冒烟：固定哈希 ADB 三件套只读核验、兼容性目录检查、全部 managed 门禁、Windows/DriverSetup publish 与传输 self-test 均通过。包内 `release-version.json` 为 0.8.9 / build 21，包含 `RELEASE-0.8.9.md`、`VERIFICATION-0.8.9.md`，`android/TabLink.apk` 与本轮 debug APK 的 SHA-256 一致。该目录是本地 framework-dependent 开发包，不是 self-contained 公共资产，也不满足干净提交或公开回下载门禁。
 
 ## 身份与打包
 
-- [x] 从干净候选提交 `6dcc75e65c848643d200787ec9271051e3701a14` 完成完整 `-PublicRelease`；`TabLink.exe` 的 FileVersion 为 `0.8.9.0`，ProductVersion 为 `0.8.9+6dcc75e65c848643d200787ec9271051e3701a14`。实机记录提交后仍须从精确最终提交重建，不能把该目录直接上传。
-- [x] 构建不可调试的 Android Release Preview；包名 `com.tablink.client`、`versionName 0.8.9`、`versionCode 21`、v1/v2 签名及固定签名证书 SHA-256 均通过门禁。该干净候选 APK 为 346,098 字节，SHA-256 `34DB1B9F2FD808D8BA7958F1744AA8915677F93FA7DABD820A62C86823F07C7D`。
+- [x] 从干净最终提交 `2a1c3aced048315e3171489fc410c6adeb2eed66` 完成完整 `-PublicRelease`；`TabLink.exe` 的 FileVersion 为 `0.8.9.0`，ProductVersion 为 `0.8.9+2a1c3aced048315e3171489fc410c6adeb2eed66`，SHA-256 为 `CAA9678795270275B0EB5CA2439C6F2C00C342DA93A7FA8E58AFE8184D167C3B`。
+- [x] 构建不可调试的 Android Release Preview；包名 `com.tablink.client`、`versionName 0.8.9`、`versionCode 21`、v1/v2 签名及固定签名证书 SHA-256 均通过门禁。最终 APK 为 346,098 字节，SHA-256 `34DB1B9F2FD808D8BA7958F1744AA8915677F93FA7DABD820A62C86823F07C7D`。
 - [x] 唯一授权的 W202DS 先从 0.8.8 / build 20 保留数据升级到 0.8.9 / build 21；受保护会话交接加入后，又以同一固定 Preview 签名原位覆盖最终代码候选。最后一次 `--no-streaming -r` 事务返回独立 `Success`，`firstInstallTime` 保持不变，`lastUpdateTime` 推进；新增 Provider authority 已出现。设备回拉 `base.apk` 为 346,098 字节且 SHA-256 与本次候选 APK 完全一致。
-- [x] 候选 Windows 包共 463 个文件，包内清单覆盖除清单自身外的 462 项且全部匹配；包含对应 Android APK、许可、FFmpeg 两个 helper 及完整对应源码，没有 PDB、Google ADB 三件套或受地域限制的浏览器依赖。最终发布提交仍须重新执行同一检查。
+- [x] 最终 Windows 包共 463 个文件，包内清单覆盖除清单自身外的 462 项且全部匹配；包含对应 Android APK、许可、FFmpeg 两个 helper 及完整对应源码，没有 PDB、Google ADB 三件套或受地域限制的浏览器依赖。公开下载 ZIP 解压后再次通过同一检查，并与最终 PublicRelease 全文件一致。
 
 首次真机尝试使用提交前生成的 0.8.9 Preview APK 和默认 streaming 安装路径。W202DS 厂商安装器显示了不含版本/session 身份的“安装完成”页面，但 ADB 安装客户端没有返回，包管理器回读仍为 0.8.8 / build 20；该次尝试已只终止挂起的单个 ADB 客户端，未停止共享 ADB 服务，也没有卸载或清除应用数据。因此它明确记为**未完成**，不能作为 0.8.9 安装证据。随后使用干净候选提交的 PublicRelease APK、固定哈希的 Google r37 三件套和唯一 W202DS，读取当前前台用户后只启动一次 `--no-streaming -r` 事务；厂商安装器依次显示“允许安装”和“安装”时，只确认了这一个已有事务，没有发起重试。该事务最终返回独立 `Success`，并由上面的版本、时间与回拉 APK 证据闭环。
 
@@ -103,12 +103,12 @@
 
 ## 公共发布
 
-- [ ] 从干净的最终提交执行完整 `-PublicRelease`，不得使用 `-SkipAndroid`。
-- [ ] CI 在精确发布提交上通过；annotated tag `v0.8.9-preview.1` 精确指向同一提交。
-- [ ] GitHub Release 标记为 prerelease，包含 Windows ZIP、Android APK、FFmpeg 对应源码和 `SHA256SUMS.txt`。
-- [ ] 记录每个公共资产的文件名、字节数和 SHA-256，并从 Release HTTPS 地址重新下载逐项比对。
-- [ ] 对 Windows ZIP 内每个文件做清单复核，确认无 PDB、个人路径、私密诊断或未获许可的二进制。
-- [ ] 签名 `stable` 清单重新下载并验签后仍为 0.8.0；发布 Preview 不推进稳定更新频道。
-- [ ] 上述步骤全部完成后，才把 README 的下载链接从 0.8.8 切换到 0.8.9。
+- [x] 从干净的最终提交执行完整 `-PublicRelease`，未使用 `-SkipAndroid`。
+- [x] CI 在精确发布提交上通过；annotated tag `v0.8.9-preview.1` 精确指向同一提交。
+- [x] GitHub Release 标记为 prerelease，包含 Windows ZIP、Android APK、FFmpeg 对应源码和 `SHA256SUMS.txt`。
+- [x] 已记录每个公共资产的文件名、字节数和 SHA-256，并从 Release HTTPS 地址重新下载逐项比对；精确数值见 [0.8.9 发布说明](RELEASE-0.8.9.md#公共发布资产)。
+- [x] 对公开下载的 Windows ZIP 内每个文件做清单复核；463 个文件与最终 PublicRelease 一致，没有 PDB、个人路径、私密诊断或未获许可的二进制。
+- [x] 签名 `stable` 清单重新下载并使用仓库固定 P-256 公钥验签后仍为 0.8.0；Windows 0.8.0 / build 800、Android 0.8.0 / build 11，发布 Preview 没有推进稳定更新频道。
+- [x] README 下载链接已从 0.8.8 切换到 0.8.9 Preview 1。
 
-在最终提交的完整 PublicRelease、成功 CI、annotated tag、GitHub prerelease、公开回下载逐项比对和 `stable` 0.8.0 不变验证完成前，本版只能称为 **0.8.9 Preview 1 源码候选**，不能称为公共预发行完成。token/二维码/逐次挑战、撤销、整机重启、真实线路迁移和支持包 UI 若仍未测，必须在完成核心公共门禁后继续列为 Preview 的明确限制，不得据此声称相关功能已经实机验证。
+0.8.9 Preview 1 已完成最终提交的完整 PublicRelease、成功 CI、annotated tag、GitHub prerelease、公开回下载逐项比对和 `stable` 0.8.0 不变验证。token/二维码/逐次挑战、撤销、整机重启、真实线路迁移和支持包 UI 仍保持 Preview 的明确未测限制，不得据此声称相关功能已经实机验证。

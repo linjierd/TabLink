@@ -137,8 +137,14 @@ if ($documentation[$verificationDocumentPath] -cnotmatch ('(?m)^# TabLink ' + [r
         ' ' + [regex]::Escape($previewLabel) + ' 验证记录$')) {
     throw 'Current verification document heading does not match eng\version.json.'
 }
-if ($documentation[$rootReadmePath] -cnotmatch ('当前是 \*\*' + [regex]::Escape($releaseVersion) +
-        ' ' + [regex]::Escape($previewLabel) + ' 源码候选\*\*') -or
+$candidateIdentityPattern = '当前是 \*\*' + [regex]::Escape($releaseVersion) +
+    ' ' + [regex]::Escape($previewLabel) + ' 源码候选\*\*'
+$publishedIdentityPattern = 'GitHub 已发布 \*\*' + [regex]::Escape($releaseVersion) +
+    ' ' + [regex]::Escape($previewLabel) + '\*\*'
+$hasCurrentReleaseIdentity =
+    $documentation[$rootReadmePath] -cmatch $candidateIdentityPattern -or
+    $documentation[$rootReadmePath] -cmatch $publishedIdentityPattern
+if (-not $hasCurrentReleaseIdentity -or
     $documentation[$rootReadmePath] -cnotmatch ('Android 身份为 \*\*' + [regex]::Escape($releaseVersion) +
         ' / build ' + $androidVersionCode + '\*\*')) {
     throw 'Root README current source identity does not match eng\version.json.'
