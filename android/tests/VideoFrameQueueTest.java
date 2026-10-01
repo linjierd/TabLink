@@ -37,14 +37,18 @@ public final class VideoFrameQueueTest {
     }
 
     private static void burst(int count) throws Exception {
-        VideoFrameQueue queue = filled();
+        // Frame expiry is a separate behavior covered below. Use a synthetic
+        // receive clock here so a cold or heavily loaded CI runner cannot turn
+        // this backpressure/ordering test into a 150 ms wall-clock race.
+        long frameClock = 1_000_000_000L;
+        VideoFrameQueue queue = filled(frameClock);
         AtomicReference<Throwable> failure = new AtomicReference<>();
         CountDownLatch[] accepted = new CountDownLatch[count - 6];
         for (int i = 0; i < accepted.length; i++) accepted[i] = new CountDownLatch(1);
         Thread producer = new Thread(() -> {
             try {
                 for (int i = 7; i <= count; i++) {
-                    if (!queue.offerWithBackpressure(frame(i, false, System.nanoTime()), WAIT))
+                    if (!queue.offerWithBackpressure(frame(i, false, frameClock), WAIT))
                         throw new AssertionError("burst lost a frame while consumer made room");
                     accepted[i - 7].countDown();
                 }
@@ -53,14 +57,14 @@ public final class VideoFrameQueueTest {
         producer.start();
         for (int i = 0; i < accepted.length; i++) {
             awaitWaiting(producer);
-            VideoAccessUnit value = queue.poll(System.nanoTime());
+            VideoAccessUnit value = queue.poll(frameClock + 1);
             check(value != null && value.ptsUs == i + 1, "consumer may poll while producer waits");
             check(accepted[i].await(1, TimeUnit.SECONDS), "poll wakes producer");
         }
         producer.join(1000);
         check(!producer.isAlive() && failure.get() == null, "burst producer completes");
         for (int pts = count - 5; pts <= count; pts++)
-            check(queue.poll(System.nanoTime()).ptsUs == pts, "remaining burst frames preserve reference order");
+            check(queue.poll(frameClock + 1).ptsUs == pts, "remaining burst frames preserve reference order");
         VideoFrameQueue.Snapshot state = queue.snapshot();
         check(queue.droppedFrames() == 0 && state.overflowEvents == 0, "7 to 12 frame bursts retain reference chain");
         check(state.highWaterMark == 6 && state.backpressureWaits >= 1, "burst remains at capacity six");
@@ -207,8 +211,11 @@ public final class VideoFrameQueueTest {
     }
 
     private static VideoFrameQueue filled() throws Exception {
+        return filled(System.nanoTime());
+    }
+    private static VideoFrameQueue filled(long receivedNanos) throws Exception {
         VideoFrameQueue queue = new VideoFrameQueue(6);
-        for (int i = 1; i <= 6; i++) queue.offer(frame(i, i == 1, System.nanoTime()));
+        for (int i = 1; i <= 6; i++) queue.offer(frame(i, i == 1, receivedNanos));
         return queue;
     }
     private static VideoAccessUnit frame(long pts, boolean idr, long now) throws Exception {
