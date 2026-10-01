@@ -24,13 +24,15 @@ Windows 的“检测与日志”页可以由用户主动导出支持包。保存
 
 `compatibility/catalog.json` 是人工审核的静态证据目录，并由严格验证器生成 Schema 和 Markdown 视图。目录拒绝未知字段、不一致的能力组合、缺少文档或提交闭环的证据、常见地址/路径/token/设备标识模式、reparse 边界逃逸以及非原子写入。它没有遥测，不会自动导入 Issue 或支持包，客户端也不会下载它。
 
-当前目录中的 W202DS 记录仍精确绑定 0.8.8 Preview 1。只有 0.8.9 完成新的实机验证后，才会以新记录 ID 添加 0.8.9 证据；不会改写旧记录。
+当前公开兼容性目录仍只包含精确绑定 0.8.8 Preview 1 的 W202DS 记录。本轮已经取得 0.8.9 核心实机证据，但新的兼容性记录必须在最终发布提交和 tag 确定后，以新的记录 ID、精确 `sourceCommit` 和实际测量值添加；不会改写旧记录，也不会提前把 `e34b2a9` 候选写成最终发布证据。
 
 ## 构建与版本门禁
 
 `eng/version.json` 现在保存当前 Preview 身份。Windows 项目版本、Android `versionName`、Android `versionCode`、当前发布文档和构建产物路径必须与它一致，根构建、Android 构建和 GitHub Actions 都在执行耗时任务前检查该契约。Android 产物名和 `aapt` 身份检查继续从 Gradle 的真实版本派生。
 
 CI 同时覆盖 Windows 两种浏览器功能配置、DriverSetup、所有 managed 测试、Android JVM 测试、`assembleDebug`、`lintDebug` 和 APK 签名验证。完整、逐项的当前结果和尚未完成的硬件边界见 [0.8.9 验证记录](VERIFICATION-0.8.9.md)。
+
+候选提交 `e34b2a99449884cb36b30342ab95defaacbfee5a` 对应的 [GitHub Actions run 36920331236](https://github.com/linjierd/TabLink/actions/runs/36920331236) 已成功完成 Windows 与 Android 两个 job。实机记录提交后形成的最终发布提交仍须取得自己的成功 CI，当前 run 不替代最终 tag 提交的门禁。
 
 ## 安卓安装兼容与帧率证据
 
