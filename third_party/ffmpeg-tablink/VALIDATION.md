@@ -1,6 +1,19 @@
-# Validation history and 0.8.4 multi-encoder status
+# Validation history and 0.8.5 multi-encoder status
 
-## 0.8.4 Preview 1 candidate status (2026-10-01)
+## 0.8.5 Preview 1 capture pacing status (2026-10-01)
+
+`0002-ddagrab-nonblocking-duplicate.patch` is compiled into both 0.8.5 helpers. It preserves the existing request-frame clock and original wait for probing/first-frame acquisition. Only the normal `dup_frames=1` path with an existing cached frame changes to a zero-timeout `AcquireNextFrame`; an immediately available new desktop frame is still acquired, while `DXGI_ERROR_WAIT_TIMEOUT` reuses the cached frame without an additional half-frame wait.
+
+The final 0.8.5 helpers use neutral `085` prefixes, contain no network protocols and expose no drive-qualified personal `Users` path. A 450-frame 1200×1920@90 NVENC synthetic run completed in 2.644412 seconds (170.170 fps throughput) without parser loss and verified SPS/PPS/IDR, strict PTS, one AUD per access unit, no B frames, repeated disposal and abrupt-owner JobObject cleanup. The final helper's bounded D3D11 barcode capture encoded 899 frames with 898 different source IDs, or 89.7460487 different source pictures/s by the source's QPC timeline, with one repeated ID and 7.13% of one CPU core. On the real W202DS chain, an ordinary desktop delivered 89.980 fps to Android and 89.948 fps render callbacks; a D3D11 dynamic source delivered 90.042 fps and 90.011 fps respectively. Both 30-second windows reported zero input, queue, scheduling and backpressure drops. SurfaceFlinger measured 86.745 fps for the ordinary desktop and 87.983 fps for the dynamic source, so those results are reported separately from encoded or decoded rates.
+
+Final 0.8.5 E-drive helper identities:
+
+* `ffmpeg.exe`: `3,463,680` bytes; SHA-256 `BB1FA5F2A5CC572C6A1D310F88348324EE43B84DF5A778FD0AF02D77B3C86627`.
+* `ffmpeg-x264.exe`: `3,999,744` bytes; SHA-256 `6E3EA733AD40DA6D6D78C2DFC51BCCA950C3519D3304AE045316F7D55B89EDB7`.
+
+The exact source-bundle hash is generated after this tracked validation record is embedded and is published in `SHA256SUMS` outside the archive rather than recursively inside its own manifest.
+
+## Historical 0.8.4 Preview 1 multi-encoder status (2026-10-01)
 
 0.8.4 changes the runtime layout from one NVENC-only helper to two independent executables:
 

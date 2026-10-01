@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "release": "0.8.4-preview.1",
-  "purpose": "Human-reviewable corresponding-source requirements for the final E-drive 0.8.4 Preview 1 build. The archive hash is published externally to avoid a circular self-hash.",
+  "release": "0.8.5-preview.1",
+  "purpose": "Human-reviewable corresponding-source requirements for the final E-drive 0.8.5 Preview 1 build. The archive hash is published externally to avoid a circular self-hash.",
   "displayLimit": 1,
   "helpers": [
     {
@@ -13,7 +13,7 @@
         "h264_amf"
       ],
       "networkProtocols": false,
-      "sha256": "F47DA86A069F8F8EB30BCF42CE6137962691A9A1197386D262646A33D3D62659",
+      "sha256": "BB1FA5F2A5CC572C6A1D310F88348324EE43B84DF5A778FD0AF02D77B3C86627",
       "sha256Status": "verified-final-e-drive-build"
     },
     {
@@ -24,7 +24,7 @@
       ],
       "networkProtocols": false,
       "runtimePolicy": "explicit-user-authorization; effective-video-fps-at-most-30",
-      "sha256": "B4C34236895D986C4ED452949515768348972DF1DC2FE8B85E81FEFEEA663EBE",
+      "sha256": "6E3EA733AD40DA6D6D78C2DFC51BCCA950C3519D3304AE045316F7D55B89EDB7",
       "sha256Status": "verified-final-e-drive-build"
     }
   ],
@@ -73,11 +73,13 @@
   ],
   "requiredBuildEvidence": [
     "TabLink high-resolution Windows wait patch",
+    "TabLink nonblocking DDA duplicate patch",
     "hardware and software configure commands",
     "E-drive TEMP/TMP/TMPDIR build log evidence",
     "encoder catalog checks",
     "no-network-protocol checks",
     "runtime exact-size and throughput probes",
+    "final 0.8.5 native D3D11 barcode capture result",
     "one-AUD-per-access-unit and SPS/PPS/IDR checks",
     "all applicable license texts and notices"
   ],

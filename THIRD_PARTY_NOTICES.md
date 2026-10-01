@@ -23,20 +23,29 @@ The dependency graph recorded by NuGet or Gradle remains authoritative for a
 particular build. Anyone publishing binaries is responsible for preserving all
 applicable notices and satisfying corresponding-source or relinking duties.
 
-For 0.8.4 Preview 1, the final E-drive hardware helper passed two NVIDIA NVENC
-1200 x 1920 @ 90 probes at 125.6-127.6 fps. Forced QSV failed closed on this
+The TabLink FFmpeg patch set contains `0001`, which replaces the private
+Windows capture wait with a per-call high-resolution waitable timer, and
+`0002`, which makes the cached-frame `ddagrab` query nonblocking only when
+`dup_frames=1`. The request-frame clock still paces output, and first-frame,
+probe and recovery paths retain the original bounded wait. Both patches and
+the complete corresponding source are included with the public package.
+
+For 0.8.5 Preview 1, the final E-drive hardware helper delivered all 450
+synthetic NVIDIA NVENC 1200 x 1920 @ 90 frames at 170.17 fps encoder
+throughput. Its bounded dynamic-desktop barcode run encoded 899 frames with
+898 different source IDs, or 89.746 different source pictures/s. Forced QSV failed closed on this
 host because no supported MFX implementation was available (`-9`); forced AMF
 failed closed because this non-AMD host had no `amfrt64.dll`. Neither failure
 changed backend. These results verify failure isolation on the current host,
 not QSV or AMF operation on compatible Intel or AMD hardware; those device
 validations remain pending.
 
-Final 0.8.4 delivery SHA-256 values are: `ffmpeg.exe`
-`F47DA86A069F8F8EB30BCF42CE6137962691A9A1197386D262646A33D3D62659`,
+Final 0.8.5 delivery SHA-256 values are: `ffmpeg.exe`
+`BB1FA5F2A5CC572C6A1D310F88348324EE43B84DF5A778FD0AF02D77B3C86627`,
 `ffmpeg-x264.exe`
-`B4C34236895D986C4ED452949515768348972DF1DC2FE8B85E81FEFEEA663EBE`,
+`6E3EA733AD40DA6D6D78C2DFC51BCCA950C3519D3304AE045316F7D55B89EDB7`,
 and `source-bundle.tar.gz`
-`C59D8F6D6B5FD02505D36714967183747010EE128FA29F9D967550BFCAE08D30`.
+`FD7977F53EDD262D55C49F200EB5F54B1B12F5FFA547770380448708D75EA6F2`.
 
 The browser receiver currently depends on SIPSorcery 10.0.16. Consequently,
 the TabLink-authored source is MIT licensed, while a combined binary that

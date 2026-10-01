@@ -1,0 +1,20 @@
+--- a/libavfilter/vsrc_ddagrab.c
++++ b/libavfilter/vsrc_ddagrab.c
+@@ -688,12 +688,16 @@ static int next_frame_internal(AVFilterContext *avctx, ID3D11Texture2D **desktop
+     DXGI_OUTDUPL_FRAME_INFO frame_info;
+     DdagrabContext *dda = avctx->priv;
+     IDXGIResource *desktop_resource = NULL;
++    const UINT acquire_timeout =
++        !need_frame && dda->dup_frames && dda->last_frame->buf[0] ? 0 : dda->time_timeout;
+     HRESULT hr;
+     int ret;
+ 
++    /* The request-frame clock already enforces the configured cadence. Once a
++     * fallback frame exists, do not spend half a frame waiting only to clone it. */
+     hr = IDXGIOutputDuplication_AcquireNextFrame(
+         dda->dxgi_outdupl,
+-        dda->time_timeout,
++        acquire_timeout,
+         &frame_info,
+         &desktop_resource);
+     if (hr == DXGI_ERROR_WAIT_TIMEOUT) {

@@ -30,7 +30,7 @@ if ($PSBoundParameters.ContainsKey('OutputDirectory')) {
 else {
     $publishRoot = Join-Path $projectRoot 'dist\TabLink'
 }
-$apkPath = Join-Path $projectRoot $(if ($PublicRelease) { 'android\artifacts\TabLink-android-0.8.4-preview.apk' } else { 'android\artifacts\TabLink-android-0.8.4-debug.apk' })
+$apkPath = Join-Path $projectRoot $(if ($PublicRelease) { 'android\artifacts\TabLink-android-0.8.5-preview.apk' } else { 'android\artifacts\TabLink-android-0.8.5-debug.apk' })
 $ffmpegRoot = Join-Path $projectRoot 'third_party\ffmpeg-tablink'
 $ffmpegHardwareBinary = Join-Path $ffmpegRoot 'bin\ffmpeg.exe'
 $ffmpegSoftwareBinary = Join-Path $ffmpegRoot 'bin\ffmpeg-x264.exe'
@@ -105,6 +105,61 @@ function Assert-FfmpegArtifactsMatchChecksums {
     }
 }
 
+function Assert-FfmpegHelpersMatchSourceManifest {
+    param(
+        [Parameter(Mandatory = $true)][string]$ManifestPath,
+        [Parameter(Mandatory = $true)][string]$HardwareBinaryPath,
+        [Parameter(Mandatory = $true)][string]$SoftwareBinaryPath
+    )
+
+    try {
+        $manifestDocument = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
+    }
+    catch {
+        throw 'FFmpeg SOURCE-BUNDLE-MANIFEST.json is not valid JSON; helper hashes cannot be verified.'
+    }
+    if ($null -eq $manifestDocument -or $manifestDocument -isnot [PSCustomObject]) {
+        throw 'FFmpeg SOURCE-BUNDLE-MANIFEST.json must contain a JSON object; helper hashes cannot be verified.'
+    }
+
+    $expectedHelpers = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $expectedHelpers.Add('ffmpeg.exe', $HardwareBinaryPath)
+    $expectedHelpers.Add('ffmpeg-x264.exe', $SoftwareBinaryPath)
+    $declaredHelpers = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $helpers = @($manifestDocument.helpers)
+    if ($helpers.Count -ne $expectedHelpers.Count) {
+        throw 'FFmpeg SOURCE-BUNDLE-MANIFEST.json helpers must contain exactly ffmpeg.exe and ffmpeg-x264.exe.'
+    }
+
+    foreach ($helper in $helpers) {
+        if ($null -eq $helper -or $helper -isnot [PSCustomObject]) {
+            throw 'FFmpeg SOURCE-BUNDLE-MANIFEST.json contains an invalid helpers entry.'
+        }
+        $helperFile = [string]$helper.file
+        if ([string]::IsNullOrWhiteSpace($helperFile) -or -not $expectedHelpers.ContainsKey($helperFile)) {
+            throw "FFmpeg SOURCE-BUNDLE-MANIFEST.json contains an unexpected helper file: $helperFile"
+        }
+        if (-not $declaredHelpers.Add($helperFile)) {
+            throw "FFmpeg SOURCE-BUNDLE-MANIFEST.json contains a duplicate helper entry: $helperFile"
+        }
+
+        $declaredHash = [string]$helper.sha256
+        if ($declaredHash -notmatch '^[0-9A-Fa-f]{64}$') {
+            throw "FFmpeg SOURCE-BUNDLE-MANIFEST.json helper $helperFile has a missing or malformed SHA-256 value."
+        }
+        $actualHash = (Get-FileHash -LiteralPath $expectedHelpers[$helperFile] -Algorithm SHA256).Hash
+        if (-not [string]::Equals($actualHash, $declaredHash, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "FFmpeg helper does not match SOURCE-BUNDLE-MANIFEST.json: $helperFile (declared $declaredHash; actual $actualHash)."
+        }
+    }
+
+    foreach ($helperFile in $expectedHelpers.Keys) {
+        if (-not $declaredHelpers.Contains($helperFile)) {
+            throw "FFmpeg SOURCE-BUNDLE-MANIFEST.json is missing the required helper entry: $helperFile"
+        }
+    }
+}
+
 function Invoke-FfmpegAuditCommand {
     param(
         [Parameter(Mandatory = $true)][string]$BinaryPath,
@@ -150,10 +205,10 @@ function Assert-FfmpegBinarySafe {
 
     $versionFirstLine = @($version -split "`r?`n")[0]
     $expectedVersionPrefix = if ($Flavor -eq 'Hardware') {
-        'ffmpeg version 7.0.2-tablink-084-hardware1 '
+        'ffmpeg version 7.0.2-tablink-085-hardware2 '
     }
     else {
-        'ffmpeg version 7.0.2-tablink-084-libx264-1 '
+        'ffmpeg version 7.0.2-tablink-085-libx264-2 '
     }
     if (-not $versionFirstLine.StartsWith($expectedVersionPrefix, [StringComparison]::Ordinal)) {
         throw "$description FFmpeg does not identify as the pinned TabLink FFmpeg 7.0.2 build ($expectedVersionPrefix)."
@@ -167,7 +222,7 @@ function Assert-FfmpegBinarySafe {
     )
     $configurationOptionSet = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     foreach ($option in $configurationOptions) { [void]$configurationOptionSet.Add($option) }
-    $expectedPrefix = if ($Flavor -eq 'Hardware') { '--prefix=/ffmpeg-tablink-084-hardware' } else { '--prefix=/ffmpeg-tablink-084-software' }
+    $expectedPrefix = if ($Flavor -eq 'Hardware') { '--prefix=/ffmpeg-tablink-085-hardware' } else { '--prefix=/ffmpeg-tablink-085-software' }
     foreach ($requiredOption in @(
         $expectedPrefix,
         '--disable-everything',
@@ -326,6 +381,7 @@ function Assert-FfmpegSourceBundleSafe {
             'ffmpeg-tablink/source/x264-b35605ace3dd/x264.h',
             'ffmpeg-tablink/source/x264-b35605ace3dd/COPYING',
             'ffmpeg-tablink/0001-windows-private-high-resolution-usleep.patch',
+            'ffmpeg-tablink/0002-ddagrab-nonblocking-duplicate.patch',
             'ffmpeg-tablink/README.md',
             'ffmpeg-tablink/build.ps1',
             'ffmpeg-tablink/build.sh',
@@ -344,6 +400,7 @@ function Assert-FfmpegSourceBundleSafe {
             'ffmpeg-tablink/signature-verification.log',
             'ffmpeg-tablink/production-parser-test.log',
             'ffmpeg-tablink/NATIVE-MOTION-VALIDATION.md',
+            'ffmpeg-tablink/motion-085-final-result.json',
             'ffmpeg-tablink/VALIDATION.md'
         )
         foreach ($requiredEntry in $requiredEntries) {
@@ -406,6 +463,8 @@ if ($PublicRelease) {
     Assert-FfmpegArtifactsMatchChecksums -ChecksumPath $ffmpegChecksums `
         -HardwareBinaryPath $ffmpegHardwareBinary -SoftwareBinaryPath $ffmpegSoftwareBinary `
         -SourceBundlePath $ffmpegSourceBundle
+    Assert-FfmpegHelpersMatchSourceManifest -ManifestPath $ffmpegSourceManifest `
+        -HardwareBinaryPath $ffmpegHardwareBinary -SoftwareBinaryPath $ffmpegSoftwareBinary
     Assert-FfmpegBinarySafe -BinaryPath $ffmpegHardwareBinary -Flavor Hardware
     Assert-FfmpegBinarySafe -BinaryPath $ffmpegSoftwareBinary -Flavor Software
 }
@@ -513,7 +572,7 @@ Get-ChildItem -LiteralPath (Join-Path $ffmpegRoot 'bin') -Filter 'COPYING*' -Fil
 if ($PublicRelease) {
     Assert-FfmpegSourceBundleSafe -BundlePath $ffmpegSourceBundle -ManifestPath $ffmpegSourceManifest
 }
-foreach ($name in @('README.md','SHA256SUMS','source-bundle.tar.gz','SOURCE-BUNDLE-MANIFEST.json','0001-windows-private-high-resolution-usleep.patch','downloads-manifest.json')) {
+foreach ($name in @('README.md','SHA256SUMS','source-bundle.tar.gz','SOURCE-BUNDLE-MANIFEST.json','0001-windows-private-high-resolution-usleep.patch','0002-ddagrab-nonblocking-duplicate.patch','downloads-manifest.json')) {
     Copy-Item -LiteralPath (Join-Path $ffmpegRoot $name) -Destination $ffmpegOutput
 }
 if (Test-Path -LiteralPath (Join-Path $ffmpegRoot 'NATIVE-MOTION-VALIDATION.md')) {
@@ -528,8 +587,8 @@ Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md') -Destination $publis
 Copy-Item -LiteralPath (Join-Path $projectRoot 'AUTHORS.md') -Destination $publishRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot 'LICENSE') -Destination $publishRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot 'THIRD_PARTY_NOTICES.md') -Destination $publishRoot
-Copy-Item -LiteralPath (Join-Path $projectRoot 'RELEASE-0.8.4.md') -Destination $publishRoot
-Copy-Item -LiteralPath (Join-Path $projectRoot 'VERIFICATION-0.8.4.md') -Destination $publishRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot 'RELEASE-0.8.5.md') -Destination $publishRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot 'VERIFICATION-0.8.5.md') -Destination $publishRoot
 if ($PublicRelease) {
     Copy-Item -LiteralPath (Join-Path $projectRoot 'PUBLIC-RELEASE.md') -Destination $publishRoot
     Copy-Item -LiteralPath (Join-Path $projectRoot 'ADB-SETUP.md') -Destination $publishRoot

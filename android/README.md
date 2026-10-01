@@ -1,4 +1,4 @@
-# TabLink Android 客户端 0.8.4 Preview 1
+# TabLink Android 客户端 0.8.5 Preview 1
 
 作者：**张林杰（Jey / [@linjierd](https://github.com/linjierd)）** · 博客：[Linjie / 开发笔记](https://linjie.space/)
 
@@ -40,7 +40,7 @@ TLS 握手成功后，客户端在 `0x10` 认证中声明 `render-submitted-v1`�
 
 ## 正式版自动更新
 
-自 0.8.0 起，Android 客户端在进入前台时立即读取电脑端同一套签名稳定版清单，应用保持打开期间每 6 小时复查。当前 0.8.4 Preview 1 保留此机制，但已签名的公网 stable 清单仍保持 0.8.0，不会因安装或发布预览版而自动推进。默认开启自动下载；设置面板可以关闭自动下载，或手动检查、继续和重试。投屏期间只检查，不下载或安装；停止投屏后继续。
+自 0.8.0 起，Android 客户端在进入前台时立即读取电脑端同一套签名稳定版清单，应用保持打开期间每 6 小时复查。当前 0.8.5 Preview 1 保留此机制，但已签名的公网 stable 清单仍保持 0.8.0，不会因安装或发布预览版而自动推进。默认开启自动下载；设置面板可以关闭自动下载，或手动检查、继续和重试。投屏期间只检查，不下载或安装；停止投屏后继续。
 
 发布构建必须通过 `-UpdateManifestUrl` 注入 HTTPS 清单地址。客户端先验证内置 P-256 公钥对应的签名，再核对 stable SemVer、versionCode、包名、APK 签名、大小和 SHA-256。安装使用 Android `PackageInstaller`：Android 12 及以上会请求无需用户操作，但系统仍可要求显示标准确认页。当前直接分发包继续使用既有开发签名，以便已安装的平板原地更新；切换到新的商店签名前必须单独安排签名迁移。
 
@@ -68,7 +68,7 @@ Set-Location '<repository-root>\android'
 
 其他电脑可通过三个参数指定工具路径；首次需要下载 Gradle 插件依赖时省略 `-Offline`。脚本只在当前进程设置 Java/SDK 环境变量，并在退出时恢复。
 
-普通构建输出 `artifacts/TabLink-android-0.8.4-debug.apk`。增加 `-ReleasePreview` 会运行 `assembleRelease` / `lintRelease`，输出不可调试的 `artifacts/TabLink-android-0.8.4-preview.apk`。两者均为 `versionName 0.8.4`、`versionCode 16`（build 16），并使用本机生成且被 Git 忽略的 `build/signing/debug.keystore` 开发证书，以便覆盖早期 TabLink 测试安装；它不是应用商店生产签名。应安全保留同一份签名文件，绝不能把私钥提交到仓库。
+普通构建输出 `artifacts/TabLink-android-0.8.5-debug.apk`。增加 `-ReleasePreview` 会运行 `assembleRelease` / `lintRelease`，输出不可调试的 `artifacts/TabLink-android-0.8.5-preview.apk`。两者均为 `versionName 0.8.5`、`versionCode 17`（build 17），并使用本机生成且被 Git 忽略的 `build/signing/debug.keystore` 开发证书，以便覆盖早期 TabLink 测试安装；它不是应用商店生产签名。应安全保留同一份签名文件，绝不能把私钥提交到仓库。
 
 本机构建时发现系统 SDK 的 build-tools 35.0.0 目录只有未完成安装记录，因此在项目 `.tools/sdk` 中准备了隔离 SDK：复制现有 SDK platform 35，并从 [Google Android 官方仓库](https://dl.google.com/android/repository/build-tools_r35_windows.zip) 下载 build-tools 35.0.0。压缩包使用 [官方 repository 元数据](https://dl.google.com/android/repository/repository2-1.xml) 中 SHA-1 `af059bb67cf7786f45ee0db85e2d24985df1b4b6` 校验。没有修改系统 SDK。`.tools`、`.gradle`、`build` 和 `app/build` 属于本地构建工具或缓存，不应放进用户发行包。
 
@@ -77,7 +77,7 @@ Set-Location '<repository-root>\android'
 电脑端应先检查用户选定的设备未被排除，并且是获准使用的 USB 调试设备。以下命令中的 `SERIAL` 必须是该设备的真实序列号；不要批量对所有设备执行。
 
 ```text
-adb -s SERIAL install -r TabLink-android-0.8.4-preview.apk
+adb -s SERIAL install -r TabLink-android-0.8.5-preview.apk
 adb -s SERIAL reverse --no-rebind tcp:27183 tcp:27183
 adb -s SERIAL shell am start -n com.tablink.client/.MainActivity --es host 127.0.0.1 --ei port 27183 --es token RANDOM_SESSION_TOKEN
 ```
@@ -88,9 +88,9 @@ adb -s SERIAL shell am start -n com.tablink.client/.MainActivity --es host 127.0
 
 应用进入后台、用户点击退出或新会话取代旧会话时会关闭连接、结束工作线程并释放位图。恢复前台时使用当前启动参数连接。正常断线后按 1、2、4、8、10 秒间隔自动重试；成功收到画面后重置退避。收到电脑端错误包后停止自动重试，由用户或电脑端重新发起连接。
 
-## 0.8.4 AVC 编码器兼容
+## 0.8.5 AVC 编码器兼容
 
-电脑端 0.8.4 可以从 NVIDIA NVENC、Intel QSV、AMD AMF 和显式授权的 libx264 中选择 H.264 后端。Android 端不依赖具体厂商，仍只接受协议 v1 的 `codec:"video/avc"` 配置，并让 MediaCodec 按现有硬件优先策略选择本机 decoder。`0x20` 可附带 `encoder` 等诊断字段；它们是可选字段，旧客户端和本客户端都不以这些字段决定解码安全边界。
+电脑端 0.8.5 可以从 NVIDIA NVENC、Intel QSV、AMD AMF 和显式授权的 libx264 中选择 H.264 后端。Android 端不依赖具体厂商，仍只接受协议 v1 的 `codec:"video/avc"` 配置，并让 MediaCodec 按现有硬件优先策略选择本机 decoder。`0x20` 可附带 `encoder` 等诊断字段；它们是可选字段，旧客户端和本客户端都不以这些字段决定解码安全边界。
 
 AVC 配置要求正数宽高和帧率、有效的 Base64 SPS/PPS，并拒绝超过 16,000,000 像素的画面。未知的未来 JSON 字段继续忽略，以保持协议 v1 向前兼容。首个访问单元以及配置变化后的首个访问单元必须是带 SPS/PPS 的 IDR；不同 Windows 后端都禁用 B 帧并统一 AUD 边界。违反这些条件会结束当前异常视频配置，不会把损坏参数交给 MediaCodec。
 
@@ -199,7 +199,7 @@ H.264 必须先发 `0x20` 配置，SPS/PPS 分别为带 Annex-B 起始码的 Bas
 
 最终 0.4.2（APK SHA-256 `4F6FBBD8D22447A1D2702B2028A4868CC779D89124074E8923BBE667DFCD58FC`）已通过正常安装、默认开关开启的长时间真机验证：Windows 控制窗口最小化，原生 1200×1920 / 90 Hz，120.433 秒实际呈现 **89.702 fps**，四段 30 秒为 89.800 / 89.667 / 89.733 / 89.567 fps，P99 11.147 ms，最大间隔 33.295 ms，没有断线或采样覆盖缺口。该结果来自 SurfaceFlinger 实际呈现时间戳，而非计划帧率。完整方法和保留的未通过候选结果见根目录 `VERIFICATION.md` 与发行目录 `diagnostics/final042-driftfixed-*`。
 
-- 0.8.4 Preview 1 保留 0.8.3 的能力协商、队列 recovery epoch、关键帧限频、接收端反馈和 decoder 候选测试，并新增 AVC 配置与 16,000,000 像素边界断言。纯 JVM 测试不运行真实 MediaCodec；不同 Windows 编码后端、真实队列拥塞和 decoder 运行时故障后的恢复仍须实机验证。最终结果以根目录 `VERIFICATION-0.8.4.md` 为准。
+- 0.8.5 Preview 1 保留 0.8.3 的能力协商、队列 recovery epoch、关键帧限频、接收端反馈和 decoder 候选测试，并新增 AVC 配置与 16,000,000 像素边界断言。纯 JVM 测试不运行真实 MediaCodec；不同 Windows 编码后端、真实队列拥塞和 decoder 运行时故障后的恢复仍须实机验证。最终结果以根目录 `VERIFICATION-0.8.5.md` 为准。
 - 20 项纯 JVM HUD / 暂停状态断言：透明度与不透明度方向、持久化数值边界、九宫格位置、颜色格式，以及暂停、普通心跳、恢复和同会话序号延续。0.5.0 的设置手势、沉浸显示和电脑采集暂停恢复仍需真机联合验证；不能用这些逻辑测试替代运行中的画面验收。
 - 26,024 项独立纯 JVM RenderClock 断言覆盖稳定 90 fps、解码抖动、较慢输入、首批突发、长停顿、固定硬件流水线延迟、重复/倒序 PTS、极大 PTS 跳变、重连重置，以及不同帧率下未来排程不超过 25 ms。新增 100 秒缓慢时钟偏移、持续到达延迟和正负 5 ms 交替抖动用例；后者检查计划间隔均匀且不会反复触发上下限修正。逻辑测试仅验证时钟行为，不能替代最终实际呈现率验收。
 - `assembleDebug` / `assembleRelease` 与 `lintDebug` / `lintRelease` 成功；release Lint 为 0 error / 18 warning，警告仍涉及目标 SDK 版本、较新 XML 属性和中文界面可翻译性等兼容/维护项。

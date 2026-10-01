@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using TabLink.Core;
@@ -68,19 +69,54 @@ internal sealed record VideoQualitySnapshot(
     string State,
     DateTime? LastChangedUtc);
 
-/// <summary>Produces one strictly increasing media timeline across encoder restarts.</summary>
+/// <summary>
+/// Produces one strictly increasing media timeline across encoder restarts.
+/// Slow capture follows real monotonic time while short encoder bursts retain
+/// at least one target-frame interval between adjacent access units.
+/// </summary>
 internal sealed class MediaTimestampClock
 {
-    double next;
+    readonly Func<long> monotonicMicroseconds;
+    bool started;
+    long originMicroseconds;
+    double cadencePosition;
     long last = -1;
+
+    internal MediaTimestampClock(Func<long>? monotonicMicroseconds = null)
+    {
+        this.monotonicMicroseconds = monotonicMicroseconds ?? ReadMonotonicMicroseconds;
+    }
 
     internal long Next(int fps)
     {
         if (fps is < 1 or > 240) throw new ArgumentOutOfRangeException(nameof(fps));
-        var value = Math.Max(last + 1, checked((long)Math.Round(next, MidpointRounding.AwayFromZero)));
+        var now = monotonicMicroseconds();
+        if (!started)
+        {
+            started = true;
+            originMicroseconds = now;
+            cadencePosition = 0;
+            last = 0;
+            return 0;
+        }
+
+        var elapsed = NonNegativeElapsed(originMicroseconds, now);
+        if (last == long.MaxValue) throw new InvalidOperationException("Media timestamp range is exhausted.");
+        var cadenceTarget = cadencePosition + 1_000_000d / fps;
+        var cadence = checked((long)Math.Round(cadenceTarget, MidpointRounding.AwayFromZero));
+        var value = Math.Max(last + 1, Math.Max(elapsed, cadence));
         last = value;
-        next += 1_000_000d / fps;
+        cadencePosition = elapsed > cadence ? elapsed : cadenceTarget;
         return value;
+    }
+
+    static long ReadMonotonicMicroseconds() =>
+        Stopwatch.GetElapsedTime(0, Stopwatch.GetTimestamp()).Ticks / 10;
+
+    static long NonNegativeElapsed(long origin, long current)
+    {
+        try { return Math.Max(0, checked(current - origin)); }
+        catch (OverflowException) { return current >= origin ? long.MaxValue : 0; }
     }
 }
 

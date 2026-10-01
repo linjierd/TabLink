@@ -88,14 +88,77 @@ internal static class VideoQualityTests
             "fifteen stable windows did not restore one bitrate level");
         results.Add("fifteen stable windows restore one bitrate level after cooldown");
 
-        var clock = new MediaTimestampClock();
-        var timestamps = new List<long>();
-        foreach (var fps in new[] { 90, 90, 90, 45, 45, 24, 24, 90, 90 }) timestamps.Add(clock.Next(fps));
-        Check(timestamps.Zip(timestamps.Skip(1), (left, right) => right > left).All(value => value),
-            "media timestamps stopped increasing across encoder-rate changes");
-        Check(timestamps[3] > timestamps[2] && timestamps[7] > timestamps[6],
-            "media timestamp clock reset at an encoder plan boundary");
-        results.Add("one media clock stays strictly increasing across simulated encoder-rate changes");
+        long steadyNow = 0;
+        var steadyClock = new MediaTimestampClock(() => steadyNow);
+        var steady = new List<long>();
+        for (var frame = 0; frame <= 900; frame++)
+        {
+            steadyNow = (long)Math.Round(frame * 1_000_000d / 90, MidpointRounding.AwayFromZero);
+            steady.Add(steadyClock.Next(90));
+        }
+        Check(steady[0] == 0 && Math.Abs(steady[^1] - 10_000_000) <= 1 &&
+              steady.Zip(steady.Skip(1), (left, right) => right > left).All(value => value),
+            "steady 90 fps media timestamps did not preserve ten seconds of monotonic time");
+        results.Add("steady 90 fps timestamps preserve real duration and strict ordering");
+
+        long longRunNow = 0;
+        var longRunClock = new MediaTimestampClock(() => longRunNow);
+        long longRunPrevious = -1;
+        for (var frame = 0; frame <= 90 * 60 * 60; frame++)
+        {
+            longRunNow = (long)Math.Round(frame * 1_000_000d / 90, MidpointRounding.AwayFromZero);
+            var timestamp = longRunClock.Next(90);
+            Check(timestamp > longRunPrevious, "long-running 90 fps media timestamps stopped increasing");
+            longRunPrevious = timestamp;
+        }
+        Check(Math.Abs(longRunPrevious - 3_600_000_000L) <= 1,
+            "one hour of steady 90 fps media timestamps accumulated rounding drift");
+        results.Add("one hour of steady 90 fps timestamps remains drift-free");
+
+        long slowNow = 0;
+        var slowClock = new MediaTimestampClock(() => slowNow);
+        var slow = new List<long>();
+        for (var frame = 0; frame <= 650; frame++)
+        {
+            slowNow = (long)Math.Round(frame * 1_000_000d / 65, MidpointRounding.AwayFromZero);
+            slow.Add(slowClock.Next(90));
+        }
+        Check(Math.Abs(slow[^1] - 10_000_000) <= 1 && slow[^1] > 9_900_000,
+            "a 65 fps source was compressed onto a 90 fps ordinal timeline");
+        Check(slow.Zip(slow.Skip(1), (left, right) => right > left).All(value => value),
+            "slow-source media timestamps stopped increasing");
+        results.Add("90 fps configuration follows ten seconds of actual 65 fps source time");
+
+        long burstNow = 0;
+        var burstClock = new MediaTimestampClock(() => burstNow);
+        var burst = Enumerable.Range(0, 10).Select(_ => burstClock.Next(90)).ToArray();
+        Check(burst.Zip(burst.Skip(1), (left, right) => right - left >= 11_111).All(value => value) &&
+              burst[^1] >= (long)Math.Round((burst.Length - 1) * 1_000_000d / 90,
+                  MidpointRounding.AwayFromZero),
+            "a short encoder burst exceeded the configured 90 fps media cadence");
+        results.Add("short encoder bursts retain at least one target-frame interval");
+
+        long changingNow = 1_000_000;
+        var changingClock = new MediaTimestampClock(() => changingNow);
+        var changing = new List<long> { changingClock.Next(90) };
+        foreach (var fps in new[] { 90, 90, 45, 45, 24, 24, 90, 90 })
+        {
+            changingNow += 1_000_000 / fps;
+            changing.Add(changingClock.Next(fps));
+        }
+        var beforeRebuild = changing[^1];
+        changingNow += 500_000;
+        var afterRebuild = changingClock.Next(90);
+        Check(changing.Zip(changing.Skip(1), (left, right) => right > left).All(value => value) &&
+              afterRebuild > beforeRebuild,
+            "media timestamp clock reset at an encoder rate/rebuild boundary");
+
+        var beforeRollback = afterRebuild;
+        changingNow -= 2_000_000;
+        var afterRollback = changingClock.Next(90);
+        Check(afterRollback > beforeRollback && afterRollback - beforeRollback >= 11_111,
+            "a monotonic-clock rollback regressed or compressed media timestamps");
+        results.Add("one media clock stays continuous across rate changes, rebuild gaps and clock rollback");
 
         var preferenceRoot=Path.Combine(Directory.GetCurrentDirectory(),".tablink-video-preferences-"+Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(preferenceRoot);

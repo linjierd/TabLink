@@ -51,8 +51,8 @@ sed "s|@@PREFIX@@|$BUILD_ROOT/source/nv-codec-headers-n12.2.72.0|" \
 cd "$HARDWARE_BUILD"
 export PKG_CONFIG_PATH="$HARDWARE_DEPS/lib/pkgconfig;$HARDWARE_BUILD/pkgconfig"
 sh -c 'awk() { "$TABLINK_GNU_AWK" "$@"; }; . "$0" "$@"' "$BUILD_ROOT/source/ffmpeg-7.0.2/configure" \
-    --prefix=/ffmpeg-tablink-084-hardware \
-    --extra-version=tablink-084-hardware1 \
+    --prefix=/ffmpeg-tablink-085-hardware \
+    --extra-version=tablink-085-hardware2 \
     --target-os=mingw32 --arch=x86_64 --cc=gcc --cxx=g++ \
     --extra-cflags="-I../../deps/hardware/include" \
     --extra-ldflags="-L../../deps/hardware/lib -Wl,--no-insert-timestamp" \
@@ -77,8 +77,8 @@ cp ffmpeg.exe "$BUILD_ROOT/bin/ffmpeg.exe"
 cd "$SOFTWARE_BUILD"
 export PKG_CONFIG_PATH="$SOFTWARE_DEPS/lib/pkgconfig"
 sh -c 'awk() { "$TABLINK_GNU_AWK" "$@"; }; . "$0" "$@"' "$BUILD_ROOT/source/ffmpeg-7.0.2/configure" \
-    --prefix=/ffmpeg-tablink-084-software \
-    --extra-version=tablink-084-libx264-1 \
+    --prefix=/ffmpeg-tablink-085-software \
+    --extra-version=tablink-085-libx264-2 \
     --target-os=mingw32 --arch=x86_64 --cc=gcc --cxx=g++ \
     --extra-cflags="-I../../deps/software/include" \
     --extra-ldflags="-L../../deps/software/lib -Wl,--no-insert-timestamp" \

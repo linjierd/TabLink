@@ -132,6 +132,7 @@ function Assert-ArchiveLayout {
         'ffmpeg-tablink/source/AMF-1.4.35/amf/public/include/core/Context.h',
         'ffmpeg-tablink/source/AMF-1.4.35/amf/public/include/components/VideoEncoderVCE.h',
         'ffmpeg-tablink/0001-windows-private-high-resolution-usleep.patch',
+        'ffmpeg-tablink/0002-ddagrab-nonblocking-duplicate.patch',
         'ffmpeg-tablink/build.ps1',
         'ffmpeg-tablink/build.sh',
         'ffmpeg-tablink/New-SourceBundle.ps1',
@@ -141,6 +142,7 @@ function Assert-ArchiveLayout {
         'ffmpeg-tablink/README.md',
         'ffmpeg-tablink/VALIDATION.md',
         'ffmpeg-tablink/NATIVE-MOTION-VALIDATION.md',
+        'ffmpeg-tablink/motion-085-final-result.json',
         'ffmpeg-tablink/bin/COPYING.oneVPL-third-party-programs.txt'
     ) | ForEach-Object { [void]$requiredEntries.Add($_) }
 
@@ -254,6 +256,7 @@ try {
 
     foreach ($relativePath in @(
         '0001-windows-private-high-resolution-usleep.patch',
+        '0002-ddagrab-nonblocking-duplicate.patch',
         'build.ps1',
         'build.sh',
         'New-SourceBundle.ps1',
@@ -262,7 +265,8 @@ try {
         'SOURCE-BUNDLE-MANIFEST.json',
         'README.md',
         'VALIDATION.md',
-        'NATIVE-MOTION-VALIDATION.md'
+        'NATIVE-MOTION-VALIDATION.md',
+        'motion-085-final-result.json'
     )) {
         Copy-RequiredFile -RelativePath $relativePath -DestinationRoot $archiveRoot
     }

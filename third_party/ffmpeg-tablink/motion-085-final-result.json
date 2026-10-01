@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "date": "2026-10-01",
+  "helper": {
+    "version": "7.0.2-tablink-085-hardware2",
+    "sha256": "BB1FA5F2A5CC572C6A1D310F88348324EE43B84DF5A778FD0AF02D77B3C86627"
+  },
+  "capture": {
+    "sourceFilter": "ddagrab=output_idx=1:framerate=90:video_size=1536x960:draw_mouse=1:output_fmt=bgra:dup_frames=1",
+    "wallSeconds": 10.522122600013972,
+    "cpuSeconds": 0.75,
+    "oneCoreCpuPercent": 7.127839396197533,
+    "encodedFrames": 899,
+    "uniqueSourceIds": 898,
+    "repeatedSourceIds": 1,
+    "actualUniqueFps": 89.7,
+    "sourceSpanSeconds": 9.994869,
+    "uniqueFpsBySourceClock": 89.74604869758673
+  },
+  "source": {
+    "kind": "d3d11-flip-discard",
+    "verifiedDisplayModeHz": 90,
+    "presentSyncInterval": 1,
+    "presentCount": 2872,
+    "presentFps": 239.291627,
+    "medianPresentGapMs": 4.1695,
+    "p90PresentGapMs": 4.36
+  },
+  "result": "pass"
+}
