@@ -12,7 +12,7 @@ node native/harmony/tests/project-check.mjs
 
 - 84 项协议断言通过。测试执行仓库 `Wire.ts` 经 Node 内置类型剥离后的实际函数，覆盖全部原生端口、非法 URI/指纹、分片/合包、2 MiB 大帧分片、包长/PTS/Annex-B/SPS/PPS 与新解码器首次输出门槛。
 - 43 项 stable 更新策略/签名断言通过。Node 使用内置 P-256 验签固定跨端 signed-envelope fixture，并验证篡改拒绝、stable SemVer/构建号、0–100 灰度边界和 bucket 20 固定向量、平台唯一、整秒 UTC 与小数秒拒绝、带 query 的正式 HTTPS 下载 URL、userinfo/fragment 拒绝、应用市场/正式跳转严格 allowlist、cohort 与 Harmony artifact 选择。
-- 42 项工程/资源/关键源码路径静态检查通过。它检查 JSON、`0.8.0` / code 800、页面引用、证书指纹验证位于 token 发送之前、原生硬解入口、RenderOutputBuffer 成功后才计数、只发 0x14、不发 0x12、固定更新地址/公钥、先验签后解析、无自安装 HAP，以及停止 worker 后才销毁 codec。
+- 43 项工程/资源/关键源码路径静态检查通过。它检查 JSON、`0.8.0` / code 800、页面引用、证书指纹验证位于 token 发送之前、HELLO 声明 `render-submitted-v1` 且只在电脑回显后发送 0x14、原生硬解入口、RenderOutputBuffer 成功后才计数、不发 0x12、固定更新地址/公钥、先验签后解析、无自安装 HAP，以及停止 worker 后才销毁 codec。
 - 已对照官方 Socket 文档复核 `TLSSocket.send(ArrayBuffer)`、`getRemoteCertificate`、TLS 协议数组与 API 12 `skipRemoteValidation`。使用显式证书指纹校验后才发送应用层凭证；没有跳过 pin 的连接路径。
 - 已人工审查 C++ 待处理 PTS、工作线程/回调资源顺序和输出尺寸校验。未用仿造 SDK 头文件产生“编译通过”证据。
 

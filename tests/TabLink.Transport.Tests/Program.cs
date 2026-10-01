@@ -15,7 +15,10 @@ static void Check(bool value,string reason){if(!value)throw new InvalidOperation
 static int FreePort(){var listener=new TcpListener(IPAddress.Loopback,0);listener.Start();var port=((IPEndPoint)listener.LocalEndpoint).Port;listener.Stop();return port;}
 static byte[] Profile()=>JsonSerializer.SerializeToUtf8Bytes(new{width=1200,height=1920,rotation=0,activeModeId=2,refreshRate=90,nativeWidth=1200,nativeHeight=1920,
     supportedModes=new[]{new{width=1200,height=1920,refreshRate=90,modeId=2}}});
-static Task Hello(Stream stream,string token,CancellationToken ct)=>FrameServer.WritePacketAsync(stream,0x10,JsonSerializer.SerializeToUtf8Bytes(new{protocol=1,token}),ct);
+static byte[] HarmonyProfile()=>JsonSerializer.SerializeToUtf8Bytes(new{width=1200,height=1920,rotation=0,activeModeId=2,refreshRate=90,nativeWidth=1200,nativeHeight=1920,
+    supportedModes=new[]{new{width=1200,height=1920,refreshRate=90,modeId=2}},clientPlatform="harmony",progressEvidence="render-submitted"});
+static Task Hello(Stream stream,string token,CancellationToken ct,string[]? features=null)=>FrameServer.WritePacketAsync(stream,0x10,
+    features is null?JsonSerializer.SerializeToUtf8Bytes(new{protocol=1,token}):JsonSerializer.SerializeToUtf8Bytes(new{protocol=1,token,features}),ct);
 static async Task WaitFor(Func<bool> condition,CancellationToken ct){while(!condition())await Task.Delay(10,ct);}
 static async Task Closed(Stream stream,CancellationToken ct)
 {
@@ -42,6 +45,13 @@ static async Task<(TcpClient Client,SslStream Stream)> Connect(NetworkSessionOpt
 }
 static async Task ReadUntil(Stream stream,byte type,CancellationToken ct)
 {while((await FrameServer.ReadPacketAsync(stream,8192,ct)).Type!=type){}}
+static string[] CheckNegotiationStatus((byte Type,byte[] Payload) packet,string reason)
+{
+    Check(packet.Type==0x02,reason+": negotiation status did not precede media");
+    using var json=JsonDocument.Parse(packet.Payload);
+    Check(json.RootElement.GetProperty("protocol").GetInt32()==1,reason+": protocol mismatch");
+    return json.RootElement.GetProperty("features").EnumerateArray().Select(value=>value.GetString()??"").ToArray();
+}
 
 foreach(var address in new[]{IPAddress.Any,IPAddress.IPv6Loopback,IPAddress.Broadcast,IPAddress.Parse("239.1.2.3"),IPAddress.Parse("192.0.2.123")})
 {
@@ -139,7 +149,9 @@ await using(var server=new FrameServer(options,async(profile,token)=>
     {
         Check(stream.SslProtocol is SslProtocols.Tls12 or SslProtocols.Tls13,"unexpected TLS version");
         await Hello(stream,server.Token,ct);await FrameServer.WritePacketAsync(stream,0x13,Profile(),ct);
-        await ReadUntil(stream,0x02,ct);await WaitFor(()=>prepared==1,ct);
+        var legacyStatus=await FrameServer.ReadPacketAsync(stream,8192,ct);
+        Check(CheckNegotiationStatus(legacyStatus,"legacy HELLO").Length==0,"legacy HELLO negotiated an unsolicited feature");
+        await WaitFor(()=>prepared==1,ct);
         Check(videos==0&&inputs==0&&!server.ClientConnected&&profiles==0,"media started before prepare completed");
         allowPrepare.SetResult();await ReadUntil(stream,0x20,ct);await ReadUntil(stream,0x21,ct);
         Check(server.ClientConnected&&server.ClientDisplayProfile?.Width==1200&&profiles==0,"initial profile state/event incorrect");
@@ -148,21 +160,19 @@ await using(var server=new FrameServer(options,async(profile,token)=>
         Check(measuredConnectionId!=Guid.Empty&&performance.SourceMove.Count==2&&performance.PacketWrite.Count==2&&
             performance.PayloadBytesWritten==14&&performance.FrameSendGap.Count==0,
             "real video loop did not separate source movement, successful video writes and frame gaps");
-        var submitted=JsonSerializer.SerializeToUtf8Bytes(new{evidence="render-submitted",frames=1,ptsUs=0,width=1200,height=1920,fps=60,decoder="test AVCodec"});
-        await FrameServer.WritePacketAsync(stream,0x14,submitted,ct);
-        await WaitFor(()=>server.SubmittedFrames==1,ct);
-        var submittedAt=server.LastSubmittedUtc;
-        Check(submittedAt is not null&&server.LastPresentedUtc is null&&server.PresentedFrames==0&&server.SubmissionEvidenceOnly,"decode submissions fabricated presentation");
-        await FrameServer.WritePacketAsync(stream,0x14,submitted,ct);
         await FrameServer.WritePacketAsync(stream,0x11,JsonSerializer.SerializeToUtf8Bytes(new{kind="move",x=0.2,y=0.2}),ct);
         await WaitFor(()=>inputs==1,ct);
-        Check(server.LastSubmittedUtc==submittedAt,"duplicate submission refreshed watchdog");
-        Console.WriteLine("PASS verified decode submission advances separate liveness, never presentation; duplicates do not refresh");
-        await FrameServer.WritePacketAsync(stream,0x12,JsonSerializer.SerializeToUtf8Bytes(new{kind="frame-presented",sequence=1,width=1200,height=1920}),ct);
+        await FrameServer.WritePacketAsync(stream,0x12,JsonSerializer.SerializeToUtf8Bytes(new{kind="frame-presented",sequence=1,width=1200,height=1920,fps=59.5}),ct);
         await FrameServer.WritePacketAsync(stream,0x11,JsonSerializer.SerializeToUtf8Bytes(new{kind="move",x=0.5,y=0.5}),ct);
         await WaitFor(()=>inputs==2&&server.PresentedFrames==1,ct);
+        Check(server.SubmittedFrames==0&&server.LastSubmittedUtc is null&&server.ClientSubmittedFps==0&&server.ClientPresentedFps==59.5,
+            "legacy session invented submission telemetry or lost presentation telemetry");
         await FrameServer.WritePacketAsync(stream,0x13,Profile(),ct);await WaitFor(()=>profiles==1,ct);
-        server.RequestReconnect();await Closed(stream,ct);await WaitFor(()=>!server.ClientConnected,ct);
+        var unnegotiatedSubmission=JsonSerializer.SerializeToUtf8Bytes(new{evidence="render-submitted",frames=1,ptsUs=0,width=1200,height=1920,fps=60,decoder="test AVCodec"});
+        await FrameServer.WritePacketAsync(stream,0x14,unnegotiatedSubmission,ct);
+        await Closed(stream,ct);await WaitFor(()=>!server.ClientConnected,ct);
+        Check(server.LastSubmittedUtc is null&&server.SubmittedFrames==0,"unnegotiated 0x14 altered trusted submission state");
+        Console.WriteLine("PASS legacy HELLO rejects and closes on unnegotiated 0x14 without accepting submission evidence");
     }
     Check(videos==1&&prepared==1&&releases>=1,"reconnect did not clean old session");
     Check(server.SendPerformance.ConnectionId==Guid.Empty&&server.SendPerformance.PacketWrite.Count==0,"disconnect kept old runtime performance evidence");
@@ -170,19 +180,69 @@ await using(var server=new FrameServer(options,async(profile,token)=>
     using(var client=reconnected.Client)
     using(var stream=reconnected.Stream)
     {
-        await Hello(stream,query["token"],ct);await FrameServer.WritePacketAsync(stream,0x13,Profile(),ct);
+        await Hello(stream,query["token"],ct,[FrameServer.RenderSubmittedFeature,"future-unknown-v9"]);
+        await FrameServer.WritePacketAsync(stream,0x13,Profile(),ct);
+        var featureStatus=await FrameServer.ReadPacketAsync(stream,8192,ct);
+        Check(CheckNegotiationStatus(featureStatus,"feature HELLO").SequenceEqual([FrameServer.RenderSubmittedFeature]),
+            "supported feature intersection omitted the known feature or echoed an unknown feature");
         await ReadUntil(stream,0x21,ct);
         Check(prepared==2&&videos==2&&server.PresentedFrames==0&&server.LastPresentedUtc is null&&server.SubmittedFrames==0&&server.LastSubmittedUtc is null&&server.NetworkConnectionUri==connectionUri,"reconnect reused ACK evidence or changed session capability");
         await WaitFor(()=>server.SendPerformance.CompletedFrames==1,ct);
         Check(server.SendPerformance.ConnectionId!=measuredConnectionId&&server.SendPerformance.PacketWrite.Count==2,
             "reconnect accumulated previous connection performance");
+        await FrameServer.WritePacketAsync(stream,0x12,JsonSerializer.SerializeToUtf8Bytes(new{kind="frame-presented",sequence=1,width=1200,height=1920,fps=59.5}),ct);
+        await WaitFor(()=>server.PresentedFrames==1,ct);
+        Check(server.HasRecentPresentation&&server.ClientPresentedFps==59.5&&server.ClientReportedFps==59.5,
+            "fresh presentation FPS was not projected");
+        await Task.Delay(FrameServer.TelemetryFreshnessWindow+TimeSpan.FromMilliseconds(250),ct);
+        Check(!server.HasRecentPresentation&&server.ClientPresentedFps==0&&server.ClientReportedFps==0&&server.PresentedFrames==1,
+            "expired presentation FPS remained visible");
+
+        var submitted=JsonSerializer.SerializeToUtf8Bytes(new{evidence="render-submitted",frames=1,ptsUs=0,width=1200,height=1920,fps=60,decoder="test AVCodec"});
+        await FrameServer.WritePacketAsync(stream,0x14,submitted,ct);
+        await WaitFor(()=>server.SubmittedFrames==1,ct);
+        var submittedAt=server.LastSubmittedUtc;
+        Check(submittedAt is not null&&server.PresentedFrames==1&&server.SubmissionEvidenceOnly&&server.HasRecentSubmission&&!server.HasRecentPresentation&&
+            server.ClientSubmittedFps==60&&server.ClientPresentedFps==0&&server.ClientReportedFps==60,
+            "fresh decode submission fabricated presentation or exposed stale presentation FPS");
+        await FrameServer.WritePacketAsync(stream,0x14,submitted,ct);
+        await FrameServer.WritePacketAsync(stream,0x11,JsonSerializer.SerializeToUtf8Bytes(new{kind="move",x=0.7,y=0.7}),ct);
+        await WaitFor(()=>inputs==3,ct);
+        Check(server.LastSubmittedUtc==submittedAt,"duplicate submission refreshed watchdog");
+        await Task.Delay(FrameServer.TelemetryFreshnessWindow+TimeSpan.FromMilliseconds(250),ct);
+        Check(!server.HasRecentSubmission&&!server.SubmissionEvidenceOnly&&server.ClientSubmittedFps==0&&server.ClientPresentedFps==0&&server.ClientReportedFps==0,
+            "expired submission FPS remained visible");
+        Console.WriteLine("PASS negotiated 0x14 remains separate from presentation; stale submitted/presented FPS projects as zero");
         var clock=Stopwatch.StartNew();await server.DisposeAsync();await Closed(stream,ct);
         Check(clock.Elapsed<TimeSpan.FromSeconds(2),"dispose failed to cancel blocked video");
     }
     Check(logs.All(message=>!message.Contains(server.Token)&&!message.Contains(options.CertificateFingerprint)),"status leaked pairing capability");
+    Console.WriteLine("PASS legacy and feature HELLO negotiate protocol 1 before video; only render-submitted-v1 is echoed and unknown features are omitted");
     Console.WriteLine("PASS TLS profile/prepare/config/video/ACK/input ordering, profile change event, reconnect preserving listener/token/pin and resetting ACK evidence");
     Console.WriteLine("PASS disposal cancels a blocked encoder and closes its client; status logs contain no token/pin");
 }
+
+var harmonyOptions=new NetworkSessionOptions(IPAddress.Loopback,FreePort());
+async IAsyncEnumerable<VideoPacket> HarmonyVideo([EnumeratorCancellation]CancellationToken token)
+{
+    yield return new(0x20,[1],false);
+    yield return new(0x21,[0,0,0,0,0,0,0,0,0,0,0,1,0x65],true);
+    await Task.Delay(Timeout.Infinite,token);
+}
+await using(var harmonyServer=new FrameServer(harmonyOptions,(_,_)=>Task.CompletedTask,HarmonyVideo,null,()=>{}))
+{
+    harmonyServer.Start();var connection=await Connect(harmonyOptions,harmonyOptions.CertificateFingerprint,ct);
+    using var client=connection.Client;using var stream=connection.Stream;
+    await Hello(stream,harmonyServer.Token,ct,[FrameServer.RenderSubmittedFeature]);await FrameServer.WritePacketAsync(stream,0x13,HarmonyProfile(),ct);
+    var status=await FrameServer.ReadPacketAsync(stream,8192,ct);
+    Check(CheckNegotiationStatus(status,"Harmony source profile").SequenceEqual([FrameServer.RenderSubmittedFeature]),"Harmony feature was not negotiated");
+    await ReadUntil(stream,0x21,ct);await WaitFor(()=>harmonyServer.SendPerformance.CompletedFrames==1,ct);
+    await FrameServer.WritePacketAsync(stream,0x14,JsonSerializer.SerializeToUtf8Bytes(new{evidence="render-submitted",frames=1,ptsUs=0,width=1200,height=1920,fps=60,decoder="Harmony AVCodec"}),ct);
+    await WaitFor(()=>harmonyServer.SubmittedFrames==1,ct);
+    Check(harmonyServer.PresentedFrames==0&&harmonyServer.LastPresentedUtc is null&&harmonyServer.HasRecentSubmission,
+        "negotiated Harmony submission fabricated physical presentation evidence");
+}
+Console.WriteLine("PASS Harmony source negotiates 0x14 without fabricating presentation");
 
 var timedOptions=new NetworkSessionOptions(IPAddress.Loopback,FreePort(),TimeSpan.FromSeconds(2),TimeSpan.FromMilliseconds(250));
 var cancelled=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);var forbiddenVideo=0;
@@ -222,7 +282,7 @@ await using(var b=new FrameServer(multiB,(_,_)=>Task.CompletedTask,Video,null,()
 {
     a.Start();b.Start();var ca=await Connect(multiA,multiA.CertificateFingerprint,ct);var cb=await Connect(multiB,multiB.CertificateFingerprint,ct);
     using var clientA=ca.Client;using var sa=ca.Stream;using var clientB=cb.Client;using var sb=cb.Stream;
-    await Hello(sa,a.Token,ct);await Hello(sb,b.Token,ct);
+    await Hello(sa,a.Token,ct);await Hello(sb,b.Token,ct,[FrameServer.RenderSubmittedFeature]);
     await FrameServer.WritePacketAsync(sa,0x13,Profile(),ct);await FrameServer.WritePacketAsync(sb,0x13,Profile(),ct);
     await ReadUntil(sa,0x21,ct);await ReadUntil(sb,0x21,ct);
     await a.DisposeAsync();await Closed(sa,ct);

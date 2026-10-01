@@ -15,7 +15,12 @@ internal sealed class NativeNetworkSession : IAsyncDisposable
     internal bool IsStopped=>stopped;
     internal TabletDisplayProfile? Profile=>profile;
     internal TabletDisplayProfile? RequestedProfile {get;private set;}
+    internal VirtualDisplayInfo? CurrentDisplay=>display?.CurrentDisplay;
+    internal bool HasPendingDisplayCleanup=>stopped&&display is not null;
     internal FrameServer? Server=>server;
+    internal event Action<TabletDisplayProfile>? DisplayPreparationStarted;
+    internal event Action<VirtualDisplayInfo>? DisplayPrepared;
+    internal event Action<Exception>? DisplayPreparationFailed;
     readonly bool allowTouch;
     readonly Func<Func<Task>,Task> onUi;
     readonly Action<string> log;
@@ -64,6 +69,7 @@ internal sealed class NativeNetworkSession : IAsyncDisposable
     async Task PrepareAsync(TabletDisplayProfile next,CancellationToken ct)
     {
         RequestedProfile=next;
+        DisplayPreparationStarted?.Invoke(next);
         using var linked=CancellationTokenSource.CreateLinkedTokenSource(ct,lifetime.Token);
         await preparation.WaitAsync(linked.Token);
         try
@@ -79,8 +85,9 @@ internal sealed class NativeNetworkSession : IAsyncDisposable
             }
             linked.Token.ThrowIfCancellationRequested();
             profile=next;deadline.Reset(DateTime.UtcNow);State="已配对，等待显示首帧";
+            DisplayPrepared?.Invoke(display!.CurrentDisplay);
         }
-        catch(Exception ex){log($"设备 {Port} 副屏准备失败：{ex.Message}");await ReleaseDisplayAsync();throw;}
+        catch(Exception ex){log($"设备 {Port} 副屏准备失败：{ex.Message}");DisplayPreparationFailed?.Invoke(ex);await ReleaseDisplayAsync();throw;}
         finally{preparation.Release();}
     }
 
@@ -106,7 +113,8 @@ internal sealed class NativeNetworkSession : IAsyncDisposable
         var state=deadline.Evaluate(now,server.LastClientProgressUtc,server.CapturePaused,desktop);
         display.Guard.Renew(state.DeadlineUtc);
         if(now>state.DeadlineUtc){State="设备超过 20 秒未确认显示画面";await DisposeAsync();return;}
-        State=state.CapturePaused?"画面暂停，连接保留":server.ClientConnected?$"{profile!.Width} × {profile.Height} · {(server.SubmissionEvidenceOnly?"解码提交（呈现待验证）":"显示")} {server.ClientReportedFps:F1} 帧/秒":"等待设备重连";
+        var progress=server.HasRecentPresentation?$"实际呈现 {server.ClientPresentedFps:F1} 帧/秒":server.HasRecentSubmission?$"解码提交 {server.ClientSubmittedFps:F1} 帧/秒（呈现待验证）":"等待画面";
+        State=state.CapturePaused?"画面暂停，连接保留":server.ClientConnected?$"{profile!.Width} × {profile.Height} · {progress}":"等待设备重连";
         if(desktop.IsAvailable&&server.LastPresentedUtc>now.AddSeconds(-5))
             try{display.Guard.RefreshRememberedLayout();}catch(IOException){}
     }
@@ -117,10 +125,30 @@ internal sealed class NativeNetworkSession : IAsyncDisposable
     {
         try
         {
-            input?.Dispose();input=null;
+            if(input is {} ownedInput)
+            {
+                try{ownedInput.Dispose();}
+                catch(Exception ex){log($"设备 {Port} 画面输入清理需要检查：{ex.Message}");}
+                input=null;
+            }
             if(display is {} owned){await owned.DisposeAsync();display=null;}
         }
-        finally{power?.Dispose();power=null;}
+        finally
+        {
+            if(power is {} ownedPower)
+            {
+                try{ownedPower.Dispose();}
+                catch(Exception ex){log($"设备 {Port} 电源请求清理需要检查：{ex.Message}");}
+                power=null;
+            }
+        }
+    }
+    internal async Task RetryDisplayCleanupAsync()
+    {
+        if(!HasPendingDisplayCleanup)throw new IOException("此原生会话没有可安全重试的副屏所有权记录。");
+        await preparation.WaitAsync();
+        try{await ReleaseDisplayAsync();State="本次拥有的副屏已精确回收";}
+        finally{preparation.Release();}
     }
     public ValueTask DisposeAsync()=>new(disposal??=DisposeCoreAsync());
     async Task DisposeCoreAsync()

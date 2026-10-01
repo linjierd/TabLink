@@ -49,6 +49,7 @@ import android.widget.Switch;
 import android.widget.TextView;
 
 import org.json.JSONException;
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedInputStream;
@@ -780,6 +781,8 @@ public final class MainActivity extends Activity {
         volatile Socket socket;
         volatile Thread writer;
         volatile PresentationProgress presentation;
+        volatile SubmissionProgress submission;
+        volatile boolean submissionAckNegotiated;
         volatile boolean hasPresentedFrame;
         private String lastDisplayProfile;
         private final AtomicLong frameIds = new AtomicLong();
@@ -880,6 +883,41 @@ public final class MainActivity extends Activity {
             framePresented(progress, frameId, width, height);
         }
 
+        void frameSubmitted(SubmissionProgress progress, long ptsUs, long submittedNanos,
+                int width, int height, String decoder) {
+            if (!running || !connected || session != this || submission != progress) return;
+            SubmissionProgress.Report report = progress.submitted(ptsUs, width, height, submittedNanos,
+                    SystemClock.elapsedRealtime(), decoder);
+            if (report == null || !submissionAckNegotiated || captureState.paused) return;
+            try {
+                JSONObject acknowledgement = new JSONObject();
+                acknowledgement.put("evidence", "render-submitted");
+                acknowledgement.put("frames", report.frames);
+                acknowledgement.put("ptsUs", report.ptsUs);
+                acknowledgement.put("width", report.width);
+                acknowledgement.put("height", report.height);
+                acknowledgement.put("fps", report.fps);
+                acknowledgement.put("decoder", report.decoder);
+                // This cumulative telemetry may be dropped when control input is busy.
+                // Never block the MediaCodec callback; a later report supersedes it.
+                outgoing.offer(new WireProtocol.Packet(WireProtocol.RENDER_SUBMITTED,
+                        acknowledgement.toString().getBytes(StandardCharsets.UTF_8)));
+            } catch (JSONException ignored) { }
+        }
+
+        void acceptHostFeatures(JSONObject state) {
+            if (submissionAckNegotiated) return;
+            if (state.optInt("protocol", -1) != 1) return;
+            JSONArray features = state.optJSONArray("features");
+            if (features == null || features.length() > 64) return;
+            for (int index = 0; index < features.length(); index++) {
+                if ("render-submitted-v1".equals(features.optString(index, null))) {
+                    submissionAckNegotiated = true;
+                    return;
+                }
+            }
+        }
+
         synchronized void sendDisplayProfile() {
             if (!running || !connected || session != this) return;
             String profile = DisplayCapabilities.read(MainActivity.this).toString();
@@ -902,7 +940,7 @@ public final class MainActivity extends Activity {
             });
         }
 
-        void configureVideo(byte[] bytes, PresentationProgress progress) throws IOException {
+        void configureVideo(byte[] bytes, PresentationProgress progress, SubmissionProgress submittedProgress) throws IOException {
             VideoDecoder.Configuration configuration = VideoDecoder.Configuration.parse(bytes);
             VideoDecoder previous = video;
             stopVideo();
@@ -919,6 +957,11 @@ public final class MainActivity extends Activity {
             actualFps = 0;
             droppedFrames = 0;
             VideoDecoder next = new VideoDecoder(configuration, new VideoDecoder.Listener() {
+                @Override public void onSubmitted(long ptsUs, long submittedNanos, int width, int height, String decoder) {
+                    if (!running || !connected || session != Session.this || generation != videoGeneration
+                            || presentation != progress || submission != submittedProgress) return;
+                    frameSubmitted(submittedProgress, ptsUs, submittedNanos, width, height, decoder);
+                }
                 @Override public void onPresented(long ptsUs, long renderNanos, int width, int height,
                         double fps, String decoder, long dropped) {
                     if (!running || !connected || session != Session.this || generation != videoGeneration || presentation != progress) return;
@@ -953,7 +996,10 @@ public final class MainActivity extends Activity {
             int retry = 0;
             while (running) {
                 PresentationProgress progress = new PresentationProgress();
+                SubmissionProgress submittedProgress = new SubmissionProgress();
                 presentation = progress;
+                submission = submittedProgress;
+                submissionAckNegotiated = false;
                 hasPresentedFrame = false;
                 captureState = new CapturePauseState();
                 lastDisplayProfile = null;
@@ -975,6 +1021,7 @@ public final class MainActivity extends Activity {
                     JSONObject hello = new JSONObject();
                     hello.put("protocol", 1);
                     hello.put("token", sessionToken);
+                    hello.put("features", new JSONArray().put("render-submitted-v1"));
                     WireProtocol.write(output, WireProtocol.HELLO, hello.toString().getBytes(StandardCharsets.UTF_8));
                     // Send the initial native/rotation/requested-Hz profile synchronously,
                     // before any decoder is created or incoming video packet is consumed.
@@ -996,7 +1043,7 @@ public final class MainActivity extends Activity {
                             desktop.showFrame(bitmap, this, progress, frameIds.incrementAndGet());
                             retry = 0;
                         } else if (packet.type == WireProtocol.VIDEO_CONFIG) {
-                            configureVideo(packet.payload, progress);
+                            configureVideo(packet.payload, progress, submittedProgress);
                         } else if (packet.type == WireProtocol.VIDEO_FRAME) {
                             VideoDecoder currentVideo = video;
                             if (currentVideo == null) throw new IOException("H.264 configuration must precede video frames");
@@ -1005,6 +1052,7 @@ public final class MainActivity extends Activity {
                         } else if (packet.type == WireProtocol.STATUS) {
                             if (packet.payload.length > 16384) throw new IOException("状态数据过长");
                             JSONObject state = new JSONObject(new String(packet.payload, StandardCharsets.UTF_8));
+                            acceptHostFeatures(state);
                             String message = state.optString("message", connectionLabel() + " 已连接");
                             Object paused = state.opt("capturePaused");
                             captureState = captureState.update(paused instanceof Boolean ? (Boolean) paused : null,
@@ -1033,6 +1081,8 @@ public final class MainActivity extends Activity {
                     }
                 } finally {
                     connected = false;
+                    submissionAckNegotiated = false;
+                    submission = null;
                     stopVideo();
                     closeSocket();
                     Thread currentWriter = writer;

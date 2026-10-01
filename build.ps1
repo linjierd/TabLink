@@ -1,6 +1,17 @@
 param([switch]$SkipAndroid,[string]$OutputDirectory,[switch]$PublicRelease)
 $ErrorActionPreference = 'Stop'
 $projectRoot = $PSScriptRoot
+if ($PublicRelease) {
+    $insideWorkTree = & git -C $projectRoot rev-parse --is-inside-work-tree 2>$null
+    if ($LASTEXITCODE -ne 0 -or $insideWorkTree -ne 'true') {
+        throw 'PublicRelease must run from a Git working tree so the binaries can be traced to one source commit.'
+    }
+    $releaseChanges = @(& git -C $projectRoot status --porcelain=v1 --untracked-files=all)
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to verify the Git working tree before PublicRelease.' }
+    if ($releaseChanges.Count -ne 0) {
+        throw 'PublicRelease requires a clean Git working tree. Commit or remove every tracked and untracked source change first.'
+    }
+}
 if ($PublicRelease -and -not $PSBoundParameters.ContainsKey('OutputDirectory')) {
     throw 'PublicRelease requires an explicit new or empty OutputDirectory.'
 }
@@ -19,7 +30,7 @@ if ($PSBoundParameters.ContainsKey('OutputDirectory')) {
 else {
     $publishRoot = Join-Path $projectRoot 'dist\TabLink'
 }
-$apkPath = Join-Path $projectRoot $(if ($PublicRelease) { 'android\artifacts\TabLink-android-0.8.1-preview.apk' } else { 'android\artifacts\TabLink-android-0.8.1-debug.apk' })
+$apkPath = Join-Path $projectRoot $(if ($PublicRelease) { 'android\artifacts\TabLink-android-0.8.2-preview.apk' } else { 'android\artifacts\TabLink-android-0.8.2-debug.apk' })
 $ffmpegRoot = Join-Path $projectRoot 'third_party\ffmpeg-tablink'
 if (-not (Test-Path -LiteralPath (Join-Path $ffmpegRoot 'bin\ffmpeg.exe'))) { throw 'Build the verified TabLink FFmpeg component first.' }
 if (-not (Test-Path -LiteralPath (Join-Path $ffmpegRoot 'README.md'))) { throw 'FFmpeg source notice missing.' }
@@ -38,6 +49,7 @@ foreach ($windowsTest in @(
     'TabLink.DisplayCleanup.Tests',
     'TabLink.DisplayIdentity.Tests',
     'TabLink.DisplayLifecycle.Tests',
+    'TabLink.ConnectionHealth.Tests',
     'TabLink.Diagnostics.Tests',
     'TabLink.Transport.Tests',
     'TabLink.UsbLease.Tests',
@@ -138,10 +150,14 @@ Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md') -Destination $publis
 Copy-Item -LiteralPath (Join-Path $projectRoot 'AUTHORS.md') -Destination $publishRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot 'LICENSE') -Destination $publishRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot 'THIRD_PARTY_NOTICES.md') -Destination $publishRoot
-Copy-Item -LiteralPath (Join-Path $projectRoot 'RELEASE-0.8.1.md') -Destination $publishRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot 'RELEASE-0.8.2.md') -Destination $publishRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot 'VERIFICATION-0.8.2.md') -Destination $publishRoot
 if ($PublicRelease) {
     Copy-Item -LiteralPath (Join-Path $projectRoot 'PUBLIC-RELEASE.md') -Destination $publishRoot
     Copy-Item -LiteralPath (Join-Path $projectRoot 'ADB-SETUP.md') -Destination $publishRoot
+    foreach ($publicDocument in @('RELEASE-0.8.0.md','VERIFICATION-0.8.0.md','AUTO-UPDATE.md')) {
+        Copy-Item -LiteralPath (Join-Path $projectRoot $publicDocument) -Destination $publishRoot
+    }
 }
 else {
     foreach ($document in @(

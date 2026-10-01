@@ -7,28 +7,342 @@ namespace TabLink.Windows;
 
 internal sealed partial class MainForm
 {
-    readonly TextBox diagnosticReport=new(){Multiline=true,ReadOnly=true,ScrollBars=ScrollBars.Vertical,Dock=DockStyle.Fill};
+    readonly TextBox diagnosticReport=new(){Multiline=true,ReadOnly=true,ScrollBars=ScrollBars.Vertical,Dock=DockStyle.Top,Height=180};
+    readonly ListView healthStages=new(){View=View.Details,FullRowSelect=true,GridLines=true,HideSelection=false,ShowItemToolTips=true,Dock=DockStyle.Top,Height=205};
+    readonly Label healthSummary=new(){AutoSize=true,ForeColor=Color.FromArgb(90,107,128),Margin=new Padding(0,6,0,6)};
+    readonly TextBox healthDetail=new(){Multiline=true,ReadOnly=true,ScrollBars=ScrollBars.Vertical,Dock=DockStyle.Top,Height=62,Text="选择一个连接阶段可查看完整证据与修复建议。"};
     readonly Button diagnose=new(){Text="检测连接"};
     readonly Button repairAdb=new(){Text="修复：使用内置 ADB"};
-    readonly Button repairConnection=new(){Text="修复：重建选中连接"};
+    readonly Button repairConnection=new(){Text="重建连接"};
+    readonly Button repairSuggested=new(){Text="修复所选问题"};
+    readonly Button openDiagnosticFolder=new(){Text="日志目录"};
     readonly ComboBox requestedModes=new(){DropDownStyle=ComboBoxStyle.DropDownList,Width=310};
     readonly Button refreshModes=new(){Text="读取设备请求模式"};
     readonly Button repairMode=new(){Text="配置选中显示模式"};
+    readonly Label modeHint=new(){AutoSize=true,ForeColor=Color.FromArgb(90,107,128),Margin=new Padding(0,7,0,0),Text="显示模式修复只处理设备上报的模式。"};
+    readonly ConnectionHealthTracker connectionHealth=new();
+    ConnectionHealthAttempt healthAttempt;
+    Guid healthConnectionId;
+    long healthSentFrames,healthSubmittedFrames,healthPresentedFrames;
+    bool healthCapturePaused,healthSubmissionFresh,healthPresentationFresh;
     bool diagnosing;
 
     Control BuildDiagnosticsPanel()
     {
         repairAdb.Visible=Directory.Exists(Path.Combine(AppContext.BaseDirectory,"tools","platform-tools"));
-        var page=new Panel{Dock=DockStyle.Fill,BackColor=Color.White,Padding=new Padding(18)};
-        var layout=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=1,RowCount=3};
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));layout.RowStyles.Add(new RowStyle(SizeType.Percent,100));
-        layout.Controls.Add(new Label{Dock=DockStyle.Fill,ForeColor=muted,Text="检测工具、USB 授权、排除规则、网络和副屏资源；结果会说明可执行的修复。\nADB 仅用于安卓 USB 调试兼容模式。免调试连接请开启设备的 USB 网络共享或使用 Wi-Fi。\n浏览器首次连接需信任本机证书。苹果与 HarmonyOS NEXT 不使用 ADB。"},0,0);
-        layout.Controls.Add(Flow(diagnose,repairAdb,repairConnection),0,1);
-        layout.Controls.Add(diagnosticReport,0,2);page.Controls.Add(layout);
+        healthStages.Columns.Add("连接阶段",210);healthStages.Columns.Add("状态",90);healthStages.Columns.Add("当前证据与建议",520);
+        var page=new Panel{Dock=DockStyle.Fill,BackColor=Color.White,Padding=new Padding(18),AutoScroll=true};
+        var layout=new TableLayoutPanel{Dock=DockStyle.Top,AutoSize=false,Height=730,ColumnCount=1,RowCount=8};
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));layout.RowStyles.Add(new RowStyle(SizeType.Absolute,205));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute,62));layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));layout.RowStyles.Add(new RowStyle(SizeType.Absolute,180));
+        var healthIntro=new Label{Dock=DockStyle.Top,AutoSize=true,ForeColor=muted,Text="按真实事件检查线路、认证、副屏、发送、客户端解码提交和屏幕实际呈现；解码提交不等于已经显示。"};
+        layout.Controls.Add(healthIntro,0,0);layout.Controls.Add(healthSummary,0,1);
+        layout.Controls.Add(Flow(repairSuggested,diagnose,repairConnection,openDiagnosticFolder),0,2);
+        layout.Controls.Add(healthStages,0,3);layout.Controls.Add(healthDetail,0,4);
+        var modeTools=Flow(refreshModes,requestedModes,repairMode,modeHint);layout.Controls.Add(modeTools,0,5);
+        layout.Controls.Add(Flow(repairAdb),0,6);layout.Controls.Add(diagnosticReport,0,7);page.Controls.Add(layout);
         diagnose.Click+=async(_,_)=>await DiagnoseAsync();
         repairAdb.Click+=async(_,_)=>await GuardAsync(RepairAdbAsync);
         repairConnection.Click+=async(_,_)=>await GuardAsync(RepairConnectionAsync);
+        repairSuggested.Click+=async(_,_)=>await GuardAsync(RepairSelectedHealthStageAsync);
+        refreshModes.Click+=(_,_)=>RefreshRequestedModes();
+        repairMode.Click+=async(_,_)=>await GuardAsync(ConfigureDisplayModeFromUiAsync);
+        requestedModes.SelectedIndexChanged+=(_,_)=>UpdateHealthRepairButton();
+        openDiagnosticFolder.Click+=(_,_)=>OpenDiagnosticFolder();
+        healthStages.SelectedIndexChanged+=(_,_)=>{UpdateHealthRepairButton();UpdateHealthDetail();};
+        healthStages.SizeChanged+=(_,_)=>healthStages.Columns[2].Width=Math.Max(220,healthStages.ClientSize.Width-healthStages.Columns[0].Width-healthStages.Columns[1].Width-8);
+        page.SizeChanged+=(_,_)=>(healthIntro.MaximumSize,healthSummary.MaximumSize,modeHint.MaximumSize)=(
+            new Size(Math.Max(260,page.ClientSize.Width-page.Padding.Horizontal-SystemInformation.VerticalScrollBarWidth-8),0),
+            new Size(Math.Max(260,page.ClientSize.Width-page.Padding.Horizontal-SystemInformation.VerticalScrollBarWidth-8),0),
+            new Size(Math.Max(220,page.ClientSize.Width-page.Padding.Horizontal-SystemInformation.VerticalScrollBarWidth-8),0));
+        RefreshConnectionHealthUi();
         return page;
+    }
+
+    void BeginConnectionHealth(ConnectionHealthPath path,string detail)
+    {
+        healthAttempt=connectionHealth.BeginAttempt(path,detail);
+        ResetConnectionHealthScope();
+        RefreshConnectionHealthUi();
+    }
+
+    void ResetConnectionHealthScope()
+    {
+        healthConnectionId=Guid.Empty;
+        healthSentFrames=healthSubmittedFrames=healthPresentedFrames=0;
+        healthCapturePaused=healthSubmissionFresh=healthPresentationFresh=false;
+    }
+
+    void MarkHealthRouteReady(string detail)
+    {if(!healthAttempt.IsEmpty)connectionHealth.RouteAndListenerReady(healthAttempt,detail);RefreshConnectionHealthUi();}
+    void MarkHealthAuthenticationStarted(string detail)
+    {if(!healthAttempt.IsEmpty)connectionHealth.AuthenticationStarted(healthAttempt,detail);RefreshConnectionHealthUi();}
+    void MarkHealthDisplayProfile(TabletDisplayProfile profile)
+    {if(!healthAttempt.IsEmpty)connectionHealth.DisplayProfileReceived(healthAttempt,$"{profile.Width} × {profile.Height} @ {profile.RequestedRefreshRate} Hz");RefreshConnectionHealthUi();}
+    void MarkHealthDisplayPreparing(string detail)
+    {if(!healthAttempt.IsEmpty)connectionHealth.DisplayPreparing(healthAttempt,detail);RefreshConnectionHealthUi();}
+    void MarkHealthDisplayReady(VirtualDisplayInfo display)
+    {if(!healthAttempt.IsEmpty)connectionHealth.DisplayReady(healthAttempt,$"{display.Bounds.Width} × {display.Bounds.Height} · {display.DeviceName}");RefreshConnectionHealthUi();}
+    void MarkHealthPipelineStarting(string detail)
+    {if(!healthAttempt.IsEmpty)connectionHealth.PipelineStarting(healthAttempt,detail);RefreshConnectionHealthUi();}
+
+    void StopConnectionHealth(string detail)
+    {
+        if(!healthAttempt.IsEmpty)connectionHealth.Stop(healthAttempt,detail);
+        healthAttempt=default;ResetConnectionHealthScope();
+        RefreshConnectionHealthUi();
+    }
+
+    void MarkConnectionHealthAttention(string detail)
+    {
+        if(healthAttempt.IsEmpty)return;
+        var snapshot=connectionHealth.Snapshot();
+        // Preserve strict owned-display cleanup when generic UI exception
+        // handling runs afterward; its exact retry must not be replaced by a
+        // mode change or broad connection repair.
+        var displayCleanup=snapshot[ConnectionHealthStage.SingleVirtualDisplay];
+        if(displayCleanup is {State:ConnectionHealthState.Attention,Recovery:ConnectionHealthRecovery.ReclaimOwnedDisplay})return;
+        var step=snapshot.Steps.FirstOrDefault(item=>item.State!=ConnectionHealthState.Healthy)??snapshot.Steps[^1];
+        var recovery=step.Stage switch
+        {
+            ConnectionHealthStage.RouteAndListener=>ConnectionHealthRecovery.RefreshRoute,
+            ConnectionHealthStage.AuthenticationAndDisplayProfile=>ConnectionHealthRecovery.RecreatePairing,
+            ConnectionHealthStage.SingleVirtualDisplay=>ConnectionHealthRecovery.ConfigureDisplayMode,
+            _=>ConnectionHealthRecovery.RestartVideo
+        };
+        connectionHealth.NeedsAttention(healthAttempt,step.Stage,recovery,detail);
+        RefreshConnectionHealthUi();
+    }
+
+    void MarkOwnedDisplayCleanupAttention(string detail)
+    {
+        if(healthAttempt.IsEmpty)return;
+        connectionHealth.OwnedDisplayCleanupFailed(healthAttempt,detail);
+        RefreshConnectionHealthUi();
+    }
+
+    void RefreshPrimaryConnectionHealth(FrameServer source)
+    {
+        if(healthAttempt.IsEmpty)return;
+        var performance=source.SendPerformance;
+        if(!source.ClientConnected)
+        {
+            // The server resets its connection-scoped counters on disconnect.
+            // Clear our identity as the transition is observed so the 2-second
+            // monitor cannot repeatedly restart the same health attempt.
+            if(healthConnectionId!=Guid.Empty)
+            {
+                connectionHealth.RestartFrom(healthAttempt,ConnectionHealthStage.AuthenticationAndDisplayProfile,"客户端已断开，监听仍在等待重新认证");
+                ResetConnectionHealthScope();
+                RefreshConnectionHealthUi();
+            }
+            return;
+        }
+        if(source.ClientConnected&&performance.ConnectionId!=Guid.Empty&&performance.ConnectionId!=healthConnectionId)
+        {
+            if(healthConnectionId!=Guid.Empty)connectionHealth.RestartFrom(healthAttempt,ConnectionHealthStage.AuthenticationAndDisplayProfile,"客户端已重新连接，等待本次连接的新证据");
+            healthConnectionId=performance.ConnectionId;
+            healthSentFrames=healthSubmittedFrames=healthPresentedFrames=0;
+            healthCapturePaused=healthSubmissionFresh=healthPresentationFresh=false;
+        }
+        if(source.ClientDisplayProfile is { } profile)
+        {
+            var state=connectionHealth.Snapshot()[ConnectionHealthStage.AuthenticationAndDisplayProfile];
+            if(state.Reason!=ConnectionHealthReason.DisplayProfileReceived)MarkHealthDisplayProfile(profile);
+        }
+        if(source.CapturePaused&&!healthCapturePaused)
+        {
+            healthCapturePaused=true;
+            connectionHealth.PauseFrom(healthAttempt,ConnectionHealthStage.CaptureEncodeSend,"安全桌面或采集恢复期间保留连接");
+        }
+        else if(!source.CapturePaused&&healthCapturePaused)
+        {
+            healthCapturePaused=false;
+            connectionHealth.ResumeFrom(healthAttempt,ConnectionHealthStage.CaptureEncodeSend,"采集已恢复，等待新的发送、解码与呈现证据");
+            healthSentFrames=performance.CompletedFrames;healthSubmittedFrames=source.SubmittedFrames;healthPresentedFrames=source.PresentedFrames;
+            healthSubmissionFresh=healthPresentationFresh=false;
+        }
+        if(!source.CapturePaused&&performance.CompletedFrames>healthSentFrames)
+        {
+            healthSentFrames=performance.CompletedFrames;
+            connectionHealth.FrameSent(healthAttempt,$"本次连接已发送 {performance.CompletedFrames:N0} 帧");
+        }
+        if(source.SubmittedFrames>healthSubmittedFrames)
+        {
+            healthSubmittedFrames=source.SubmittedFrames;
+            connectionHealth.DecoderSubmitted(healthAttempt,source.SubmittedFrames,$"客户端已提交 {source.SubmittedFrames:N0} 帧到解码器");
+            healthSubmissionFresh=true;
+        }
+        if(source.PresentedFrames>healthPresentedFrames)
+        {
+            healthPresentedFrames=source.PresentedFrames;
+            connectionHealth.FramePresented(healthAttempt,source.PresentedFrames,$"Surface 已确认显示 {source.PresentedFrames:N0} 帧");
+            // A physical presentation is also current proof that decode completed,
+            // while decoder submission alone can never prove presentation.
+            healthSubmissionFresh=healthPresentationFresh=true;
+        }
+        if(!source.CapturePaused)
+        {
+            var presentationFresh=source.HasRecentPresentation;
+            var submissionFresh=source.HasRecentSubmission||presentationFresh;
+            if(healthSubmissionFresh&&!submissionFresh)
+            {
+                connectionHealth.RestartFrom(healthAttempt,ConnectionHealthStage.AndroidDecodeSubmission,"最近 5 秒没有新的解码提交或实际呈现证据");
+                healthSubmittedFrames=source.SubmittedFrames;healthPresentedFrames=source.PresentedFrames;
+                healthSubmissionFresh=healthPresentationFresh=false;
+            }
+            else if(healthPresentationFresh&&!presentationFresh)
+            {
+                connectionHealth.RestartFrom(healthAttempt,ConnectionHealthStage.PhysicalPresentation,"最近 5 秒没有新的屏幕实际呈现证据");
+                healthPresentedFrames=source.PresentedFrames;
+                healthPresentationFresh=false;
+            }
+        }
+        RefreshConnectionHealthUi();
+    }
+
+    void RefreshNativeSessionConnectionHealth(NativeNetworkSession session)
+    {
+        if(healthAttempt.IsEmpty||session.IsStopped||session.Server is not {} source)return;
+        if(source.ClientConnected)
+        {
+            var snapshot=connectionHealth.Snapshot();
+            if(session.Profile is { } profile&&snapshot[ConnectionHealthStage.AuthenticationAndDisplayProfile].Reason!=ConnectionHealthReason.DisplayProfileReceived)
+                MarkHealthDisplayProfile(profile);
+            snapshot=connectionHealth.Snapshot();
+            if(session.CurrentDisplay is { } display&&snapshot[ConnectionHealthStage.SingleVirtualDisplay].State!=ConnectionHealthState.Healthy)
+            {
+                MarkHealthDisplayPreparing("正在按原生客户端报告的模式准备唯一虚拟副屏");
+                MarkHealthDisplayReady(display);
+            }
+            snapshot=connectionHealth.Snapshot();
+            if(session.CurrentDisplay is not null&&snapshot[ConnectionHealthStage.CaptureEncodeSend].State==ConnectionHealthState.Waiting)
+                MarkHealthPipelineStarting("正在启动原生客户端的视频流水线");
+        }
+        RefreshPrimaryConnectionHealth(source);
+    }
+
+    void RefreshConnectionHealthUi()
+    {
+        if(IsDisposed||healthStages.IsDisposed)return;
+        if(InvokeRequired)
+        {
+            if(IsHandleCreated)try{BeginInvoke(RefreshConnectionHealthUi);}catch(InvalidOperationException)when(IsDisposed||Disposing){}
+            return;
+        }
+        var snapshot=connectionHealth.Snapshot();
+        var selectedStage=healthStages.SelectedItems.Count==1&&healthStages.SelectedItems[0].Tag is ConnectionHealthStep selected?selected.Stage:(ConnectionHealthStage?)null;
+        var topStage=healthStages.TopItem?.Tag is ConnectionHealthStep top?top.Stage:(ConnectionHealthStage?)null;
+        var attentionStage=snapshot.Steps.FirstOrDefault(step=>step.State==ConnectionHealthState.Attention)?.Stage;
+        var desiredSelection=attentionStage??selectedStage;
+        ListViewItem? restoredTop=null;
+        healthStages.BeginUpdate();
+        try
+        {
+            healthStages.Items.Clear();
+            foreach(var step in snapshot.Steps)
+            {
+                var detail=step.Detail??HealthReasonText(step.Reason);
+                if(step.State==ConnectionHealthState.Attention&&step.Recovery!=ConnectionHealthRecovery.None)detail+=" · 建议："+HealthRecoveryText(step.Recovery);
+                var item=new ListViewItem(HealthStageText(step.Stage)){Tag=step,ToolTipText=detail};
+                item.SubItems.Add(HealthStateText(step.State));item.SubItems.Add(detail);
+                item.ForeColor=step.State switch
+                {
+                    ConnectionHealthState.Healthy=>Color.FromArgb(20,120,75),
+                    ConnectionHealthState.Attention=>Color.FromArgb(190,70,35),
+                    ConnectionHealthState.Paused=>Color.FromArgb(155,105,20),
+                    ConnectionHealthState.Working=>accent,
+                    _=>muted
+                };
+                healthStages.Items.Add(item);
+                if(desiredSelection==step.Stage){item.Selected=true;item.Focused=true;}
+                if(topStage==step.Stage)restoredTop=item;
+            }
+        }
+        finally{healthStages.EndUpdate();}
+        if(restoredTop is not null)healthStages.TopItem=restoredTop;
+        healthSummary.Text=snapshot.IsActive
+            ?$"当前路径：{HealthPathText(snapshot.Path)} · 解码提交 {snapshot.SubmittedFrames:N0} · 实际呈现 {snapshot.PresentedFrames:N0}"
+            :"当前没有活动连接；开始连接后将显示六阶段进度。";
+        UpdateHealthRepairButton();
+        UpdateHealthDetail();
+    }
+
+    void UpdateHealthRepairButton()
+    {
+        var step=healthStages.SelectedItems.Count==1?healthStages.SelectedItems[0].Tag as ConnectionHealthStep:null;
+        var canRepair=step is {State:ConnectionHealthState.Attention,Recovery:not ConnectionHealthRecovery.None};
+        repairSuggested.Enabled=!busy&&!stopping&&!closing&&canRepair;
+        repairSuggested.Text=canRepair?"修复："+HealthRecoveryText(step!.Recovery):"修复所选问题";
+        repairMode.Enabled=!busy&&!stopping&&!closing&&requestedModes.SelectedItem is RequestedMode;
+        repairMode.Text=HasAnySessions?"停止当前连接并配置模式":"配置选中显示模式";
+    }
+
+    void UpdateHealthDetail()
+    {
+        var step=healthStages.SelectedItems.Count==1?healthStages.SelectedItems[0].Tag as ConnectionHealthStep:null;
+        healthDetail.Text=step is null?"选择一个连接阶段可查看完整证据与修复建议。":
+            $"{HealthStageText(step.Stage)} · {HealthStateText(step.State)}\r\n{step.Detail??HealthReasonText(step.Reason)}"+
+            (step.State==ConnectionHealthState.Attention&&step.Recovery!=ConnectionHealthRecovery.None?"\r\n建议操作："+HealthRecoveryText(step.Recovery):"");
+    }
+
+    async Task RepairSelectedHealthStageAsync()
+    {
+        var step=healthStages.SelectedItems.Count==1?healthStages.SelectedItems[0].Tag as ConnectionHealthStep:null;
+        switch(step?.Recovery??ConnectionHealthRecovery.None)
+        {
+            case ConnectionHealthRecovery.RefreshRoute:
+                await RefreshNetworksAsync();await RefreshAsync();break;
+            case ConnectionHealthRecovery.RecreatePairing:
+            case ConnectionHealthRecovery.RestartVideo:
+                await RepairConnectionAsync();break;
+            case ConnectionHealthRecovery.ConfigureDisplayMode:
+                await ConfigureDisplayModeFromUiAsync();break;
+            case ConnectionHealthRecovery.ReclaimOwnedDisplay:
+                await RetryOwnedDisplayCleanupAsync();break;
+            case ConnectionHealthRecovery.OpenLogs:
+                OpenDiagnosticFolder();break;
+        }
+    }
+
+    async Task ConfigureDisplayModeFromUiAsync()
+    {
+        if(HasAnySessions)
+        {
+            Log("显示模式修复将停止当前连接，只配置设备上报的模式；完成后需要重新连接。");
+            await StopAllAsync();
+        }
+        if(HasPendingOwnedDisplayCleanup||connectionHealth.Snapshot().Steps.Any(step=>step.Recovery==ConnectionHealthRecovery.ReclaimOwnedDisplay))
+            throw new IOException("本次拥有的副屏尚未完成精确回收；已中止显示模式配置，请先执行“回收本次拥有的副屏”。");
+        RefreshRequestedModes();
+        await RepairDisplayModeAsync();
+    }
+
+    static string HealthStageText(ConnectionHealthStage value)=>value switch
+    {
+        ConnectionHealthStage.RouteAndListener=>"1. 线路与监听",
+        ConnectionHealthStage.AuthenticationAndDisplayProfile=>"2. 认证与屏幕参数",
+        ConnectionHealthStage.SingleVirtualDisplay=>"3. 唯一虚拟副屏",
+        ConnectionHealthStage.CaptureEncodeSend=>"4. 捕获、编码与发送",
+        ConnectionHealthStage.AndroidDecodeSubmission=>"5. 客户端解码提交",
+        ConnectionHealthStage.PhysicalPresentation=>"6. 屏幕实际呈现",
+        _=>value.ToString()
+    };
+    static string HealthStateText(ConnectionHealthState value)=>value switch
+    {ConnectionHealthState.Waiting=>"等待",ConnectionHealthState.Working=>"进行中",ConnectionHealthState.Healthy=>"正常",ConnectionHealthState.Paused=>"已暂停",ConnectionHealthState.Attention=>"需处理",_=>value.ToString()};
+    static string HealthPathText(ConnectionHealthPath value)=>value switch
+    {ConnectionHealthPath.NativeNetwork=>"Wi-Fi / USB 网络",ConnectionHealthPath.AdbCompatibility=>"USB 调试兼容",ConnectionHealthPath.Browser=>"浏览器",_=>"未选择"};
+    static string HealthReasonText(ConnectionHealthReason value)=>value switch
+    {ConnectionHealthReason.Idle=>"等待上一步",ConnectionHealthReason.Starting=>"正在启动",ConnectionHealthReason.Ready=>"已就绪",ConnectionHealthReason.Authenticating=>"等待客户端认证",ConnectionHealthReason.DisplayProfileReceived=>"已收到屏幕参数",ConnectionHealthReason.DisplayPreparing=>"正在准备副屏",ConnectionHealthReason.DisplayReady=>"副屏已就绪",ConnectionHealthReason.PipelineStarting=>"正在启动视频流水线",ConnectionHealthReason.FrameSent=>"电脑已发送画面",ConnectionHealthReason.CapturePaused=>"画面采集暂停",ConnectionHealthReason.DecodeSubmitted=>"已提交硬件解码",ConnectionHealthReason.FramePresented=>"Surface 已实际呈现",ConnectionHealthReason.Reconnecting=>"正在重连",ConnectionHealthReason.NeedsAttention=>"需要处理",ConnectionHealthReason.Stopped=>"连接已停止",_=>value.ToString()};
+    static string HealthRecoveryText(ConnectionHealthRecovery value)=>value switch
+    {ConnectionHealthRecovery.RefreshRoute=>"刷新线路",ConnectionHealthRecovery.RecreatePairing=>"重建当前连接",ConnectionHealthRecovery.ConfigureDisplayMode=>"配置设备请求模式",ConnectionHealthRecovery.ReclaimOwnedDisplay=>"回收本次拥有的副屏",ConnectionHealthRecovery.RestartVideo=>"重启视频连接",ConnectionHealthRecovery.OpenLogs=>"打开日志",_=>"无需操作"};
+
+    static void OpenDiagnosticFolder()
+    {
+        Directory.CreateDirectory(Diagnostics.Folder);
+        var start=new ProcessStartInfo("explorer.exe"){UseShellExecute=true};start.ArgumentList.Add(Diagnostics.Folder);Process.Start(start);
     }
 
     void RefreshRequestedModes()
@@ -37,8 +351,9 @@ internal sealed partial class MainForm
         var profiles=additionalSessions.Select(x=>x.RequestedProfile).Append(lastRequestedProfile).Where(x=>x is not null).Cast<TabletDisplayProfile>()
             .DistinctBy(p=>(p.Width,p.Height,p.RequestedRefreshRate));
         foreach(var profile in profiles)requestedModes.Items.Add(new RequestedMode(profile));
-        if(requestedModes.Items.Count>0)requestedModes.SelectedIndex=0;
-        else diagnosticReport.Text="尚未收到原生客户端屏幕参数。连接时会自动读取参数、写入唯一副屏模式并按需安装驱动。";
+        if(requestedModes.Items.Count>0){requestedModes.SelectedIndex=0;modeHint.Text="已读取设备上报的请求模式；只会配置选中模式。";}
+        else {modeHint.Text="尚未收到设备屏幕参数；请先完成一次认证或连接。";Log(modeHint.Text);}
+        UpdateHealthRepairButton();
     }
     async Task RepairDisplayModeAsync()
     {
@@ -118,7 +433,7 @@ internal sealed partial class MainForm
                 found.Add(new("USB 冲突",conflicts.Length==0?"通过":"需要处理",conflicts.Length==0?"未发现 ExtensoDeskServer 进程。":"ExtensoDeskServer 正在运行，可能接管 USB 设备。请先退出它的服务再连接。"));foreach(var p in conflicts)p.Dispose();
                 return found;
             },deadline.Token);
-            if(server is {} primary)results.Add(new("主连接","信息",$"客户端连接={primary.ClientConnected}，已显示={primary.PresentedFrames} 帧，采集暂停={primary.CapturePaused}。"));
+            if(server is {} primary)results.Add(new("主连接","信息",$"客户端连接={primary.ClientConnected}，电脑发送={primary.FramesSent} 帧，解码提交={primary.SubmittedFrames} 帧 / {primary.ClientSubmittedFps:F1} fps，实际呈现={primary.PresentedFrames} 帧 / {primary.ClientPresentedFps:F1} fps，采集暂停={primary.CapturePaused}。"));
             foreach(var s in additionalSessions.Where(x=>!x.IsStopped))results.Add(new("独立设备 "+s.Port,"信息",s.State));
             foreach(var s in browserStates.Values)results.Add(new("浏览器 "+s.Id.ToString()[..8],"信息",s.Message));
             Diagnostics.Save("connection-diagnosis.json",()=>new{timestamp=DateTimeOffset.Now,findings=results},Log);

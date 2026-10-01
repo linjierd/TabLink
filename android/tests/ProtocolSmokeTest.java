@@ -70,6 +70,44 @@ public final class ProtocolSmokeTest {
         check(new PresentationProgress().presented(1, 1280, 800, 2500).sequence == 1,
                 "new TCP connection starts a fresh sequence");
 
+        SubmissionProgress submissions = new SubmissionProgress();
+        SubmissionProgress.Report firstSubmission = submissions.submitted(0, 1200, 1920, 1, 100, "decoder-a");
+        check(firstSubmission != null && firstSubmission.frames == 1 && firstSubmission.ptsUs == 0
+                        && firstSubmission.width == 1200 && firstSubmission.height == 1920
+                        && firstSubmission.fps == 0 && firstSubmission.decoder.equals("decoder-a"),
+                "first decoder submission immediately reports cumulative TCP progress");
+        check(submissions.submitted(1, 1200, 1920, 500_000_001L, 1099, "decoder-a") == null,
+                "decoder submission acknowledgements are limited to one per second");
+        SubmissionProgress.Report laterSubmission = submissions.submitted(2, 1200, 1920,
+                1_000_000_001L, 1100, "decoder-a");
+        check(laterSubmission != null && laterSubmission.frames == 3 && laterSubmission.ptsUs == 2
+                        && Math.abs(laterSubmission.fps - 2) < 0.001,
+                "rate-limited report retains every successful decoder submission");
+        check(submissions.submitted(3, 0, 1920, 1_100_000_001L, 2200, "decoder-a") == null,
+                "invalid decoder submission does not advance progress");
+        check(submissions.submitted(4, 1200, 1920, 900_000_001L, 2200, "decoder-a") == null,
+                "stale decoder callback does not advance progress");
+        SubmissionProgress.Report reconfigured = submissions.submitted(0, 1200, 1920,
+                2_100_000_001L, 2200, "decoder-b");
+        check(reconfigured != null && reconfigured.frames == 4 && reconfigured.ptsUs == 0
+                        && reconfigured.decoder.equals("decoder-b"),
+                "decoder reconfiguration may reset PTS without resetting TCP submission count");
+        String longDecoder = "x".repeat(200);
+        SubmissionProgress.Report boundedDecoder = submissions.submitted(1, 1200, 1920,
+                3_200_000_001L, 3300, longDecoder);
+        check(boundedDecoder != null && boundedDecoder.frames == 5 && boundedDecoder.decoder.length() == 160,
+                "submission decoder metadata is bounded");
+        check(new SubmissionProgress().submitted(0, 1200, 1920, 1, 1, "decoder").frames == 1,
+                "new TCP connection starts fresh decoder submission progress");
+        check(new SubmissionProgress().submitted(0, 1200, 1920, -5, 1, "decoder").frames == 1,
+                "monotonic submission time may use an arbitrary nanoTime origin");
+        ByteArrayOutputStream submissionBytes = new ByteArrayOutputStream();
+        check(WireProtocol.RENDER_SUBMITTED == 0x14, "render-submitted packet keeps its protocol type");
+        WireProtocol.write(new DataOutputStream(submissionBytes), WireProtocol.RENDER_SUBMITTED,
+                "{\"evidence\":\"render-submitted\"}".getBytes(StandardCharsets.UTF_8));
+        check(WireProtocol.read(input(submissionBytes.toByteArray())).type == WireProtocol.RENDER_SUBMITTED,
+                "render-submitted packet type round trips");
+
         VideoAccessUnit idr = video(1, true, 0);
         check(idr.ptsUs == 1 && idr.keyFrame, "video PTS and Annex-B IDR parsed");
         check(!video(2, false, 0).keyFrame, "inter frame is not IDR");

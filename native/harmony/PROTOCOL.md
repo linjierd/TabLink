@@ -8,7 +8,7 @@
 
 | 方向 | type | 内容 |
 | --- | --- | --- |
-| 客户端→电脑 | `0x10` | `{"protocol":1,"token":"64个十六进制字符"}`；只能在证书 DER SHA256 校验后发送 |
+| 客户端→电脑 | `0x10` | `{"protocol":1,"token":"64个十六进制字符","features":["render-submitted-v1"]}`；只能在证书 DER SHA256 校验后发送；客户端必须等电脑在 `0x02` 中回显同一协议与能力后，才可发送 `0x14` |
 | 客户端→电脑 | `0x13` | `width,height,rotation,activeModeId,refreshRate,nativeWidth,nativeHeight,supportedModes`，另带 `clientPlatform:"harmony",progressEvidence:"render-submitted"` |
 | 电脑→客户端 | `0x02` / `0x03` | `{"message":"..."}` 状态 / 错误 |
 | 电脑→客户端 | `0x20` | `{"codec":"video/avc","width":W,"height":H,"fps":F,"csd0":"base64 SPS","csd1":"base64 PPS"}` |

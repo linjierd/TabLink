@@ -27,6 +27,7 @@ public final class VideoDecoder implements AutoCloseable {
     private static volatile long currentDiagnosticId;
     private static volatile String pacingDiagnostics = "{\"active\":false,\"enabled\":false}";
     public interface Listener {
+        void onSubmitted(long ptsUs, long submittedNanos, int width, int height, String decoder);
         void onPresented(long ptsUs, long renderNanos, int width, int height, double fps, String decoder, long dropped);
         void onSizeChanged(int width, int height);
         void onError(String message);
@@ -247,6 +248,7 @@ public final class VideoDecoder implements AutoCloseable {
                 codec.queueInputBuffer(index, 0, frame.bytes.length, frame.ptsUs, 0);
                 long submitted = System.nanoTime();
                 submittedFrames++;
+                listener.onSubmitted(frame.ptsUs, submitted, configuration.width, configuration.height, decoderName);
                 long inputAge = Math.max(0, submitted - frame.receivedNanos);
                 totalInputAgeNanos += inputAge;
                 longestInputAgeNanos = Math.max(longestInputAgeNanos, inputAge);

@@ -7,9 +7,9 @@ TabLink is created and maintained by **张林杰 (Jey)** (GitHub
 [@linjierd](https://github.com/linjierd)); the author's blog is
 [Linjie / 开发笔记](https://linjie.space/).
 
-- It includes the self-contained Windows x64 0.8.1 application, updater,
+- It includes the self-contained Windows x64 0.8.2 application, updater,
   signed Virtual Display Driver, patched FFmpeg executable plus complete
-  corresponding source, and the Android 0.8.1 preview APK.
+  corresponding source, and the Android 0.8.2 preview APK.
 - It does **not** include Google Android SDK Platform-Tools binaries. Android
   native Wi-Fi and USB-network modes do not need ADB. See `ADB-SETUP.md` for
   the optional USB-debugging compatibility mode.

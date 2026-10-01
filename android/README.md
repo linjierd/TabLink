@@ -1,4 +1,4 @@
-# TabLink Android 客户端 0.8.1 预览版
+# TabLink Android 客户端 0.8.2 预览版
 
 作者：**张林杰（Jey / [@linjierd](https://github.com/linjierd)）** · 博客：[Linjie / 开发笔记](https://linjie.space/)
 
@@ -24,7 +24,7 @@ tablink://connect?host=<IPv4>&port=27184&token=<64 lowercase hex>&cert=<64 hex S
 
 网络连接只启用 TLS 1.2/1.3。`PinnedTls.CertificatePin` 使用常量时间比较验证服务端叶证书完整 DER 的 SHA-256 必须等于二维码的 `cert`，同时检查证书有效期。这里使用二维码中的固定证书作为身份依据，不能用系统可信 CA 的另一张证书替代，也没有跳过验证的回退路径。证书校验失败时不会发送认证包，界面提示检查日期并重扫当前二维码。
 
-TLS 握手成功后，客户端同步发送 `0x10` 认证，再同步发送 `0x13` 当前原生显示能力和请求刷新率，然后才读取和解码视频。旋转或显示模式变化仍会更新 `0x13`；若电脑端因此关闭当前 TCP，客户端沿用当前 URI 的地址、证书和凭证自动重连，不要求重新扫码。电脑端停止或重新创建网络会话后，旧配对失效，应扫描新码。
+TLS 握手成功后，客户端在 `0x10` 认证中声明 `render-submitted-v1` 可选能力，再同步发送 `0x13` 当前原生显示能力和请求刷新率，然后才读取和解码视频。只有电脑端在 `0x02` 状态中回显同一能力后，客户端才会发送 `0x14` 解码提交进度；旧电脑端不回显时继续按原协议工作。旋转或显示模式变化仍会更新 `0x13`；若电脑端因此关闭当前 TCP，客户端沿用当前 URI 的地址、证书和凭证自动重连，不要求重新扫码。电脑端停止或重新创建网络会话后，旧配对失效，应扫描新码。
 
 首帧实际呈现后，配对链接保存在应用私有 `SharedPreferences("pairing", MODE_PRIVATE)`。正常启动不会自动使用它；用户可点击“重连上次电脑”。显示设置中可以“忘记上次配对的电脑”，或“更换连接 / 扫描二维码”。Token 不写入应用日志、状态文字或公开的显示能力接口。
 
@@ -68,7 +68,7 @@ Set-Location '<repository-root>\android'
 
 其他电脑可通过三个参数指定工具路径；首次需要下载 Gradle 插件依赖时省略 `-Offline`。脚本只在当前进程设置 Java/SDK 环境变量，并在退出时恢复。
 
-普通构建输出 `artifacts/TabLink-android-0.8.1-debug.apk`。增加 `-ReleasePreview` 会运行 `assembleRelease` / `lintRelease`，输出不可调试的 `artifacts/TabLink-android-0.8.1-preview.apk`。两者均为 `versionCode 12`，并使用本机生成且被 Git 忽略的 `build/signing/debug.keystore` 开发证书，以便覆盖早期 TabLink 测试安装；它不是应用商店生产签名。应安全保留同一份签名文件，绝不能把私钥提交到仓库。
+普通构建输出 `artifacts/TabLink-android-0.8.2-debug.apk`。增加 `-ReleasePreview` 会运行 `assembleRelease` / `lintRelease`，输出不可调试的 `artifacts/TabLink-android-0.8.2-preview.apk`。两者均为 `versionCode 13`，并使用本机生成且被 Git 忽略的 `build/signing/debug.keystore` 开发证书，以便覆盖早期 TabLink 测试安装；它不是应用商店生产签名。应安全保留同一份签名文件，绝不能把私钥提交到仓库。
 
 本机构建时发现系统 SDK 的 build-tools 35.0.0 目录只有未完成安装记录，因此在项目 `.tools/sdk` 中准备了隔离 SDK：复制现有 SDK platform 35，并从 [Google Android 官方仓库](https://dl.google.com/android/repository/build-tools_r35_windows.zip) 下载 build-tools 35.0.0。压缩包使用 [官方 repository 元数据](https://dl.google.com/android/repository/repository2-1.xml) 中 SHA-1 `af059bb67cf7786f45ee0db85e2d24985df1b4b6` 校验。没有修改系统 SDK。`.tools`、`.gradle`、`build` 和 `app/build` 属于本地构建工具或缓存，不应放进用户发行包。
 
@@ -77,7 +77,7 @@ Set-Location '<repository-root>\android'
 电脑端应先检查用户选定的设备未被排除，并且是获准使用的 USB 调试设备。以下命令中的 `SERIAL` 必须是该设备的真实序列号；不要批量对所有设备执行。
 
 ```text
-adb -s SERIAL install -r TabLink-android-0.8.1-preview.apk
+adb -s SERIAL install -r TabLink-android-0.8.2-preview.apk
 adb -s SERIAL reverse --no-rebind tcp:27183 tcp:27183
 adb -s SERIAL shell am start -n com.tablink.client/.MainActivity --es host 127.0.0.1 --ei port 27183 --es token RANDOM_SESSION_TOKEN
 ```
@@ -152,17 +152,20 @@ TCP 双向数据包格式：`type: uint8` + `length: uint32 big-endian` + `paylo
 
 | 方向 | type | 载荷 |
 | --- | --- | --- |
-| 平板 → 电脑 | `0x10` | 首包：`{"protocol":1,"token":"..."}` |
+| 平板 → 电脑 | `0x10` | 首包：`{"protocol":1,"token":"...","features":["render-submitted-v1"]}`；`features` 可选 |
 | 电脑 → 平板 | `0x01` | 完整 JPEG 图像 |
-| 电脑 → 平板 | `0x02` | `{"width":1280,"height":720,"message":"...","capturePaused":true}`；`capturePaused` 可选，仅更新暂停提示与连接状态 |
+| 电脑 → 平板 | `0x02` | `{"protocol":1,"features":["render-submitted-v1"],"width":1280,"height":720,"message":"...","capturePaused":true}`；能力与暂停字段可选 |
 | 电脑 → 平板 | `0x03` | UTF-8 错误文本，显示后停止自动重连 |
 | 平板 → 电脑 | `0x11` | `{"kind":"down|move|up|scroll","x":0.5,"y":0.5,"delta":120}` |
 | 平板 → 电脑 | `0x12` | `{"kind":"frame-presented","sequence":21,"width":1280,"height":800}` |
 | 平板 → 电脑 | `0x13` | 与能力查询接口相同的屏幕模式 JSON |
+| 平板 → 电脑 | `0x14` | 协商后发送的 `render-submitted` 进度：累计 `frames`、本帧 `ptsUs`、尺寸、`fps` 和 `decoder`；不推进实际呈现计数 |
 | 电脑 → 平板 | `0x20` | `{"codec":"video/avc","width":1200,"height":1920,"fps":90,"csd0":"BASE64_SPS","csd1":"BASE64_PPS"}` |
 | 电脑 → 平板 | `0x21` | 8 字节大端非负 `ptsUs`，后接一个完整 Annex-B H.264 access unit |
 
-`0x12` 是客户端画面发布进度。JPEG 在成功解码、绘制且 `unlockCanvasAndPost` 正常返回后计数；H.264 只在 `MediaCodec.OnFrameRenderedListener` 通知后计数。首次立即确认，此后有新进展时约每秒确认一次；重绘旧 JPEG 不重复计数，每次 TCP 连接从 1 重新计数。新增 `fps`、`codec`、`decoder`、`droppedFrames` 字段，其中 FPS 由回调时间戳测量。回调可能延迟、成批或少报，不能替代最终可见帧率和实机验收。
+`0x12` 是客户端画面实际呈现回调进度。JPEG 在成功解码、绘制且 `unlockCanvasAndPost` 正常返回后计数；H.264 只在 `MediaCodec.OnFrameRenderedListener` 通知后计数。首次立即确认，此后有新进展时约每秒确认一次；重绘旧 JPEG 不重复计数，每次 TCP 连接从 1 重新计数。新增 `fps`、`codec`、`decoder`、`droppedFrames` 字段，其中 FPS 由回调时间戳测量。回调可能延迟、成批或少报，不能替代最终可见帧率和实机验收。
+
+`0x14` 只证明某个访问单元已经成功排入 MediaCodec 输入队列。每个 TCP 会话累计 `frames`；第一次提交立即报告，之后最多约每秒一次。解码器重配会保留会话累计帧数，并允许媒体 PTS 从零重新开始；重连才重置累计值。单调回调时钟必须前进，尺寸必须有效，decoder 名称最多 160 字符。暂停采集或能力未协商时不发送。电脑端把 submitted 与 presented 的 FPS、期限和健康阶段分别处理，绝不把 `0x14` 当作 `0x12`。
 
 H.264 必须先发 `0x20` 配置，SPS/PPS 分别为带 Annex-B 起始码的 Base64 字节；随后 `0x21` 中 PTS 严格递增，建议禁用 B 帧并至少每秒发送一个 IDR。客户端只选择硬件 AVC 解码器，以独立 Surface 显示，避免与 JPEG Canvas 生产者冲突。输入队列最多 6 帧；排队超过 150 ms 或队列溢出会放弃相关依赖链并等待新 IDR，避免无限积累延迟。配置变化重建解码器，Surface 销毁时释放并安全重连。
 
@@ -182,7 +185,7 @@ H.264 必须先发 `0x20` 配置，SPS/PPS 分别为带 Annex-B 起始码的 Bas
 
 最终 0.4.2（APK SHA-256 `4F6FBBD8D22447A1D2702B2028A4868CC779D89124074E8923BBE667DFCD58FC`）已通过正常安装、默认开关开启的长时间真机验证：Windows 控制窗口最小化，原生 1200×1920 / 90 Hz，120.433 秒实际呈现 **89.702 fps**，四段 30 秒为 89.800 / 89.667 / 89.733 / 89.567 fps，P99 11.147 ms，最大间隔 33.295 ms，没有断线或采样覆盖缺口。该结果来自 SurfaceFlinger 实际呈现时间戳，而非计划帧率。完整方法和保留的未通过候选结果见根目录 `VERIFICATION.md` 与发行目录 `diagnostics/final042-driftfixed-*`。
 
-- 55 项纯 JVM 断言：协议边界与坐标映射、画面发布去重、H.264 时间戳与 IDR、有界队列丢帧恢复、实际 FPS 计算，以及最低亮度补偿的触发和保护条件。
+- 0.8.2 的协议断言覆盖能力协商、解码提交限频与累计、解码器重建、非法尺寸和旧回调保护；最终断言数量以 `VERIFICATION-0.8.2.md` 中本次构建输出为准。
 - 20 项纯 JVM HUD / 暂停状态断言：透明度与不透明度方向、持久化数值边界、九宫格位置、颜色格式，以及暂停、普通心跳、恢复和同会话序号延续。0.5.0 的设置手势、沉浸显示和电脑采集暂停恢复仍需真机联合验证；不能用这些逻辑测试替代运行中的画面验收。
 - 26,024 项独立纯 JVM RenderClock 断言覆盖稳定 90 fps、解码抖动、较慢输入、首批突发、长停顿、固定硬件流水线延迟、重复/倒序 PTS、极大 PTS 跳变、重连重置，以及不同帧率下未来排程不超过 25 ms。新增 100 秒缓慢时钟偏移、持续到达延迟和正负 5 ms 交替抖动用例；后者检查计划间隔均匀且不会反复触发上下限修正。逻辑测试仅验证时钟行为，不能替代最终实际呈现率验收。
 - `assembleDebug` 成功，`lintDebug` 无错误。Lint 仍提示目标 SDK 版本、较新 XML 属性和中文界面可翻译性等兼容/维护警告。

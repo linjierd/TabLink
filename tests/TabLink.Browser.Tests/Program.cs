@@ -129,6 +129,7 @@ try
         await late.Negotiate();await prepareEntered.Task.WaitAsync(TimeSpan.FromSeconds(12));
         Guid id;lock(statuses)id=statuses.Last(x=>x.State=="preparing").Id;
         var stopping=host.StopSessionAsync(id);
+        await Task.Delay(150);Check(!stopping.IsCompleted,"Stop keeps the sole browser slot until late preparation is settled");
         allowPrepare.TrySetResult();
         await stopping;
         await Eventually(()=>disposed==3,"Preparation finishing after Stop is disposed once");

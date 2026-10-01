@@ -260,7 +260,7 @@ internal static class SelfTests
             await SendVideoAckAsync(stream, 1, 89.8, "c2.unisoc.avc.decoder", ct);
             await WaitForAsync(() => acknowledgements == 1, ct);
             Check(server.PresentedFrames == 1 && server.PresentedWidth == 1200 && server.PresentedHeight == 1920 &&
-                Math.Abs(server.ClientReportedFps - 89.8) < 0.001 && server.ClientDecoder == "c2.unisoc.avc.decoder",
+                Math.Abs(server.ClientPresentedFps - 89.8) < 0.001 && server.ClientSubmittedFps == 0 && server.ClientDecoder == "c2.unisoc.avc.decoder",
                 "video presentation ACK metadata was not recorded");
             var firstPresented = server.LastPresentedUtc;
             log.Add("PASS access unit 0x21 counts once; presentation metadata is recorded only after a valid ACK");
@@ -269,14 +269,14 @@ internal static class SelfTests
             await FrameServer.WritePacketAsync(stream, 0x11, Encoding.UTF8.GetBytes("{\"kind\":\"move\",\"x\":0.5,\"y\":0.5}"), ct);
             await WaitForAsync(() => inputs.Count == 1, ct); // Ordered input stream is a processing barrier.
             Check(acknowledgements == 1 && server.LastPresentedUtc == firstPresented &&
-                server.ClientReportedFps == 89.8 && server.ClientDecoder == "c2.unisoc.avc.decoder", "duplicate ACK replaced liveness or decoder telemetry");
+                server.ClientPresentedFps == 89.8 && server.ClientSubmittedFps == 0 && server.ClientDecoder == "c2.unisoc.avc.decoder", "duplicate ACK replaced liveness or decoder telemetry");
             log.Add("PASS repeated video ACK cannot rewrite liveness or decoder/FPS telemetry");
 
             await packets.Writer.WriteAsync(new(0x21, [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0x41], true), ct);
             await ReadUntilAsync(stream, 0x21, ct);
             await SendVideoAckAsync(stream, 2, 1000, new string('d', 161), ct);
             await WaitForAsync(() => acknowledgements == 2, ct);
-            Check(server.PresentedFrames == 2 && server.ClientReportedFps == 300 && server.ClientDecoder is null,
+            Check(server.PresentedFrames == 2 && server.ClientPresentedFps == 300 && server.ClientSubmittedFps == 0 && server.ClientDecoder is null,
                 "FPS/decoder metadata was not bounded");
             log.Add("PASS valid advancing ACK bounds FPS and ignores overlong decoder metadata");
 
@@ -288,12 +288,12 @@ internal static class SelfTests
             log.Add("PASS video ACK cannot claim a frame beyond this session's sent access units");
         }
 
-        Check(server.ClientDisplayProfile is null && server.ClientReportedFps == 0 && server.ClientDecoder is null,
+        Check(server.ClientDisplayProfile is null && server.ClientSubmittedFps == 0 && server.ClientPresentedFps == 0 && server.ClientDecoder is null,
             "disconnect retained another connection's display/FPS/decoder metadata");
         using (var fresh = await ConnectAsync(server, ct))
         {
             await ReadUntilAsync(fresh.GetStream(), 0x20, ct);
-            Check(server.ClientDisplayProfile is null && server.ClientReportedFps == 0 && server.ClientDecoder is null,
+            Check(server.ClientDisplayProfile is null && server.ClientSubmittedFps == 0 && server.ClientPresentedFps == 0 && server.ClientDecoder is null,
                 "fresh connection inherited previous client metadata");
             await SendVideoAckAsync(fresh.GetStream(), 1, 90, "no-frame", ct);
             await ExpectClosedAsync(fresh.GetStream(), ct);

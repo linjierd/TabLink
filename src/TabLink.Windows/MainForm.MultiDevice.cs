@@ -20,6 +20,9 @@ internal sealed partial class MainForm
     DateTime lastAdditionalNetworkUtc;
     bool HasAdditionalSessions=>additionalSessions.Any(x=>!x.IsStopped)||browserHost is not null;
     bool HasAnySessions=>server is not null||HasAdditionalSessions;
+    bool HasPendingOwnedDisplayCleanup=>pendingPrimaryDisplayCleanup is not null||
+        additionalSessions.Any(session=>session.HasPendingDisplayCleanup)||
+        !browserCleanupReservations.IsEmpty;
 
     TabPage BuildMultiDeviceTab()
     {
@@ -35,8 +38,14 @@ internal sealed partial class MainForm
         var pair=new FlowLayoutPanel{Dock=DockStyle.Fill,WrapContents=false};pair.Controls.Add(deviceQr);pair.Controls.Add(deviceHint);layout.Controls.Add(pair,0,3);
         page.Controls.Add(layout);
         addSession.Click+=async(_,_)=>await GuardAsync(AddNativeSessionAsync);
-        stopSession.Click+=async(_,_)=>await GuardAsync(async()=>{if(sessionList.SelectedItem is NativeSessionRow r){await r.Session.DisposeAsync();RefreshSessionList();}});
-        retrySession.Click+=(_,_)=>{if(sessionList.SelectedItem is NativeSessionRow r)r.Session.Reconnect();};
+        stopSession.Click+=async(_,_)=>await GuardAsync(async()=>
+        {
+            if(sessionList.SelectedItem is not NativeSessionRow row)return;
+            await row.Session.DisposeAsync();
+            StopConnectionHealth("原生客户端连接已停止并回收本次副屏");
+            RefreshSessionList();
+        });
+        retrySession.Click+=(_,_)=>{if(sessionList.SelectedItem is NativeSessionRow row)row.Session.Reconnect();};
         stopAll.Click+=async(_,_)=>await GuardAsync(StopAllAsync);
         sessionList.SelectedIndexChanged+=(_,_)=>ShowSessionPairing();
         return page;
@@ -54,11 +63,34 @@ internal sealed partial class MainForm
         used.Add(27184);
         var port=NativeNetworkSession.Ports.FirstOrDefault(x=>!used.Contains(x));
         if(port==0)throw new IOException("其他原生配对端口已用完，请使用首页主连接或停止一个设备。");
+        await EnsureOwnedDisplayCleanupBeforeNewConnectionAsync();
         _=VideoPipeline.FindFfmpeg();
+        BeginConnectionHealth(ConnectionHealthPath.NativeNetwork,$"选择原生客户端线路 {choice.InterfaceAlias} · {choice.LocalAddress}:{port}");
         var session=new NativeNetworkSession(choice,port,touch.Checked,OnUiAsync,Log);
+        session.DisplayPreparationStarted+=profile=>
+        {
+            MarkHealthDisplayProfile(profile);
+            MarkHealthDisplayPreparing("正在按原生客户端报告的模式准备唯一虚拟副屏");
+        };
+        session.DisplayPrepared+=display=>
+        {
+            MarkHealthDisplayReady(display);
+            MarkHealthPipelineStarting("正在启动原生客户端的视频流水线");
+        };
+        session.DisplayPreparationFailed+=ex=>MarkConnectionHealthAttention(ex.Message);
         additionalSessions.Add(session);
-        try{await session.StartAsync(lifetime.Token);}
-        catch{additionalSessions.Remove(session);throw;}
+        try
+        {
+            await session.StartAsync(lifetime.Token);
+            MarkHealthRouteReady($"{choice.InterfaceAlias} · {choice.LocalAddress}:{port} · TLS 监听已启动");
+            MarkHealthAuthenticationStarted("等待原生客户端扫描当前二维码并完成 TLS 与令牌认证");
+        }
+        catch(Exception ex)
+        {
+            additionalSessions.Remove(session);
+            MarkConnectionHealthAttention(ex.Message);
+            throw;
+        }
         RefreshSessionList(session.Id);
         Log($"已创建独立设备配对：{choice.InterfaceAlias}，端口 {port}。尚未收到设备前不启用副屏。");
     }
@@ -116,11 +148,21 @@ internal sealed partial class MainForm
             {choices=await Task.Run(()=>NetworkInterfaceCatalog.GetChoices(settings),lifetime.Token);lastAdditionalNetworkUtc=DateTime.UtcNow;}
             var desktop=InputDesktopAvailability.Query();
             foreach(var session in additionalSessions.ToArray())
-                try{await session.CheckAsync(choices,desktop);}
+                try
+                {
+                    await session.CheckAsync(choices,desktop);
+                    if(session.IsStopped)
+                    {
+                        if(!healthAttempt.IsEmpty)MarkConnectionHealthAttention(session.State);
+                    }
+                    else RefreshNativeSessionConnectionHealth(session);
+                }
                 catch(Exception ex)
                 {
                     Log("独立设备检查失败："+ex.Message);
+                    MarkConnectionHealthAttention(ex.Message);
                     try{await session.DisposeAsync();}catch(Exception cleanup){Log("该设备回收需要检查："+cleanup.Message);}
+                    if(session.HasPendingDisplayCleanup)MarkOwnedDisplayCleanupAttention(OwnedDisplayCleanupFailureDetail(ex));
                 }
             await MonitorBrowserAsync(choices,desktop);
             RefreshSessionList();
@@ -134,8 +176,25 @@ internal sealed partial class MainForm
     async Task StopAllAsync()
     {
         await StopAsync();
-        foreach(var session in additionalSessions.ToArray())try{await session.DisposeAsync();}catch(Exception ex){Log("设备回收失败："+ex.Message);}
-        await StopBrowserAsync();
+        foreach(var session in additionalSessions.ToArray())try
+        {
+            if(session.HasPendingDisplayCleanup)await session.RetryDisplayCleanupAsync();
+            else if(!session.IsStopped)await session.DisposeAsync();
+        }
+        catch(Exception ex)
+        {
+            if(session.HasPendingDisplayCleanup)
+            {
+                var detail=OwnedDisplayCleanupFailureDetail(ex);MarkOwnedDisplayCleanupAttention(detail);Log(detail);
+            }
+            else {MarkConnectionHealthAttention(ex.Message);Log("原生连接清理需要检查："+ex.Message);}
+        }
+        try{await StopBrowserAsync();}catch(Exception ex)
+        {
+            if(!browserCleanupReservations.IsEmpty)MarkOwnedDisplayCleanupAttention(OwnedDisplayCleanupFailureDetail(ex));
+            Log("浏览器连接清理需要检查："+ex.Message);
+        }
+        if(!connectionHealth.Snapshot().Steps.Any(step=>step.State==ConnectionHealthState.Attention))StopConnectionHealth("所有连接已停止并回收本次副屏");
         RefreshSessionList();UpdateButtons();
     }
 

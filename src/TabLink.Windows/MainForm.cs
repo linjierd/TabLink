@@ -19,6 +19,7 @@ internal sealed partial class MainForm : Form
     SecondScreenWelcome? welcome;
     SessionGuard? displayGuard;
     DisplaySessionReservation? primaryReservation;
+    DisplaySessionReservation? pendingPrimaryDisplayCleanup;
     readonly Guid primarySessionId=Guid.NewGuid();
     string? primaryTargetKey;
     TabletDisplayProfile? lastRequestedProfile;
@@ -229,7 +230,7 @@ internal sealed partial class MainForm : Form
         exclusions.SizeChanged+=(_,_)=>exclusionHelp.MaximumSize=new Size(Math.Max(280,exclusions.ClientSize.Width-exclusions.Padding.Horizontal-SystemInformation.VerticalScrollBarWidth-20),0);
 
         var supportLayout=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=1,RowCount=2};
-        supportLayout.RowStyles.Add(new RowStyle(SizeType.Percent,67));supportLayout.RowStyles.Add(new RowStyle(SizeType.Percent,33));
+        supportLayout.RowStyles.Add(new RowStyle(SizeType.Percent,78));supportLayout.RowStyles.Add(new RowStyle(SizeType.Percent,22));
         supportLayout.Controls.Add(BuildDiagnosticsPanel(),0,0);
         var logBox=new GroupBox{Text="连接记录",Dock=DockStyle.Fill,Padding=new Padding(10)};logBox.Controls.Add(log);supportLayout.Controls.Add(logBox,0,1);support.Controls.Add(supportLayout);
 
@@ -340,21 +341,29 @@ internal sealed partial class MainForm : Form
         if(server is not null)return;if(HasAdditionalSessions)throw new InvalidOperationException("TabLink 只允许一个副屏连接。请先停止当前原生或浏览器连接。");if(adb is null)throw new InvalidOperationException("请先选择 adb.exe");
         if(Process.GetProcessesByName("ExtensoDeskServer").Length>0)throw new InvalidOperationException("ExtensoDesk 后台仍在运行。请先退出它的 USB 服务，避免两个程序同时连接平板。");
         var device=SelectedDevice();
+        await EnsureOwnedDisplayCleanupBeforeNewConnectionAsync();
+        BeginConnectionHealth(ConnectionHealthPath.AdbCompatibility,$"手动选择设备 {device.Device.Serial}");
         // Establish tablet authorization before bringing back a previously
         // detached virtual screen. A missing tablet must not leave a phantom.
         approved=await adb.ApproveAsync(device.Device,lifetime.Token);
         try
         {
+            MarkHealthRouteReady("USB 身份与 ADB 授权已核验，准备本机反向通道");
+            MarkHealthAuthenticationStarted("正在从明确选中的客户端读取屏幕参数");
             SetStatus("正在从 APK 读取平板屏幕参数…");
             tabletProfile=await adb.ReadDisplayProfileAsync(approved,lifetime.Token);
+            MarkHealthDisplayProfile(tabletProfile);
             Diagnostics.Save("tablet-display-profile.json",()=>tabletProfile,Log);
             Log($"平板报告：{tabletProfile.Width} × {tabletProfile.Height}，当前 {tabletProfile.RefreshRate:F1} Hz，支持最高 {tabletProfile.RequestedRefreshRate} Hz，方向 {tabletProfile.Rotation}。");
             _=VideoPipeline.FindFfmpeg();
+            MarkHealthDisplayPreparing("正在按设备报告的模式准备唯一虚拟副屏");
             var current=await PrepareDisplayAsync(tabletProfile);
+            MarkHealthDisplayReady(current);
             await Task.Delay(200,lifetime.Token);
             activePower=new ActiveDisplayPower();
             var captureIdentity=(displayGuard??throw new IOException("副屏保护组件未启动")).Lease;
             capture=new DesktopCapture(current,identity:captureIdentity);
+            MarkHealthPipelineStarting("正在启动桌面捕获与 H.264 编码器");
             var profile=tabletProfile;
             server=new FrameServer(ct=>VideoPipeline.StreamAsync(current,profile,ct,Log,captureIdentity),touch.Checked?capture.Input:null,capture.ReleaseInput);
             var newServer=server;
@@ -369,7 +378,7 @@ internal sealed partial class MainForm : Form
             await adb.LaunchAsync(approved,server.Token,cancellationToken:lifetime.Token);
             UpdateButtons();
         }
-        catch{await StopAsync();throw;}
+        catch(Exception ex){MarkConnectionHealthAttention(ex.Message);await StopAsync();throw;}
     }
 
     async Task<VirtualDisplayInfo> PrepareDisplayAsync(TabletDisplayProfile profile,CancellationToken cancellationToken=default)
@@ -378,6 +387,10 @@ internal sealed partial class MainForm : Form
         using var preparation=CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token,cancellationToken);
         var ct=preparation.Token;ct.ThrowIfCancellationRequested();
         primaryReservation=await DisplaySessionAllocator.Shared.AcquireAsync(primarySessionId,profile,ct,primaryTargetKey);
+        // Acquire retries allocator-owned pending cleanup before creating a new
+        // reservation. A successful acquire therefore retires any stale UI
+        // retry handle from the preceding stopped session.
+        pendingPrimaryDisplayCleanup=null;
         primaryTargetKey=primaryReservation.TargetKey;
         displayGuard=primaryReservation.Guard;
         var current=primaryReservation.CurrentDisplay;
@@ -390,6 +403,67 @@ internal sealed partial class MainForm : Form
         if(primaryReservation is {} owned){await owned.DisposeAsync();primaryReservation=null;}
         displayGuard=null;
     }
+
+    async Task RetryOwnedDisplayCleanupAsync()
+    {
+        try
+        {
+            var attempted=false;
+            if(pendingPrimaryDisplayCleanup is {} owned)
+            {
+                // This reservation carries the exact guarded CCD lease and the
+                // install receipt. Re-dispose it only; never enumerate or remove a
+                // display by friendly name.
+                await owned.DisposeAsync();
+                if(ReferenceEquals(pendingPrimaryDisplayCleanup,owned))pendingPrimaryDisplayCleanup=null;
+                attempted=true;
+            }
+            foreach(var native in additionalSessions.Where(session=>session.HasPendingDisplayCleanup).ToArray())
+            {
+                await native.RetryDisplayCleanupAsync();
+                attempted=true;
+            }
+            foreach(var item in browserCleanupReservations.ToArray())
+            {
+                await item.Value.DisposeAsync();
+                browserCleanupReservations.TryRemove(item.Key,out _);
+                attempted=true;
+            }
+            if(!attempted)throw new IOException("没有可安全重试的 TabLink 副屏所有权记录；未更改任何显示设备。");
+            if(HasPendingOwnedDisplayCleanup)throw new IOException("仍有本次连接拥有的副屏等待精确回收；未执行其他显示维护。");
+            if(browserHost is not null&&browserChoice is {} choice)
+            {
+                BeginConnectionHealth(ConnectionHealthPath.Browser,$"选择浏览器线路 {choice.InterfaceAlias} · {choice.LocalAddress}");
+                MarkHealthRouteReady($"{choice.InterfaceAlias} · {choice.LocalAddress}:27185 · 本地 HTTPS/WebRTC 已启动");
+                MarkHealthAuthenticationStarted("本次副屏已精确回收，等待浏览器重新配对");
+                SetStatus("已精确回收本次副屏；浏览器接入仍在等待重新配对");
+            }
+            else
+            {
+                StopConnectionHealth("本次拥有的虚拟副屏已精确回收");
+                SetStatus("已精确回收并卸载本次连接拥有的虚拟副屏");
+            }
+        }
+        catch(Exception ex)
+        {
+            var detail=OwnedDisplayCleanupFailureDetail(ex);
+            MarkOwnedDisplayCleanupAttention(detail);
+            Log(detail);
+            throw new IOException(detail,ex);
+        }
+    }
+
+    async Task EnsureOwnedDisplayCleanupBeforeNewConnectionAsync()
+    {
+        if(!HasPendingOwnedDisplayCleanup)return;
+        Log("新连接开始前先重试本程序保留的精确副屏租约；不会按设备名称清理其他显示设备。");
+        await RetryOwnedDisplayCleanupAsync();
+        if(HasPendingOwnedDisplayCleanup)
+            throw new IOException("上一块副屏仍在等待精确回收；未开始新连接。");
+    }
+
+    static string OwnedDisplayCleanupFailureDetail(Exception ex) =>
+        "收回并卸载本次拥有的虚拟副屏失败："+ex;
 
     async Task AdaptDisplayAsync(FrameServer source,TabletDisplayProfile profile)
     {
@@ -432,7 +506,12 @@ internal sealed partial class MainForm : Form
         activePower=null;
         networkFirewall=null;networkChoice=null;networkDisplay=null;tabletProfile=null;ClearPairing();
         welcome?.Close();welcome=null;
-        if(running is null&&ownedCapture is null&&ownedApproval is null&&ownedGuard is null&&ownedFirewall is null){stopping=false;UpdateButtons();return;}
+        if(running is null&&ownedCapture is null&&ownedApproval is null&&ownedGuard is null&&ownedFirewall is null)
+        {
+            stopping=false;
+            if(!HasAdditionalSessions&&!connectionHealth.Snapshot().Steps.Any(step=>step.State==ConnectionHealthState.Attention))StopConnectionHealth("连接已停止");
+            UpdateButtons();return;
+        }
         stopping=true;UpdateButtons();
         try
         {
@@ -449,7 +528,14 @@ internal sealed partial class MainForm : Form
                 catch(Exception ex){Log("画面服务已关闭；设备离线或策略已变化，未能清理 USB 转发。"+ex.Message);}
             }
             try{if(ownedReservation is not null)await ownedReservation.DisposeAsync();else ownedGuard?.Dispose();}
-            catch(Exception ex){displayCollected=false;Log("收回并卸载虚拟副屏失败："+ex.Message);}
+            catch(Exception ex)
+            {
+                displayCollected=false;
+                if(ownedReservation is not null)pendingPrimaryDisplayCleanup=ownedReservation;
+                var detail=OwnedDisplayCleanupFailureDetail(ex);
+                MarkOwnedDisplayCleanupAttention(detail);
+                Log(detail);
+            }
         }
         finally
         {
@@ -459,6 +545,7 @@ internal sealed partial class MainForm : Form
             Diagnostics.Save("session-health.json",()=>new{timestamp=DateTimeOffset.Now,pid=Environment.ProcessId,receiving=false,stopped=true,displays=VirtualDisplayManager.GetDisplays()},Log);
             if(!IsDisposed)
             {
+                if(displayCollected&&!HasAdditionalSessions&&!connectionHealth.Snapshot().Steps.Any(step=>step.State==ConnectionHealthState.Attention))StopConnectionHealth("连接已停止并回收本次副屏");
                 SetStatus(displayCollected?"已停止连接，虚拟副屏设备已卸载":"已停止传输，虚拟副屏卸载待重试；再次连接时会自动处理");metrics.Text="USB 直连 · 只接管手动选中的设备";
                 displays.Items.Clear();
                 foreach(var item in VirtualDisplayManager.GetDisplays().Where(d=>d.IsTabLinkCompatible))displays.Items.Add(new DisplayChoice(item));
@@ -469,6 +556,7 @@ internal sealed partial class MainForm : Form
     async Task MonitorAsync()
     {
         await MonitorAdditionalAsync();
+        if(server is {} healthServer)RefreshPrimaryConnectionHealth(healthServer);
         if(monitoring||stopping||preparingNetwork||server is null)return;monitoring=true;
         var observedApproval=approved;var observedServer=server;
         try
@@ -506,7 +594,7 @@ internal sealed partial class MainForm : Form
                 var resumeDeadlineUtc=presentationDeadline.RecoveryDeadlineUtc;
                 displayGuard?.Renew(deadline);
                 if(now>deadline)
-                {Log("平板超过 20 秒没有确认显示新画面，自动停止副屏。");await StopAsync();return;}
+                {const string message="平板超过 20 秒没有报告新的客户端进度，自动停止副屏。";MarkConnectionHealthAttention(message);Log(message);await StopAsync();return;}
                 var receiving=!capturePaused&&server.ClientConnected&&server.LastClientProgressUtc>now.AddSeconds(-5);
                 if(capturePaused)status.Text="画面采集正在恢复，连接保留";
                 else if(receiving)status.Text="平板已连接，正在传输副屏";
@@ -525,8 +613,10 @@ internal sealed partial class MainForm : Form
                 var sample=DateTime.UtcNow;var delta=server.PresentedFrames-previousPresented;
                 var measuredFps=delta<0?0:delta/Math.Max(0.001,(sample-previousSampleUtc).TotalSeconds);
                 previousPresented=server.PresentedFrames;previousSampleUtc=sample;
-                metrics.Text=$"{(capturePaused?"画面暂停 · 会话保留":receiving?(server.SubmissionEvidenceOnly?"解码提交（呈现待验证）":"设备已显示"):"等待画面")} · {tabletProfile?.Width} × {tabletProfile?.Height} · 屏幕 {server.ClientDisplayProfile?.RefreshRate??tabletProfile?.RefreshRate:F0} / 目标 {tabletProfile?.RequestedRefreshRate} Hz · 解码 {server.ClientReportedFps:F1} 帧/秒";
-                Diagnostics.Save("session-health.json",()=>new{timestamp=DateTimeOffset.Now,pid=Environment.ProcessId,serial=approved?.Serial,transport=networkChoice is null?"ADB":"TLS",networkInterface=networkChoice?.InterfaceAlias,receiving,capturePaused,inputDesktop,resumeDeadlineUtc,windowVisible=Visible,measuredFps,server.ClientReportedFps,server.ClientDecoder,targetProfile=tabletProfile,clientProfile=server.ClientDisplayProfile,server.FramesSent,server.PresentedFrames,server.PresentedWidth,server.PresentedHeight,server.LastPresentedUtc,server.SubmittedFrames,server.LastSubmittedUtc,server.SubmissionEvidenceOnly,sendPerformance=server.SendPerformance,displays=VirtualDisplayManager.GetDisplays()},Log);
+                var progressText=capturePaused?"画面暂停 · 会话保留":server.HasRecentPresentation?"设备已实际显示":server.HasRecentSubmission?"解码提交正常 · 呈现待验证":server.FramesSent>0?"电脑已发送 · 等待解码":"等待画面";
+                metrics.Text=$"{progressText} · {tabletProfile?.Width} × {tabletProfile?.Height} · 屏幕 {server.ClientDisplayProfile?.RefreshRate??tabletProfile?.RefreshRate:F0} / 目标 {tabletProfile?.RequestedRefreshRate} Hz · 提交 {server.ClientSubmittedFps:F1} / 呈现 {server.ClientPresentedFps:F1} 帧/秒";
+                Diagnostics.Save("session-health.json",()=>new{timestamp=DateTimeOffset.Now,pid=Environment.ProcessId,serial=approved?.Serial,transport=networkChoice is null?"ADB":"TLS",networkInterface=networkChoice?.InterfaceAlias,receiving,capturePaused,inputDesktop,resumeDeadlineUtc,windowVisible=Visible,measuredPresentedFps=measuredFps,server.ClientSubmittedFps,server.ClientPresentedFps,server.ClientDecoder,targetProfile=tabletProfile,clientProfile=server.ClientDisplayProfile,server.FramesSent,server.PresentedFrames,server.PresentedWidth,server.PresentedHeight,server.LastPresentedUtc,server.SubmittedFrames,server.LastSubmittedUtc,server.HasRecentSubmission,server.HasRecentPresentation,sendPerformance=server.SendPerformance,displays=VirtualDisplayManager.GetDisplays()},Log);
+                RefreshPrimaryConnectionHealth(server);
             }
         }
         catch(OperationCanceledException){}catch(Exception ex){if(ReferenceEquals(server,observedServer)&&ReferenceEquals(approved,observedApproval)){Log("连接监测失败："+ex.Message);await StopAsync();}}finally{monitoring=false;}
@@ -574,6 +664,8 @@ internal sealed partial class MainForm : Form
     }
     void ShowError(Exception ex)
     {
+        if(HasPendingOwnedDisplayCleanup)MarkOwnedDisplayCleanupAttention(OwnedDisplayCleanupFailureDetail(ex));
+        else MarkConnectionHealthAttention(ex.Message);
         Log(ex.Message);status.Text="需要处理连接条件";
         if(Visible&&WindowState!=FormWindowState.Minimized)MessageBox.Show(this,ex.Message,"TabLink",MessageBoxButtons.OK,MessageBoxIcon.Information);
         else tray.ShowBalloonTip(5000,"TabLink 需要处理连接条件",ex.Message,ToolTipIcon.Info);
@@ -590,6 +682,7 @@ internal sealed partial class MainForm : Form
         addRule.Enabled=canEditRules;removeRule.Enabled=canEditRules&&rules.SelectedItem is RuleChoice;serial.Enabled=canEditRules;vid.Enabled=canEditRules;pid.Enabled=canEditRules;label.Enabled=canEditRules;
         UpdateNetworkButtons(idle);
         UpdateAdditionalButtons();
+        UpdateHealthRepairButton();
     }
     sealed record DeviceChoice(AdbDevice Device,DevicePolicyDecision Decision){public override string ToString()=>$"{Device.Model?.Replace('_',' ')??"Android"} · {Device.Serial}  {(Decision.Allowed?"USB 已验证":"[已阻止] "+Decision.Reason)}";}
     sealed record DisplayChoice(VirtualDisplayInfo Info){public override string ToString()=>$"{Info.FriendlyName} · {Info.Bounds.Width} × {Info.Bounds.Height} · {Info.DeviceName}";}

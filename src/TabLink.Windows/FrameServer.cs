@@ -13,6 +13,9 @@ namespace TabLink.Windows;
 
 internal sealed class FrameServer : IAsyncDisposable
 {
+    internal const int ProtocolVersion=1;
+    internal const string RenderSubmittedFeature="render-submitted-v1";
+    internal static readonly TimeSpan TelemetryFreshnessWindow=TimeSpan.FromSeconds(5);
     public const int Port = 27183;
     public const int MaxPacket = 8 * 1024 * 1024;
     readonly Func<byte[]>? capture;
@@ -38,7 +41,7 @@ internal sealed class FrameServer : IAsyncDisposable
     bool capturePaused;
     DateTime? captureRecoveryStartedUtc;
     TabletDisplayProfile? clientDisplayProfile;
-    double clientReportedFps;
+    double clientSubmittedFps,clientPresentedFps;
     string? clientDecoder;
     DateTime? lastFrameUtc, lastPresentedUtc;
     DateTime? lastSubmittedUtc;
@@ -55,7 +58,9 @@ internal sealed class FrameServer : IAsyncDisposable
     public DateTime? LastPresentedUtc { get { lock (statisticsLock) return lastPresentedUtc; } }
     public DateTime? LastSubmittedUtc { get { lock(statisticsLock)return lastSubmittedUtc; } }
     public long SubmittedFrames { get { lock(statisticsLock)return submittedFrames; } }
-    public bool SubmissionEvidenceOnly {get{lock(statisticsLock)return presentedFrames==0&&submittedFrames>0;}}
+    public bool HasRecentSubmission {get{lock(statisticsLock)return IsFresh(lastSubmittedUtc,DateTime.UtcNow);}}
+    public bool HasRecentPresentation {get{lock(statisticsLock)return IsFresh(lastPresentedUtc,DateTime.UtcNow);}}
+    public bool SubmissionEvidenceOnly {get{lock(statisticsLock){var now=DateTime.UtcNow;return IsFresh(lastSubmittedUtc,now)&&!IsFresh(lastPresentedUtc,now);}}}
     public DateTime? LastClientProgressUtc {get{lock(statisticsLock)return lastPresentedUtc is {} p && (lastSubmittedUtc is null||p>=lastSubmittedUtc)?p:lastSubmittedUtc;}}
     public long PresentedFrames { get { lock (statisticsLock) return presentedFrames; } }
     public int PresentedWidth { get { lock (statisticsLock) return presentedWidth; } }
@@ -63,7 +68,11 @@ internal sealed class FrameServer : IAsyncDisposable
     public event Action? FramePresented;
     public event Action<TabletDisplayProfile>? DisplayProfileChanged;
     public TabletDisplayProfile? ClientDisplayProfile {get{lock(statisticsLock)return clientDisplayProfile;}}
-    public double ClientReportedFps {get{lock(statisticsLock)return clientReportedFps;}}
+    public double ClientSubmittedFps {get{lock(statisticsLock)return IsFresh(lastSubmittedUtc,DateTime.UtcNow)?clientSubmittedFps:0;}}
+    public double ClientPresentedFps {get{lock(statisticsLock)return IsFresh(lastPresentedUtc,DateTime.UtcNow)?clientPresentedFps:0;}}
+    // Compatibility projection for older status callers. New UI must name the
+    // two measurements explicitly rather than treating decoder submission as display.
+    public double ClientReportedFps {get{lock(statisticsLock){var now=DateTime.UtcNow;return IsFresh(lastPresentedUtc,now)?clientPresentedFps:IsFresh(lastSubmittedUtc,now)?clientSubmittedFps:0;}}}
     public string? ClientDecoder {get{lock(statisticsLock)return clientDecoder;}}
     public bool CapturePaused { get { lock(statisticsLock) return capturePaused; } }
     public DateTime? CaptureRecoveryStartedUtc { get { lock(statisticsLock) return captureRecoveryStartedUtc; } }
@@ -131,7 +140,7 @@ internal sealed class FrameServer : IAsyncDisposable
             presentedWidth = presentedHeight = 0;
             lastPresentedUtc = null;
             lastSubmittedUtc=null;submittedFrames=0;recentVideoPts.Clear();
-            clientDisplayProfile=null;clientReportedFps=0;clientDecoder=null;
+            clientDisplayProfile=null;clientSubmittedFps=clientPresentedFps=0;clientDecoder=null;
             sendPerformance.Reset(connected);
         }
     }
@@ -168,9 +177,10 @@ internal sealed class FrameServer : IAsyncDisposable
                 var helloPacket = await ReadPacketAsync(stream, 8192, authTimeout.Token);
                 if (helloPacket.Type != 0x10) throw new InvalidDataException("缺少握手");
                 var hello = JsonSerializer.Deserialize<Hello>(helloPacket.Payload, JsonOptions);
-                if (hello?.Protocol != 1 || hello.Token is null ||
+                if (hello?.Protocol != ProtocolVersion || hello.Token is null ||
                     !CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(hello.Token), Encoding.UTF8.GetBytes(Token)))
                     throw new InvalidDataException("连接令牌无效");
+                var negotiatedFeatures=NegotiateFeatures(hello.Features);
 
                 TabletDisplayProfile? initialProfile=null;
                 if(network is not null)
@@ -178,7 +188,7 @@ internal sealed class FrameServer : IAsyncDisposable
                     var profilePacket=await ReadPacketAsync(stream,8192,authTimeout.Token);
                     if(profilePacket.Type!=0x13)throw new InvalidDataException("缺少平板显示参数");
                     initialProfile=TabletDisplayProfile.Parse(Encoding.UTF8.GetString(profilePacket.Payload));
-                    try { await PrepareAsync(initialProfile,stream,sessionCts.Token); }
+                    try { await PrepareAsync(initialProfile,stream,negotiatedFeatures,sessionCts.Token); }
                     catch(Exception error) when(error is not (OperationCanceledException or TimeoutException))
                     {
                         // Only an authenticated, validated-profile client receives
@@ -194,9 +204,10 @@ internal sealed class FrameServer : IAsyncDisposable
                 trustedSession=true;
                 if(initialProfile is not null)lock(statisticsLock)clientDisplayProfile=initialProfile;
                 Status?.Invoke("平板已连接，正在传输副屏");
-                await WritePacketAsync(stream, 2, Encoding.UTF8.GetBytes(network is null?
-                    "{\"message\":\"USB 副屏已连接\"}":"{\"message\":\"加密副屏已连接\"}"), sessionCts.Token);
-                var receive = ReadInputsAsync(stream, sessionCts.Token);
+                await WritePacketAsync(stream,0x02,StatusPayload(network is null?
+                    "USB 副屏已连接":"加密副屏已连接",negotiatedFeatures),sessionCts.Token);
+                var receive = ReadInputsAsync(stream,
+                    negotiatedFeatures.Contains(RenderSubmittedFeature,StringComparer.Ordinal),sessionCts.Token);
                 // A peer disconnect/reconnect must also interrupt a blocked encoder.
                 var cancelOnReceiveEnd=receive.ContinueWith(_=>sessionCts.Cancel(),CancellationToken.None,
                     TaskContinuationOptions.ExecuteSynchronously,TaskScheduler.Default);
@@ -296,7 +307,7 @@ internal sealed class FrameServer : IAsyncDisposable
         }
     }
 
-    async Task PrepareAsync(TabletDisplayProfile profile,Stream stream,CancellationToken ct)
+    async Task PrepareAsync(TabletDisplayProfile profile,Stream stream,IReadOnlyList<string> negotiatedFeatures,CancellationToken ct)
     {
         using var timeout=CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(network!.PreparationTimeout);
@@ -307,18 +318,33 @@ internal sealed class FrameServer : IAsyncDisposable
             TaskContinuationOptions.OnlyOnFaulted|TaskContinuationOptions.ExecuteSynchronously,TaskScheduler.Default);
         try
         {
+            // Always acknowledge the negotiated protocol before media begins,
+            // even when preparation completes synchronously. Protocol v1 peers
+            // ignore the additional fields and continue to read the message.
+            await WritePacketAsync(stream,0x02,StatusPayload("正在准备副屏画面",negotiatedFeatures),timeout.Token);
             while(!task.IsCompleted)
             {
-                await WritePacketAsync(stream,0x02,Encoding.UTF8.GetBytes("{\"message\":\"正在准备副屏画面\"}"),timeout.Token);
                 await Task.WhenAny(task,Task.Delay(TimeSpan.FromSeconds(1),timeout.Token));
                 timeout.Token.ThrowIfCancellationRequested();
+                if(!task.IsCompleted)
+                    await WritePacketAsync(stream,0x02,StatusPayload("正在准备副屏画面",negotiatedFeatures),timeout.Token);
             }
             await task.WaitAsync(timeout.Token);
         }
         finally {timeout.Cancel();}
     }
 
-    async Task ReadInputsAsync(Stream stream, CancellationToken ct)
+    static string[] NegotiateFeatures(IEnumerable<string>? requestedFeatures)=>
+        requestedFeatures?.Any(feature=>string.Equals(feature,RenderSubmittedFeature,StringComparison.Ordinal))==true
+            ? [RenderSubmittedFeature] : [];
+
+    static byte[] StatusPayload(string message,IReadOnlyList<string> negotiatedFeatures)=>
+        JsonSerializer.SerializeToUtf8Bytes(new{message,protocol=ProtocolVersion,features=negotiatedFeatures});
+
+    static bool IsFresh(DateTime? observedUtc,DateTime nowUtc)=>
+        observedUtc is {} observed&&observed>nowUtc-TelemetryFreshnessWindow;
+
+    async Task ReadInputsAsync(Stream stream,bool renderSubmittedNegotiated,CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
@@ -331,6 +357,8 @@ internal sealed class FrameServer : IAsyncDisposable
             }
             if(packet.Type==0x14)
             {
+                if(!renderSubmittedNegotiated)
+                    throw new InvalidDataException("客户端未协商解码提交进度功能");
                 var progress=JsonSerializer.Deserialize<SubmittedAck>(packet.Payload,JsonOptions);
                 if(progress is null||progress.Evidence!="render-submitted"||progress.Frames<1||progress.PtsUs<0||!double.IsFinite(progress.Fps)||progress.Fps is <0 or >300)
                     throw new InvalidDataException("无效的解码提交进度");
@@ -341,7 +369,7 @@ internal sealed class FrameServer : IAsyncDisposable
                     if(progress.Frames>submittedFrames)
                     {
                         submittedFrames=progress.Frames;lastSubmittedUtc=DateTime.UtcNow;
-                        clientReportedFps=progress.Fps;clientDecoder=progress.Decoder is {Length:<=160}?progress.Decoder:null;
+                        clientSubmittedFps=progress.Fps;clientDecoder=progress.Decoder is {Length:<=160}?progress.Decoder:null;
                     }
                 }
                 // This weaker evidence is deliberately separate from physical
@@ -365,7 +393,7 @@ internal sealed class FrameServer : IAsyncDisposable
                         presentedWidth = ack.Width;
                         presentedHeight = ack.Height;
                         lastPresentedUtc = DateTime.UtcNow;
-                        clientReportedFps=double.IsFinite(ack.Fps)?Math.Clamp(ack.Fps,0,300):0;
+                        clientPresentedFps=double.IsFinite(ack.Fps)?Math.Clamp(ack.Fps,0,300):0;
                         clientDecoder=ack.Decoder is {Length:<=160}?ack.Decoder:null;
                         advanced = true;
                     }
@@ -454,7 +482,7 @@ internal sealed class FrameServer : IAsyncDisposable
         }
     }
     internal static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
-    record Hello(int Protocol, string Token);
+    record Hello(int Protocol,string Token,string[]? Features=null);
     record SubmittedAck(string Evidence,long Frames,long PtsUs,int Width,int Height,double Fps=0,string? Decoder=null);
     record PresentedAck(string Kind, long Sequence, int Width, int Height,double Fps=0,string? Codec=null,string? Decoder=null,long DroppedFrames=0);
 }

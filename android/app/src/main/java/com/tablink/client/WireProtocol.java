@@ -14,6 +14,7 @@ public final class WireProtocol {
     public static final int INPUT = 0x11;
     public static final int PRESENTED = 0x12;
     public static final int DISPLAY_PROFILE = 0x13;
+    public static final int RENDER_SUBMITTED = 0x14;
     public static final int VIDEO_CONFIG = 0x20;
     public static final int VIDEO_FRAME = 0x21;
 

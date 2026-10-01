@@ -30,9 +30,9 @@ internal sealed partial class MainForm
         var layout=new TableLayoutPanel{Dock=DockStyle.Top,AutoSize=true,ColumnCount=1,RowCount=6};
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));page.Controls.Add(layout);
         var help=new Label{AutoSize=true,Dock=DockStyle.Top,Margin=new Padding(0,0,0,12),Text="电脑和平板接入同一局域网；使用数据线时，请在平板开启 USB 网络共享。\n打开 TabLink 客户端扫码即可连接，无需开发者模式。"};
-        layout.Controls.Add(help);
         networks.Margin=new Padding(0,0,0,12);layout.Controls.Add(networks);
         var actions=Flow(refreshNetworks,startNetwork,stopNetwork);actions.AutoSize=true;actions.Margin=new Padding(0,0,0,12);layout.Controls.Add(actions);
+        layout.Controls.Add(help);
         var pairing=new FlowLayoutPanel{AutoSize=true,Dock=DockStyle.Top,WrapContents=true,Margin=Padding.Empty};
         pairing.Controls.Add(pairingQr);
         var instructions=new FlowLayoutPanel{AutoSize=true,FlowDirection=FlowDirection.TopDown,WrapContents=false,Margin=new Padding(20,12,0,0)};
@@ -86,9 +86,11 @@ internal sealed partial class MainForm
         var fresh=await Task.Run(()=>NetworkInterfaceCatalog.GetChoices(settings),lifetime.Token);
         lifetime.Token.ThrowIfCancellationRequested();
         var choice=fresh.SingleOrDefault(x=>SameInterface(x,selected))??throw new IOException("所选线路已变化或已被排除，请刷新后重选。");
+        await EnsureOwnedDisplayCleanupBeforeNewConnectionAsync();
         _=VideoPipeline.FindFfmpeg();
         try
         {
+            BeginConnectionHealth(ConnectionHealthPath.NativeNetwork,$"选择线路 {choice.InterfaceAlias} · {choice.LocalAddress}");
             SetStatus("正在为选中的线路准备加密配对…");
             networkChoice=choice;
             networkFirewall=await NetworkFirewall.OpenAsync(choice,lifetime.Token);
@@ -105,6 +107,8 @@ internal sealed partial class MainForm
             created.Status+=SetStatus;
             created.DisplayProfileChanged+=p=>{if(!IsDisposed)BeginInvoke(async()=>await AdaptDisplayAsync(created,p));};
             created.Start();
+            MarkHealthRouteReady($"{choice.InterfaceAlias} · {choice.LocalAddress}:27184 · TLS 监听已启动");
+            MarkHealthAuthenticationStarted("等待客户端扫描当前二维码并完成 TLS 与令牌认证");
             sessionStartedUtc=DateTime.UtcNow;lastNetworkCheckUtc=DateTime.MinValue;
             pairingUri=created.NetworkConnectionUri??throw new IOException("无法创建配对链接。");
             // Explicit integration-test mode only. This short-lived credential
@@ -120,7 +124,7 @@ internal sealed partial class MainForm
             SetStatus("等待平板扫码配对，尚未启用副屏");
             metrics.Text=$"{choice.InterfaceAlias} · {choice.LocalAddress} · TLS 加密 · 无需 USB 调试";
         }
-        catch{await StopAsync();throw;}
+        catch(Exception ex){MarkConnectionHealthAttention(ex.Message);await StopAsync();throw;}
     }
 
     Task PrepareNetworkOnUiAsync(FrameServer source,TabletDisplayProfile profile,CancellationToken ct)
@@ -158,8 +162,10 @@ internal sealed partial class MainForm
             ct.ThrowIfCancellationRequested();
             if(!ReferenceEquals(source,server))throw new OperationCanceledException();
             var sameMode=tabletProfile is {} old&&old.Width==profile.Width&&old.Height==profile.Height&&old.RequestedRefreshRate==profile.RequestedRefreshRate;
+            MarkHealthDisplayProfile(profile);
             if(capture is null||!sameMode)
             {
+                MarkHealthDisplayPreparing("正在按设备报告的模式准备唯一虚拟副屏");
                 capture?.Dispose();capture=null;
                 await ReleasePrimaryDisplayAsync();
                 activePower?.Dispose();activePower=null;
@@ -170,8 +176,10 @@ internal sealed partial class MainForm
                 if(!ReferenceEquals(source,server))throw new OperationCanceledException();
                 activePower=new ActiveDisplayPower();
                 capture=new DesktopCapture(networkDisplay,identity:displayGuard!.Lease);
+                MarkHealthDisplayReady(networkDisplay);
             }
             tabletProfile=profile;
+            MarkHealthPipelineStarting("正在启动桌面捕获与 H.264 编码器");
             sessionStartedUtc=DateTime.UtcNow;presentationDeadline.Reset(sessionStartedUtc);
             previousPresented=0;previousSampleUtc=sessionStartedUtc;
             Diagnostics.Save("tablet-display-profile.json",()=>profile,Log);
@@ -180,7 +188,7 @@ internal sealed partial class MainForm
         }
         catch(Exception ex)
         {
-            if(ex is not OperationCanceledException){Log("网络副屏准备失败："+ex.Message);pairingHint.Text="副屏准备失败："+ex.Message+"\n\n修正后请在平板重新连接。";}
+            if(ex is not OperationCanceledException){MarkConnectionHealthAttention(ex.Message);Log("网络副屏准备失败："+ex.Message);pairingHint.Text="副屏准备失败："+ex.Message+"\n\n修正后请在平板重新连接。";}
             capture?.Dispose();capture=null;
             await ReleasePrimaryDisplayAsync();
             activePower?.Dispose();activePower=null;

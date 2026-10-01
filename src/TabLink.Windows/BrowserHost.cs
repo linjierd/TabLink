@@ -195,9 +195,10 @@ internal sealed class BrowserHost : IAsyncDisposable
     {
         lifetime.Cancel();
         lock(gate)pairings.Clear();
+        List<Exception>? cleanupFailures=null;
         try
         {
-            foreach(var session in sessions.Values)try{await session.DisposeAsync();}catch{}
+            foreach(var session in sessions.Values)try{await session.DisposeAsync();}catch(Exception ex){(cleanupFailures??=[]).Add(ex);}
             if(application is not null)
             {
                 using var stop=new CancellationTokenSource(TimeSpan.FromSeconds(5));
@@ -206,5 +207,6 @@ internal sealed class BrowserHost : IAsyncDisposable
             }
         }
         finally {serverCertificate.Dispose();authority.Dispose();lifetime.Dispose();}
+        if(cleanupFailures is {Count:>0})throw new AggregateException("一个或多个浏览器副屏未能完成精确回收。",cleanupFailures);
     }
 }

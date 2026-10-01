@@ -33,7 +33,7 @@ internal sealed class BrowserRtcSession : IAsyncDisposable
     RTCPeerConnection? peer;
     RTCDataChannel? control;
     BrowserDisplaySession? display;
-    Task? writerTask,readerTask,videoTask,watchdogTask,cleanupTask;
+    Task? writerTask,readerTask,videoTask,watchdogTask,preparationTask,cleanupTask;
     bool capturePaused,needKeyFrame=true;
     long framesSent,framesPresented;
     DateTime? lastPresentedUtc;
@@ -116,25 +116,12 @@ internal sealed class BrowserRtcSession : IAsyncDisposable
                 // device before allocation. Keep the authenticated peer alive
                 // while that bounded local transaction completes.
                 preparation.CancelAfter(TimeSpan.FromSeconds(120));
-                // A callback must honour cancellation. If it returns a resource
-                // late despite cancellation, that resource still gets released.
-                var pending=Task.Run(()=>prepare(Id,profile,preparation.Token),CancellationToken.None);
-                try
-                {
-                    var prepared=await pending.WaitAsync(preparation.Token);
-                    bool accepted;
-                    lock(gate)
-                    {
-                        accepted=cleanupTask is null&&!ct.IsCancellationRequested;
-                        if(accepted)display=prepared;
-                    }
-                    if(!accepted){await prepared.DisposeAsync();ct.ThrowIfCancellationRequested();throw new OperationCanceledException();}
-                }
-                catch
-                {
-                    _=DisposeLatePreparation(pending);
-                    throw;
-                }
+                // Stop/host disposal must await this whole lifecycle. A callback
+                // that returns after cancellation is disposed before the sole
+                // browser slot is released or another pairing can be accepted.
+                Task lifecycle;
+                lock(gate)preparationTask=lifecycle=PrepareDisplayLifecycleAsync(preparation.Token,ct);
+                await lifecycle;
             }
             ct.ThrowIfCancellationRequested();
             lock(gate)presentationDeadline.Reset(DateTime.UtcNow);
@@ -153,6 +140,33 @@ internal sealed class BrowserRtcSession : IAsyncDisposable
             try {Queue(new{type="error",message="电脑未能继续提供副屏。请查看电脑连接记录，再生成新的配对二维码。"});await Task.Delay(100);}catch{}
         }
         finally {await DisposeAsync();}
+    }
+
+    async Task PrepareDisplayLifecycleAsync(CancellationToken preparationToken,CancellationToken sessionToken)
+    {
+        var pending=Task.Run(()=>prepare(Id,profile,preparationToken),CancellationToken.None);
+        BrowserDisplaySession? prepared=null;
+        try
+        {
+            prepared=await pending.WaitAsync(preparationToken);
+            bool accepted;
+            lock(gate)
+            {
+                accepted=cleanupTask is null&&!sessionToken.IsCancellationRequested;
+                if(accepted)display=prepared;
+            }
+            if(!accepted)
+            {
+                await prepared.DisposeAsync();
+                sessionToken.ThrowIfCancellationRequested();
+                throw new OperationCanceledException();
+            }
+        }
+        catch
+        {
+            if(prepared is null)await DisposeLatePreparation(pending);
+            throw;
+        }
     }
 
     static async Task DisposeLatePreparation(Task<BrowserDisplaySession> pending)
@@ -358,7 +372,8 @@ internal sealed class BrowserRtcSession : IAsyncDisposable
     {
         Cancel();outgoing.Writer.TryComplete();
         try {socket.Abort();peer?.Close("session ended");peer?.Dispose();}catch{}
-        foreach(var task in new[]{videoTask,readerTask,writerTask,watchdogTask})
+        Task? preparing;lock(gate)preparing=preparationTask;
+        foreach(var task in new[]{preparing,videoTask,readerTask,writerTask,watchdogTask})
             if(task is not null)try{await task.ConfigureAwait(false);}catch{}
         try {if(display is not null)await display.DisposeAsync();}
         finally {report(new(Id,"closed","浏览器副屏已断开。"));lifetime.Dispose();}

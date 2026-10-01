@@ -3,9 +3,9 @@
 [![CI](https://github.com/linjierd/TabLink/actions/workflows/ci.yml/badge.svg)](https://github.com/linjierd/TabLink/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/TabLink%20code-MIT-blue.svg)](LICENSE)
 
-Windows 电脑端当前候选版为 **0.8.1**，改为全局只允许一个扩展副屏，并在实际连接时按需安装虚拟显示设备、断开后移除该设备，见 [0.8.1 发布说明](RELEASE-0.8.1.md) 与 [0.8.1 验证记录](VERIFICATION-0.8.1.md)。Android 公开预览 APK 同步为 **0.8.1 / build 12**，协议没有变化；已签名的公网稳定自动更新频道仍保持 **0.8.0**，不会仅因 GitHub 预览包而自动切换。0.8.0 的签名更新设计见 [0.8.0 发布说明](RELEASE-0.8.0.md)、[自动更新设计与发布说明](AUTO-UPDATE.md) 及 [0.8.0 验证记录](VERIFICATION-0.8.0.md)。
+Windows 电脑端当前候选版为 **0.8.2**。它继续全局只允许一个扩展副屏，并新增六阶段“连接健康中心”，分别核对线路、认证、唯一虚拟副屏、视频发送、客户端解码提交和屏幕实际呈现，见 [0.8.2 发布说明](RELEASE-0.8.2.md) 与 [0.8.2 验证记录](VERIFICATION-0.8.2.md)。Android 公开预览 APK 同步为 **0.8.2 / build 13**。协议主版本仍为 v1，并新增协商式 `render-submitted-v1` 可选能力；已签名的公网稳定自动更新频道仍保持 **0.8.0**，不会仅因 GitHub 预览包而自动切换。0.8.0 的签名更新设计见 [0.8.0 发布说明](RELEASE-0.8.0.md)、[自动更新设计与发布说明](AUTO-UPDATE.md) 及 [0.8.0 验证记录](VERIFICATION-0.8.0.md)。
 
-以下保留既有功能说明和历史记录；旧版运行条件、ADB 外置说明及旧帧率结果以新版说明为准，不能作为 0.8.1 单副屏生命周期的验证结果。
+以下保留既有功能说明和历史记录；旧版运行条件、ADB 外置说明及旧帧率结果以新版说明为准，不能作为 0.8.2 的验证结果。
 
 TabLink 是 Windows + Android 扩展桌面应用。Windows 通过已签名的开源虚拟显示驱动提供独立桌面，发送 H.264 视频，Android 使用 MediaCodec 解码并回传显示进度与单指触控。支持同一局域网的 Wi-Fi、USB 网络共享和原有的 ADB USB 兼容通道。
 
@@ -102,7 +102,7 @@ Windows 的管理员授权、锁屏等操作可能使普通桌面暂时无法采
 
 ## 按需驱动与单副屏生命周期
 
-电脑端 `TabLink.exe` 从 0.5.1 起声明需要管理员权限：从普通桌面启动时，由 Windows 请求 UAC 授权，授权成功后程序及其副屏守护进程在管理员权限下运行。0.8.1 不在程序启动、打开配对页或等待扫码时安装虚拟显示设备；只有接收设备通过认证并提交有效屏幕参数、连接准备真正占用副屏时才执行检查与按需安装。
+电脑端 `TabLink.exe` 从 0.5.1 起声明需要管理员权限：从普通桌面启动时，由 Windows 请求 UAC 授权，授权成功后程序及其副屏守护进程在管理员权限下运行。0.8.2 不在程序启动、打开配对页或等待扫码时安装虚拟显示设备；只有接收设备通过认证并提交有效屏幕参数、连接准备真正占用副屏时才执行检查与按需安装。
 
 驱动使用 [VirtualDrivers / Virtual-Display-Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver) 固定版本 25.7.23，附带原始签名二进制、MIT 许可、SHA-256 和来源记录。安装前检查哈希与 Windows 签名，无需启用测试签名、关闭安全启动或安装额外证书。驱动配置固定为一个输出；旧配置即使曾设置多个输出，也必须先收敛到一个再安装设备，避免连接瞬间重新生成多块虚拟屏。
 
@@ -135,7 +135,13 @@ DDA 目标按实际适配器、输出和显示边界严格核对，不简单选�
 | 实际帧/秒 | 电脑按当前连接的递增画面确认与采样间隔计算，会受确认节流和采样窗口影响。 |
 | 客户端 fps / decoder | Android 根据解码显示进度统计的速度和实际解码器名称，诊断中单独记录。 |
 
-H.264 确认来自 MediaCodec 的帧显示回调，不把接收字节、送入解码器或重绘旧画面当作新显示进度。确认能反映客户端进度，但不能单独证明物理面板已达到请求刷新率。合成编码吞吐、Windows Hz、USB 传输和实际观感需分别判断。
+H.264 的解码提交和实际呈现分开统计。`render-submitted` 只表示压缩帧已成功送入 MediaCodec 输入队列；`frame-presented` 来自 MediaCodec 的呈现回调。两者都不能单独证明物理面板已达到请求刷新率，且解码提交绝不会被记为实际呈现。合成编码吞吐、Windows Hz、USB 传输和实际观感需分别判断。
+
+## 连接健康中心
+
+“连接记录”页按顺序显示六个阶段：线路与监听、认证与屏幕参数、唯一虚拟副屏、捕获编码与发送、客户端解码提交、屏幕实际呈现。新连接使用独立 attempt 隔离旧回调；断线、暂停和重新连接会更新对应阶段，旧会话的迟到事件不能把新会话错误地标为正常。
+
+“安全修复”只在某个阶段明确进入“需处理”时启用，并执行该阶段允许的有限动作，例如刷新线路、重建连接、配置请求模式或重启视频。涉及显示模式的操作会先停止所有 TabLink 会话，再配置唯一副屏；“打开日志目录”只打开本地记录，不修改显示设备。界面分别显示已发送、客户端解码提交和实际呈现，避免用较早的非零 FPS 掩盖已经停滞的链路。
 
 0.4.2 默认按视频时间戳平滑安排安卓端呈现，90 fps 时目标额外等待约 22.22 ms、未来排程最多 25 ms；这不是整条链路的总延迟。相同动态负载的 30 秒以上 A/B 中，平板最终呈现从 77.665 提高到 **89.837 fps**，P95 间隔从 22.211 降到 **11.121 ms**。慢源、暂停和重连会有界重建时间映射，避免无限排队；完整数据见 `VERIFICATION.md`。
 
@@ -143,7 +149,7 @@ H.264 确认来自 MediaCodec 的帧显示回调，不把接收字节、送入�
 
 当前包括一个独立扩展桌面、原生横竖屏匹配、H.264 硬件编解码、画面确认、重连、会话守护、排除列表和单指鼠标操作。程序不会自动修改电源计划或升级显卡驱动。
 
-暂不包含音频、压感笔和多点触控。0.8.1 任意时刻只允许一台接收设备占用一块 TabLink 虚拟副屏；不会创建第三、第四块 TabLink 显示器。刷新速度受捕获、编码、USB、解码与安卓面板策略共同限制，当前版本不承诺所有设备达到 90 fps。同一副屏的位置变化会自动恢复；目标身份、主副屏关系或显示模式发生不兼容变化时会停止采集。
+暂不包含音频、压感笔和多点触控。0.8.2 任意时刻只允许一台接收设备占用一块 TabLink 虚拟副屏；不会创建第三、第四块 TabLink 显示器。刷新速度受捕获、编码、USB、解码与安卓面板策略共同限制，当前版本不承诺所有设备达到 90 fps。同一副屏的位置变化会自动恢复；目标身份、主副屏关系或显示模式发生不兼容变化时会停止采集。
 
 ## 文件、日志与构建
 
@@ -173,9 +179,9 @@ dotnet run --project tests/TabLink.Core.Tests -c Release
 .\build.ps1 -SkipAndroid
 ```
 
-普通构建使用 `android/artifacts/TabLink-android-0.8.1-debug.apk`；`-PublicRelease` 会生成不可调试但仍使用既有开发证书的 `TabLink-android-0.8.1-preview.apk`，并注入正式稳定频道地址。公开构建同时生成 self-contained Windows x64 程序、排除不可全球再分发的浏览器接收依赖和 Google ADB 二进制。脚本串行运行单屏驱动配置、显示分配、清理与生命周期回归，复制 APK、固定 FFmpeg 及其许可与完整对应源码，运行更新和传输自测，并生成 `SHA256SUMS.txt`。构建过程不会安装驱动、创建设备或连接平板。
+普通构建使用 `android/artifacts/TabLink-android-0.8.2-debug.apk`；`-PublicRelease` 会生成不可调试但仍使用既有开发证书的 `TabLink-android-0.8.2-preview.apk`，并注入正式稳定频道地址。公开构建同时生成 self-contained Windows x64 程序、排除不可全球再分发的浏览器接收依赖和 Google ADB 二进制。脚本串行运行单屏驱动配置、显示分配、清理与生命周期、连接健康、更新和传输回归，复制 APK、固定 FFmpeg 及其许可与完整对应源码，并生成 `SHA256SUMS.txt`。构建过程不会安装驱动、创建设备或连接平板。
 
-构建脚本通过 `dotnet TabLink.dll --self-test` 运行纯传输测试，不触发程序启动的 UAC 授权。自测使用系统分配的临时回环端口，不占用实际副屏的 27183，因此可以在现有连接保持时运行。自测只使用合成字节、回环 TCP 和 fake input，不捕获桌面、不访问真实 ADB、不更改显示器。目前 Core 30 项和 Windows 传输 20 项测试覆盖设备排除、授权重查、模式解析、视频包计数、确认边界和连接状态归零。
+构建脚本通过 `dotnet TabLink.dll --self-test` 运行纯传输测试，不触发程序启动的 UAC 授权。自测使用系统分配的临时回环端口，不占用实际副屏的 27183，因此可以在现有连接保持时运行。自测只使用合成字节、回环 TCP 和 fake input，不捕获桌面、不访问真实 ADB、不更改显示器。目前 Core 30 项和 Windows 传输 21 项测试覆盖设备排除、授权重查、模式解析、视频包计数、确认边界和连接状态归零。
 
 ## 传输协议 v1
 
@@ -183,19 +189,22 @@ dotnet run --project tests/TabLink.Core.Tests -c Release
 
 | 方向 | 类型 | 载荷 |
 | --- | --- | --- |
-| Android → PC | `0x10` | 首包认证：`{"protocol":1,"token":"…"}`。 |
+| Android → PC | `0x10` | 首包认证：`{"protocol":1,"token":"…","features":["render-submitted-v1"]}`；`features` 可选。 |
 | PC → Android | `0x20` | H.264 配置 JSON：`codec:"video/avc"`、`width`、`height`、`fps`、Base64 `csd0` / `csd1`（SPS / PPS）。不计视频帧。 |
 | PC → Android | `0x21` | `ptsUs:int64 big-endian` 后接一个 Annex B H.264 访问单元，时间戳单位为微秒。 |
 | Android → PC | `0x12` | 确认：`kind:"frame-presented"`、递增 `sequence`、`width`、`height`，可附 `fps`、`codec`、`decoder`、`droppedFrames`。 |
 | Android → PC | `0x13` | 屏幕参数：`width`、`height`、`rotation`、`activeModeId`、`refreshRate`、`nativeWidth`、`nativeHeight`、`supportedModes`。 |
+| Android → PC | `0x14` | 协商后的解码提交进度：`evidence:"render-submitted"`、递增 `frames`、`ptsUs`、`width`、`height`，可附 `fps`、`decoder`；不推进 `0x12` 的实际呈现计数。 |
 | Android → PC | `0x11` | 鼠标事件：`kind:"down/move/up/scroll"`、归一化 `x` / `y`，滚动可带 `delta`。 |
-| PC → Android | `0x02` | UTF-8 状态 JSON。 |
+| PC → Android | `0x02` | UTF-8 状态 JSON；认证后回显 `protocol:1` 和本连接实际协商的 `features`。 |
 | PC → Android | `0x03` | UTF-8 错误文本，客户端显示后停止该连接的自动重试。 |
 | PC → Android | `0x01` | 保留的 JPEG 诊断与兼容通道；0.4 正常桌面连接采用 H.264。 |
 
 每个 `supportedModes` 项含 `width`、`height`、`refreshRate`、`modeId`。连接前，电脑对选定序列号查询 `content://com.tablink.client.display/capabilities`；连接中用 `0x13` 接收变化。
 
-`0x12` 只随当前连接的新显示进度推进。重复或倒序确认不刷新健康期限，序号不得超过本连接已开始发送的视频帧数。断开和重新认证清空旧的进度、客户端 profile、fps 和 decoder。触控坐标对应实际画面，等比显示黑边不产生点击，断开时释放鼠标左键。
+旧客户端不发送 `features` 时协商结果为空并继续使用既有协议。Android 与 HarmonyOS NEXT 源码都只有在电脑端回显 `render-submitted-v1` 后才发送 `0x14`；未知能力不会回显。任何未协商客户端发送 `0x14` 都会结束异常会话，设备自报的平台或进度类型不能绕过协商。
+
+`0x12` 和 `0x14` 都只随当前连接的新进度推进。重复、倒序、超出本连接已发送视频帧范围或尺寸不匹配的报告不会刷新健康期限。断开和重新认证会清空旧的提交、呈现、客户端 profile、fps 和 decoder。触控坐标对应实际画面，等比显示黑边不产生点击，断开时释放鼠标左键。
 
 ## 开源组件与来源
 

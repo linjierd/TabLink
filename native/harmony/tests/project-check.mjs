@@ -28,6 +28,9 @@ check(existsSync(join(root, 'AppScope/resources/base/media/app_icon.svg')), 'ico
 const session = text('entry/src/main/ets/protocol/Session.ets');
 check(session.indexOf('samePin(hex, pairing.cert)') < session.indexOf('sendJson(0x10'), 'pin before hello token');
 check(session.includes('sendJson(0x14'), 'submitted progress type');
+check(session.includes("features: ['render-submitted-v1']") && session.includes('status.protocol === 1') &&
+  session.includes("status.features.includes('render-submitted-v1')") && session.includes('!this.submissionAckNegotiated'),
+  'render-submitted declaration and host-echo gate');
 check(!session.includes('sendJson(0x12'), 'no forged presentation ACK');
 check(session.includes("evidence: 'render-submitted'"), 'honest progress evidence');
 check(session.includes('hasFreshOutput(stats.submittedFrames, stats.lastPtsUs)'), 'new decoder needs a real valid output before progress');

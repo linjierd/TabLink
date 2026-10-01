@@ -7,8 +7,8 @@ import { Packet, PacketReader, Pairing, encodePacket, parsePairing, samePin, val
 import { DisplayProfile, readDisplayProfile } from './DisplayProfile';
 
 interface VideoConfig { codec: string; width: number; height: number; fps: number; csd0: string; csd1: string; }
-interface HostMessage { message: string; capturePaused?: boolean; }
-interface Hello { protocol: number; token: string; }
+interface HostMessage { message: string; capturePaused?: boolean; protocol?: number; features?: string[]; }
+interface Hello { protocol: number; token: string; features: string[]; }
 interface SubmittedProgress { width: number; height: number; ptsUs: number; frames: number; fps: number; decoder: string; evidence: string; }
 
 export class Session {
@@ -34,6 +34,7 @@ export class Session {
   private configWidth: number = 0;
   private configHeight: number = 0;
   private capturePaused: boolean = false;
+  private submissionAckNegotiated: boolean = false;
 
   constructor(surfaceId: string, state: (message: string, active: boolean) => void) {
     this.surfaceId = surfaceId; this.state = state;
@@ -82,7 +83,7 @@ export class Session {
       for (const value of hash.data) hex += value.toString(16).padStart(2, '0');
       if (!samePin(hex, pairing.cert)) throw new Error('电脑证书指纹不匹配，未发送配对令牌');
       this.connected = true;
-      const hello: Hello = { protocol: 1, token: pairing.token };
+      const hello: Hello = { protocol: 1, token: pairing.token, features: ['render-submitted-v1'] };
       await this.sendJson(0x10, JSON.stringify(hello));
       pairing.token = '';
       await this.sendJson(0x13, JSON.stringify(this.profile));
@@ -93,7 +94,7 @@ export class Session {
   }
   stop(message: string = '已停止连接'): void {
     if (this.stopped) return;
-    this.stopped = true; this.connected = false;
+    this.stopped = true; this.connected = false; this.submissionAckNegotiated = false;
     if (this.timer !== -1) clearInterval(this.timer);
     if (this.deadline !== -1) clearTimeout(this.deadline);
     codec.stop(); this.configured = false; this.reader = new PacketReader();
@@ -120,6 +121,9 @@ export class Session {
       if (packet.payload.length > 16384) throw new Error('电脑状态数据过大');
       const status = JSON.parse(this.textDecoder.decodeToString(packet.payload)) as HostMessage;
       if (typeof status.message !== 'string') throw new Error('电脑状态格式无效');
+      if (status.protocol === 1 && Array.isArray(status.features) && status.features.includes('render-submitted-v1')) {
+        this.submissionAckNegotiated = true;
+      }
       if (typeof status.capturePaused === 'boolean') {
         this.capturePaused = status.capturePaused;
         this.lastProgressTime = Date.now();
@@ -151,7 +155,7 @@ export class Session {
     } else throw new Error('电脑发来了不支持的数据包类型');
   }
   private async report(): Promise<void> {
-    if (this.stopped || !this.configured || this.reporting) return;
+    if (this.stopped || !this.configured || this.reporting || !this.submissionAckNegotiated) return;
     this.reporting = true;
     try {
       const stats: DecoderStats = codec.stats();
