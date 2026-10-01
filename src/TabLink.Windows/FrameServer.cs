@@ -26,6 +26,7 @@ internal sealed class FrameServer : IAsyncDisposable
     readonly Action<InputMessage>? input;
     readonly Action releaseInput;
     readonly Func<InputDesktopStatus> queryDesktop;
+    readonly Func<IPEndPoint,CancellationToken,Task> wakeListener;
     readonly NetworkSessionOptions? network;
     readonly Func<TabletDisplayProfile,CancellationToken,Task>? prepare;
     AdaptiveVideoSession? quality;
@@ -35,8 +36,10 @@ internal sealed class FrameServer : IAsyncDisposable
     readonly object lifecycleLock = new();
     readonly object statisticsLock = new();
     readonly FrameSendPerformance sendPerformance = new();
+    readonly TaskCompletionSource firstAcceptStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
     Task? run;
     Task? disposeTask;
+    IPEndPoint? boundEndpoint;
     TcpClient? currentClient;
     CancellationTokenSource? currentSession;
     long framesSent, bytesSent, presentedFrames, sessionFramesStarted;
@@ -54,7 +57,8 @@ internal sealed class FrameServer : IAsyncDisposable
     DateTime? lastReceiverFeedbackUtc;
     readonly Queue<long> recentVideoPts=new();
     public string Token { get; } = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
-    public int ListeningPort => listener.LocalEndpoint is IPEndPoint endpoint ? endpoint.Port : 0;
+    public int ListeningPort {get{lock(lifecycleLock)return boundEndpoint?.Port??0;}}
+    internal Task FirstAcceptStarted=>firstAcceptStarted.Task;
     public string? NetworkConnectionUri => network?.ConnectionUri(Token);
     public event Action<string>? Status;
     public long FramesSent { get { lock (statisticsLock) return framesSent; } }
@@ -90,19 +94,22 @@ internal sealed class FrameServer : IAsyncDisposable
     public FrameSendPerformanceSnapshot SendPerformance { get { lock(statisticsLock) return sendPerformance.Snapshot(); } }
 
     public FrameServer(Func<byte[]> capture, Action<InputMessage>? input, Action releaseInput, int fps = 20,
-        Func<InputDesktopStatus>? queryDesktop=null, int listenPort=Port,AdaptiveVideoSession? quality=null)
+        Func<InputDesktopStatus>? queryDesktop=null, int listenPort=Port,AdaptiveVideoSession? quality=null,
+        Func<IPEndPoint,CancellationToken,Task>? wakeListener=null)
     {
         this.capture = capture; this.input = input; this.releaseInput = releaseInput;
         this.fps = Math.Clamp(fps, 1, 30); this.queryDesktop=queryDesktop??InputDesktopAvailability.Query;
-        this.quality=quality;
+        this.quality=quality;this.wakeListener=wakeListener??ConnectWakeAsync;
         listener = new TcpListener(IPAddress.Loopback, listenPort);
     }
 
     public FrameServer(Func<CancellationToken,IAsyncEnumerable<VideoPacket>> video,Action<InputMessage>? input,Action releaseInput,
-        Func<InputDesktopStatus>? queryDesktop=null, int listenPort=Port,AdaptiveVideoSession? quality=null)
+        Func<InputDesktopStatus>? queryDesktop=null, int listenPort=Port,AdaptiveVideoSession? quality=null,
+        Func<IPEndPoint,CancellationToken,Task>? wakeListener=null)
     {
         this.video=video;this.input=input;this.releaseInput=releaseInput;
         this.queryDesktop=queryDesktop??InputDesktopAvailability.Query;this.quality=quality;
+        this.wakeListener=wakeListener??ConnectWakeAsync;
         listener = new TcpListener(IPAddress.Loopback, listenPort);
     }
 
@@ -145,6 +152,12 @@ internal sealed class FrameServer : IAsyncDisposable
             ObjectDisposedException.ThrowIf(disposeTask is not null, this);
             if (run is not null) throw new InvalidOperationException("画面服务已经启动");
             listener.Start(1);
+            if(listener.LocalEndpoint is not IPEndPoint endpoint)
+            {
+                listener.Stop();
+                throw new InvalidOperationException("无法确认画面服务的本地端点");
+            }
+            boundEndpoint=new IPEndPoint(endpoint.Address,endpoint.Port);
             run = Task.Run(() => RunAsync(cts.Token));
         }
     }
@@ -178,7 +191,9 @@ internal sealed class FrameServer : IAsyncDisposable
             {
                 // Disposal wakes this accept before closing the listener, to
                 // avoid orphaning a socket in Windows' AcceptEx/close race.
-                using var client = await listener.AcceptTcpClientAsync();
+                var pendingAccept=listener.AcceptTcpClientAsync();
+                firstAcceptStarted.TrySetResult();
+                using var client = await pendingAccept;
                 ct.ThrowIfCancellationRequested();
                 client.NoDelay = true;
                 using var sessionCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -564,9 +579,14 @@ internal sealed class FrameServer : IAsyncDisposable
                     // listening socket, leaving an accepted socket orphaned.
                     // Wake our own listener so the normal using scope owns and
                     // closes that socket before Stop. No authentication occurs.
-                    using var wake=new TcpClient();
                     using var wakeDeadline=new CancellationTokenSource(TimeSpan.FromSeconds(1));
-                    try {await wake.ConnectAsync(network?.LocalAddress??IPAddress.Loopback,network?.Port??Port,wakeDeadline.Token);}
+                    IPEndPoint? wakeEndpoint;
+                    lock(lifecycleLock)wakeEndpoint=boundEndpoint;
+                    if(wakeEndpoint is null)listener.Stop();
+                    else try
+                    {
+                        await wakeListener(wakeEndpoint,wakeDeadline.Token);
+                    }
                     catch(Exception ex) when(ex is SocketException or IOException or OperationCanceledException)
                     {listener.Stop();}
                 }
@@ -582,6 +602,13 @@ internal sealed class FrameServer : IAsyncDisposable
             finally { network?.Dispose(); cts.Dispose(); }
         }
     }
+
+    static async Task ConnectWakeAsync(IPEndPoint endpoint,CancellationToken ct)
+    {
+        using var wake=new TcpClient(endpoint.AddressFamily);
+        await wake.ConnectAsync(endpoint.Address,endpoint.Port,ct);
+    }
+
     internal static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
     record Hello(int Protocol,string Token,string[]? Features=null);
     record SubmittedAck(string Evidence,long Frames,long PtsUs,int Width,int Height,double Fps=0,string? Decoder=null);

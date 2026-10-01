@@ -518,6 +518,32 @@ await using(var b=new FrameServer(multiB,(_,_)=>Task.CompletedTask,Video,null,()
 }
 Console.WriteLine("PASS simultaneous native sessions remain isolated; unknown PTS submission closes only its receiver");
 
+for(var iteration=0;iteration<64;iteration++)
+{
+    IPEndPoint? wakeEndpoint=null;
+    async Task ConnectWake(IPEndPoint endpoint,CancellationToken token)
+    {
+        wakeEndpoint=new IPEndPoint(endpoint.Address,endpoint.Port);
+        using var wake=new TcpClient(endpoint.AddressFamily);
+        await wake.ConnectAsync(endpoint.Address,endpoint.Port,token);
+    }
+    await using var ephemeral=new FrameServer(()=>[1],null,()=>{},listenPort:0,wakeListener:ConnectWake);
+    ephemeral.Start();
+    var ephemeralPort=ephemeral.ListeningPort;
+    Check(ephemeralPort>0,"listenPort:0 did not publish its exact temporary port");
+    await ephemeral.FirstAcceptStarted.WaitAsync(TimeSpan.FromSeconds(2),ct);
+    Check(System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners()
+        .Any(x=>x.Address.Equals(IPAddress.Loopback)&&x.Port==ephemeralPort),
+        "temporary listener was not active before disposal");
+    await ephemeral.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2),ct);
+    Check(wakeEndpoint is not null&&wakeEndpoint.Address.Equals(IPAddress.Loopback)&&wakeEndpoint.Port==ephemeralPort,
+        "disposal did not wake the exact bound temporary endpoint");
+    Check(!System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners()
+        .Any(x=>x.Address.Equals(IPAddress.Loopback)&&x.Port==ephemeralPort),
+        "temporary listener remained active after disposal");
+}
+Console.WriteLine("PASS 64 blocked ephemeral accepts wake their exact bound port and leave no listener");
+
 for(var iteration=0;iteration<60;iteration++)
 {
     var raceOptions=new NetworkSessionOptions(IPAddress.Loopback,FreePort());

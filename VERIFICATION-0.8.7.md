@@ -38,6 +38,7 @@
 - `TabLink.UsbLease.Tests`：**48 个场景通过**。
 - `TabLink.UsbRecovery.Tests`：**135 个场景通过**。
 - `TabLink.Update.Tests`：**17 个场景、119 条断言通过**。
+- `TabLink.Transport.Tests` 在发布预检暴露一次临时端口释放等待后完成精确端点修复；修复后的完整套件共重复通过 **6 次**。每次都包含 **64 轮** `listenPort:0` 阻塞 accept 的精确端点唤醒与无残留监听检查，以及既有 **60 轮**接受/认证/释放竞态检查。
 - 其余 `build.ps1` 纳入的传输及 Windows 回归测试全部通过。
 - Windows 与 DriverSetup Release 编译：**0 个警告、0 个错误**。
 - Android JVM 测试和 lint 通过；debug APK 同时通过 **APK Signature Scheme v1 与 v2** 签名验证。
@@ -61,6 +62,7 @@
 12. 空闲/配对等待不创建设备，认证后的首个连接只建立一个设备；正常断开、准备失败和 owner 异常退出均精确移除该活动设备，随后下一个连接可重新按需建立。
 13. 独立 `prepare`、`remove`、`configure`、`pool` 与 `collect` 命令遵守同一生命周期锁顺序，在活动连接和 prepare→marker 窗口内有界等待或失败，不发生死锁，也不能短暂绕过租约检查。
 14. 受保护显示状态出现未知/孤立/损坏文件时维护命令失败关闭；原子写已经提交、随后复核注入失败时，启动回滚仍保留并执行精确 guard。
+15. 本地传输服务器使用系统分配或自定义端口时，释放路径只唤醒 `Start()` 后保存的实际绑定端点；测试在 accept 已确定提交后才开始释放，并要求两秒内结束且不残留监听，避免退回固定 27183 后触发 Windows `AcceptEx`/停止竞态。
 
 ## W202DS 实机验证
 
