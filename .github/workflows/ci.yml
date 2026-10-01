@@ -51,10 +51,26 @@ jobs:
             Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and (Test-Path -LiteralPath $_ -PathType Container) } |
             Select-Object -First 1
           if (-not $androidSdk) { throw 'GitHub Windows runner did not provide an Android SDK.' }
-          $sdkManager = Get-Command sdkmanager.bat -ErrorAction SilentlyContinue
-          if (-not $sdkManager) { $sdkManager = Get-Command sdkmanager -ErrorAction Stop }
-          & $sdkManager.Source "--sdk_root=$androidSdk" 'platforms;android-35' 'build-tools;35.0.0'
-          if ($LASTEXITCODE -ne 0) { throw 'Android SDK package installation failed.' }
+          $platformJar = Join-Path $androidSdk 'platforms\android-35\android.jar'
+          $aapt2 = Join-Path $androidSdk 'build-tools\35.0.0\aapt2.exe'
+          if (-not (Test-Path -LiteralPath $platformJar -PathType Leaf) -or
+              -not (Test-Path -LiteralPath $aapt2 -PathType Leaf)) {
+            $sdkManagerCommand = Get-Command sdkmanager.bat -ErrorAction SilentlyContinue
+            $sdkManagerPath = if ($sdkManagerCommand) {
+              $sdkManagerCommand.Source
+            } else {
+              Get-ChildItem -LiteralPath (Join-Path $androidSdk 'cmdline-tools') -Filter sdkmanager.bat -File -Recurse |
+                Sort-Object FullName -Descending |
+                Select-Object -First 1 -ExpandProperty FullName
+            }
+            if (-not $sdkManagerPath) { throw 'Android SDK manager was not found on the GitHub Windows runner.' }
+            & $sdkManagerPath "--sdk_root=$androidSdk" 'platforms;android-35' 'build-tools;35.0.0'
+            if ($LASTEXITCODE -ne 0) { throw 'Android SDK package installation failed.' }
+          }
+          if (-not (Test-Path -LiteralPath $platformJar -PathType Leaf) -or
+              -not (Test-Path -LiteralPath $aapt2 -PathType Leaf)) {
+            throw 'Android SDK platform 35 or build-tools 35.0.0 is incomplete.'
+          }
           "ANDROID_SDK_ROOT=$androidSdk" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "ANDROID_HOME=$androidSdk" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Set up Gradle 8.13
