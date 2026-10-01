@@ -202,7 +202,7 @@ await using(var server=new FrameServer(options,async(profile,token)=>
         if(scenario=="input-before-profile")await FrameServer.WritePacketAsync(stream,0x11,"{}"u8.ToArray(),ct);
         if(scenario=="ack-before-profile")await FrameServer.WritePacketAsync(stream,0x12,"{}"u8.ToArray(),ct);
         await Closed(stream,ct);
-        Check(prepared==0&&videos==0&&inputs==0&&releases==0&&!server.ClientConnected&&server.LastPresentedUtc is null,"invalid client altered trusted state: "+scenario);
+        Check(prepared==0&&videos==0&&inputs==0&&releases==0&&!server.ClientConnected&&!server.HasAuthenticatedClient&&server.LastPresentedUtc is null,"invalid client altered trusted state: "+scenario);
     }
     Console.WriteLine("PASS token and validated initial profile are required before prepare/capture/input/ACK; missing profile times out");
 
@@ -217,7 +217,7 @@ await using(var server=new FrameServer(options,async(profile,token)=>
         await WaitFor(()=>prepared==1,ct);
         Check(videos==0&&inputs==0&&!server.ClientConnected&&profiles==0,"media started before prepare completed");
         allowPrepare.SetResult();await ReadUntil(stream,0x20,ct);await ReadUntil(stream,0x21,ct);
-        Check(server.ClientConnected&&server.ClientDisplayProfile?.Width==1200&&profiles==0,"initial profile state/event incorrect");
+        Check(server.ClientConnected&&server.HasAuthenticatedClient&&server.ClientDisplayProfile?.Width==1200&&profiles==0,"initial profile state/event incorrect");
         await WaitFor(()=>server.SendPerformance.CompletedFrames==1,ct);
         var performance=server.SendPerformance;measuredConnectionId=performance.ConnectionId;
         Check(measuredConnectionId!=Guid.Empty&&performance.SourceMove.Count==2&&performance.PacketWrite.Count==2&&
@@ -234,6 +234,7 @@ await using(var server=new FrameServer(options,async(profile,token)=>
         var unnegotiatedSubmission=JsonSerializer.SerializeToUtf8Bytes(new{evidence="render-submitted",frames=1,ptsUs=0,width=1200,height=1920,fps=60,decoder="test AVCodec"});
         await FrameServer.WritePacketAsync(stream,0x14,unnegotiatedSubmission,ct);
         await Closed(stream,ct);await WaitFor(()=>!server.ClientConnected,ct);
+        Check(server.HasAuthenticatedClient,"trusted connection evidence remains sticky after disconnect for bounded host recovery");
         Check(server.LastSubmittedUtc is null&&server.SubmittedFrames==0,"unnegotiated 0x14 altered trusted submission state");
         Console.WriteLine("PASS legacy HELLO rejects and closes on unnegotiated 0x14 without accepting submission evidence");
     }

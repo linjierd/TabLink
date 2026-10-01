@@ -3,9 +3,9 @@
 [![CI](https://github.com/linjierd/TabLink/actions/workflows/ci.yml/badge.svg)](https://github.com/linjierd/TabLink/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/TabLink%20code-MIT-blue.svg)](LICENSE)
 
-Windows 电脑端当前候选版为 **0.8.5 Preview 1**。它继续全局只允许一个扩展副屏，并修复了普通桌面在目标 90 fps 时实际只能发送约 65 fps 的问题：DDA 已有缓存帧时不再额外等待半个帧周期，媒体 PTS 也会跟随真实单调时间。见 [0.8.5 发布说明](RELEASE-0.8.5.md) 与 [0.8.5 验证记录](VERIFICATION-0.8.5.md)。Android 公开预览 APK 同步为 **0.8.5 / build 17**。协议主版本仍为 v1；已签名的公网稳定自动更新频道继续保持 **0.8.0**，不会仅因 GitHub 预览包而自动切换。0.8.0 的签名更新设计见 [0.8.0 发布说明](RELEASE-0.8.0.md)、[自动更新设计与发布说明](AUTO-UPDATE.md) 及 [0.8.0 验证记录](VERIFICATION-0.8.0.md)。
+Windows 电脑端当前候选版为 **0.8.6 Preview 1**。它继续全局只允许一个扩展副屏，并为 ADB USB 兼容通道加入同会话自动恢复、每会话随机设备端口、停止竞态保护和更可靠的崩溃清理；ADB 服务重启或本次 reverse 映射丢失后，会重新核验同一台手动选择的设备、USB VID/PID 与排除规则，再用原令牌恢复原副屏。见 [0.8.6 发布说明](RELEASE-0.8.6.md) 与 [0.8.6 验证记录](VERIFICATION-0.8.6.md)。Android 公开预览 APK 同步为 **0.8.6 / build 18**，并继续兼容旧 Windows 客户端的默认 27183 端口。协议主版本仍为 v1；已签名的公网稳定自动更新频道继续保持 **0.8.0**，不会仅因 GitHub 预览包而自动切换。0.8.0 的签名更新设计见 [0.8.0 发布说明](RELEASE-0.8.0.md)、[自动更新设计与发布说明](AUTO-UPDATE.md) 及 [0.8.0 验证记录](VERIFICATION-0.8.0.md)。
 
-以下保留既有功能说明和历史记录；旧版运行条件、ADB 外置说明及旧帧率结果以新版说明为准，不能作为 0.8.5 的验证结果。
+以下保留既有功能说明和历史记录；旧版运行条件、ADB 外置说明及旧帧率结果以新版说明为准，不能作为 0.8.6 的验证结果。
 
 TabLink 是 Windows + Android 扩展桌面应用。Windows 通过已签名的开源虚拟显示驱动提供独立桌面，发送 H.264 视频，Android 使用 MediaCodec 解码并回传显示进度与单指触控。支持同一局域网的 Wi-Fi、USB 网络共享和原有的 ADB USB 兼容通道。
 
@@ -47,7 +47,7 @@ TabLink 自有源码采用 [MIT License](LICENSE)。公开仓库只跟踪源码�
 
 ## 运行与使用
 
-已验证平台为 Windows 11 x64、中兴 W202DS 平板和 NVIDIA RTX 4060 Laptop GPU。GitHub Release 的 Windows x64 公共包为 self-contained，不需要另装 .NET；从源码运行或使用普通 framework-dependent 构建时需要 .NET 10 Desktop Runtime。0.8.5 会在每次新连接开始前实际探测可用 H.264 后端；当前 NVIDIA 主机的 Auto 路径已选择 NVENC。QSV 已编入 helper，但本机没有可用的 Intel MFX 实现；AMF 已编入 helper，但本机没有 AMD AMF 运行库。两者都明确失败并保持强制后端不变，仍需在相应 Intel / AMD 电脑上做实机验证。APK 支持 Android 6.0 / API 23 及以上，实际解码能力和刷新率由设备决定。
+已验证平台为 Windows 11 x64、中兴 W202DS 平板和 NVIDIA RTX 4060 Laptop GPU。GitHub Release 的 Windows x64 公共包为 self-contained，不需要另装 .NET；从源码运行或使用普通 framework-dependent 构建时需要 .NET 10 Desktop Runtime。0.8.6 会在每次新连接开始前实际探测可用 H.264 后端；当前 NVIDIA 主机的 Auto 路径已选择 NVENC。QSV 已编入 helper，但本机没有可用的 Intel MFX 实现；AMF 已编入 helper，但本机没有 AMD AMF 运行库。两者都明确失败并保持强制后端不变，仍需在相应 Intel / AMD 电脑上做实机验证。APK 支持 Android 6.0 / API 23 及以上，实际解码能力和刷新率由设备决定。
 
 ### 正式版自动更新
 
@@ -104,7 +104,7 @@ Windows 的管理员授权、锁屏等操作可能使普通桌面暂时无法采
 
 ## 按需驱动与单副屏生命周期
 
-电脑端 `TabLink.exe` 从 0.5.1 起声明需要管理员权限：从普通桌面启动时，由 Windows 请求 UAC 授权，授权成功后程序及其副屏守护进程在管理员权限下运行。0.8.5 不在程序启动、打开配对页或等待扫码时安装虚拟显示设备；只有接收设备通过认证并提交有效屏幕参数、连接准备真正占用副屏时才执行检查与按需安装。
+电脑端 `TabLink.exe` 从 0.5.1 起声明需要管理员权限：从普通桌面启动时，由 Windows 请求 UAC 授权，授权成功后程序及其副屏守护进程在管理员权限下运行。0.8.6 不在程序启动、打开配对页或等待扫码时安装虚拟显示设备；只有接收设备通过认证并提交有效屏幕参数、连接准备真正占用副屏时才执行检查与按需安装。
 
 驱动使用 [VirtualDrivers / Virtual-Display-Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver) 固定版本 25.7.23，附带原始签名二进制、MIT 许可、SHA-256 和来源记录。TabLink 安装前检查固定哈希与 Windows 通用 Authenticode 信任，不会主动启用测试签名、关闭安全启动、安装证书或降低签名策略。该上游签名不是 Microsoft WHQL 认证，实际安装仍受接收电脑的 Windows 驱动信任策略约束；拒绝时健康中心会保留错误，不会更改系统签名设置。驱动配置固定为一个输出；旧配置即使曾设置多个输出，也必须先收敛到一个再安装设备，避免连接瞬间重新生成多块虚拟屏。
 
@@ -147,7 +147,7 @@ H.264 的解码提交和客户端呈现回调分开统计。`render-submitted` �
 
 ### 画质预设与自动码率
 
-0.8.5 Preview 1 保留“自动、低延迟、均衡、高清晰”四种画质预设。这里的“自动画质”与“Auto 编码器”是两个独立设置：前者按链路反馈调整码率/GOP，后者在连接开始时挑选编码后端。无论画质计划怎样重建，本次连接选定的后端都保持不变。
+0.8.6 Preview 1 保留“自动、低延迟、均衡、高清晰”四种画质预设。这里的“自动画质”与“Auto 编码器”是两个独立设置：前者按链路反馈调整码率/GOP，后者在连接开始时挑选编码后端。无论画质计划怎样重建，本次连接选定的后端都保持不变。
 
 本预览只调整 H.264 目标码率与 GOP。平板报告的原生方向、分辨率和请求刷新率保持不变，自动模式不会降低虚拟显示模式，也不会创建额外显示器。安全桌面暂停、反馈过期或证据不足时冻结判断。`0x16` 接收端反馈包含本会话的接收、队列、提交、呈现和丢弃累计值，但只用于自适应与诊断，不会推进解码提交、呈现回调或显示租约的健康期限。
 
@@ -167,7 +167,7 @@ Android 会按分辨率、目标帧率、PerformancePoint、低延迟能力和�
 
 当前包括一个独立扩展桌面、原生横竖屏匹配、NVENC / QSV / AMF H.264 硬件候选、显式授权的 x264 软件回退、Android 硬解优先并提供软件 decoder 兜底、画面确认、重连、会话守护、排除列表和单指鼠标操作。程序不会自动修改电源计划或升级显卡驱动。
 
-暂不包含音频、压感笔和多点触控。0.8.5 任意时刻只允许一台接收设备占用一块 TabLink 虚拟副屏；不会创建第三、第四块 TabLink 显示器。刷新速度受捕获、编码、USB、解码与安卓面板策略共同限制，当前版本不承诺所有设备达到 90 fps。同一副屏的位置变化会自动恢复；目标身份、主副屏关系或显示模式发生不兼容变化时会停止采集。
+暂不包含音频、压感笔和多点触控。0.8.6 任意时刻只允许一台接收设备占用一块 TabLink 虚拟副屏；不会创建第三、第四块 TabLink 显示器。刷新速度受捕获、编码、USB、解码与安卓面板策略共同限制，当前版本不承诺所有设备达到 90 fps。同一副屏的位置变化会自动恢复；目标身份、主副屏关系或显示模式发生不兼容变化时会停止采集。
 
 ## 文件、日志与构建
 
@@ -197,7 +197,7 @@ dotnet run --project tests/TabLink.Core.Tests -c Release
 .\build.ps1 -SkipAndroid
 ```
 
-普通构建使用 `android/artifacts/TabLink-android-0.8.5-debug.apk`；`-PublicRelease` 会生成不可调试但仍使用既有开发证书的 `TabLink-android-0.8.5-preview.apk`，并注入正式稳定频道地址。公开构建同时生成 self-contained Windows x64 程序、排除不可全球再分发的浏览器接收依赖和 Google ADB 二进制。脚本串行运行单屏驱动配置、显示分配、清理与生命周期、连接健康、更新、传输和编码后端回归，复制 APK、LGPL 硬件 helper、GPL x264 helper、各自许可与完整对应源码，并生成 `SHA256SUMS.txt`。构建过程不会安装驱动、创建设备或连接平板。
+普通构建使用 `android/artifacts/TabLink-android-0.8.6-debug.apk`；`-PublicRelease` 会生成不可调试但仍使用既有开发证书的 `TabLink-android-0.8.6-preview.apk`，并注入正式稳定频道地址。公开构建同时生成 self-contained Windows x64 程序、排除不可全球再分发的浏览器接收依赖和 Google ADB 二进制。脚本串行运行单屏驱动配置、显示分配、清理与生命周期、连接健康、更新、传输和编码后端回归，复制 APK、LGPL 硬件 helper、GPL x264 helper、各自许可与完整对应源码，并生成 `SHA256SUMS.txt`。构建过程不会安装驱动、创建设备或连接平板。
 
 构建脚本通过 `dotnet TabLink.dll --self-test` 运行纯传输测试，不触发程序启动的 UAC 授权。自测使用系统分配的临时回环端口，不占用实际副屏的 27183，因此可以在现有连接保持时运行。自测只使用合成字节、回环 TCP 和 fake input，不捕获桌面、不访问真实 ADB、不更改显示器。目前 Core 30 项和 Windows 传输 21 项测试覆盖设备排除、授权重查、模式解析、视频包计数、确认边界和连接状态归零。
 

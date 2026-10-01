@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace TabLink.Windows;
 
@@ -146,24 +147,49 @@ internal sealed class SessionGuard : IDisposable
     }
 
     internal void AttachReverse(UsbReverseLease receipt)
+        => ReplaceReverse(null, receipt);
+
+    /// <summary>
+    /// Atomically retires or replaces the exact reverse receipt published for
+    /// this display lease. Recovery clears the old receipt before recreating a
+    /// missing mapping, then publishes a fresh receipt only after --no-rebind
+    /// succeeds. A crash in between may leave an inert mapping, but can never
+    /// authorize the watcher to delete a mapping whose ownership is uncertain.
+    /// </summary>
+    internal void ReplaceReverse(UsbReverseLease? expected, UsbReverseLease? next)
     {
-        ArgumentNullException.ThrowIfNull(receipt);
-        if (receipt.Id == Guid.Empty || receipt.OwnerPid != Environment.ProcessId || receipt.OwnerStartUtcTicks != ownerStartTicks)
-            throw new IOException("USB 通道记录不属于当前连接进程");
+        ValidateReverseReceipt(expected);
+        ValidateReverseReceipt(next);
         WithLeaseLock(() =>
         {
             if (stopRequested || ReadMarker(path) != lease.LeaseId)
                 throw new IOException("副屏会话已结束，无法登记 USB 通道");
-            if (reverseLease is not null && reverseLease != receipt)
-                throw new IOException("本次连接已经登记了另一个 USB 通道");
-            var state = ReadState(path, lease.LeaseId) with { ReverseLease = receipt };
-            reverseLease = receipt;
-            // Only this optional receipt is added to the initial proof; the
-            // captured display and process identities never change.
-            WriteAtomic(BootstrapPath(path, lease.LeaseId), state);
-            WriteAtomic(path, state);
+            var state = ReadState(path, lease.LeaseId);
+            if (state.OwnerPid != Environment.ProcessId || state.OwnerStartUtcTicks != ownerStartTicks ||
+                JsonSerializer.Serialize(state.Lease) != JsonSerializer.Serialize(lease))
+                throw new IOException("副屏会话身份记录已经变化，拒绝更新 USB 通道记录");
+            if (reverseLease != expected || state.ReverseLease != expected)
+                throw new IOException("USB 通道所有权记录已经变化，拒绝替换旧记录");
+            // Rebuild from the in-memory immutable identities. Never promote a
+            // merely well-formed renewable file into crash-cleanup authority.
+            var updated = new WatchState(lease, Environment.ProcessId, ownerStartTicks,
+                state.DeadlineUtc, next, state.StopRequested);
+            // Bootstrap is the crash-cleanup authority. Clear it before an old
+            // receipt can be mistaken for a future mapping; publish a new one
+            // there only after this process has demonstrably created it.
+            WriteAtomic(BootstrapPath(path, lease.LeaseId), updated);
+            WriteAtomic(path, updated);
+            reverseLease = next;
             return 0;
         });
+    }
+
+    void ValidateReverseReceipt(UsbReverseLease? receipt)
+    {
+        if (receipt is not null && (receipt.SchemaVersion != UsbReverseLease.CurrentSchemaVersion ||
+            receipt.Id == Guid.Empty || !receipt.Endpoint.IsValid
+            || receipt.OwnerPid != Environment.ProcessId || receipt.OwnerStartUtcTicks != ownerStartTicks))
+            throw new IOException("USB 通道记录不属于当前连接进程");
     }
 
     public void Dispose()
@@ -261,8 +287,9 @@ internal sealed class SessionGuard : IDisposable
         WatchState? last = null;
         var desktopWasUnavailable = false;
         var recoveryDeadline = DateTime.MinValue;
-        var failedDetachAttempts = 0;
-        var reverseCleanupAttempted = false;
+        var displayDetached = false;
+        var reverseCleanupDeferred = false;
+        UsbReverseLease? confirmedCleanedReverse = null;
         while (true)
         {
             try
@@ -319,24 +346,75 @@ internal sealed class SessionGuard : IDisposable
                     if (running && !last.StopRequested && now <= deadline) return -1;
                     // Read, deadline evaluation and detach all hold the same
                     // cross-process lock used by constructor/Renew/Dispose.
-                    RememberBeforeDetach(last.Lease);
-                    var result = VirtualDisplayManager.Detach(last.Lease);
-                    SaveDiagnostic("display-watchdog.json", new
+                    if (!displayDetached)
                     {
-                        timestamp = DateTimeOffset.Now,
-                        reason = !running ? "host-exited" : last.StopRequested ? "stop-requested" : unreadable ? "lease-unreadable" : "no-new-frames",
-                        result
-                    });
-                    if (!running && !reverseCleanupAttempted)
-                    {
-                        var receipt = FindReverseReceipt(file, last);
-                        if (receipt is not null)
+                        RememberBeforeDetach(last.Lease);
+                        var result = VirtualDisplayManager.Detach(last.Lease);
+                        SaveDiagnostic("display-watchdog.json", new
                         {
-                            CleanupReverse(receipt, "watcher-host-exited");
-                            reverseCleanupAttempted = true;
+                            timestamp = DateTimeOffset.Now,
+                            reason = !running ? "host-exited" : last.StopRequested ? "stop-requested" : unreadable ? "lease-unreadable" : "no-new-frames",
+                            result
+                        });
+                        displayDetached = result.Success;
+                    }
+                    if (!running)
+                    {
+                        if (confirmedCleanedReverse is null && !reverseCleanupDeferred)
+                        {
+                            // The bootstrap is the crash-cleanup authority. A
+                            // transient read/JSON failure is not evidence that
+                            // no receipt exists, so let it escape to the outer
+                            // retry loop instead of retiring the marker.
+                            var receipt = ReadReverseReceiptForWatcher(file, last);
+                            if (receipt is not null)
+                            {
+                                if (receipt.SchemaVersion != UsbReverseLease.CurrentSchemaVersion || !receipt.Endpoint.IsValid)
+                                {
+                                    // Receipts written before per-session
+                                    // endpoints existed cannot authorize any
+                                    // ADB removal. Preserve that receipt for
+                                    // diagnosis, but do not let it block exact
+                                    // reclamation of the independently owned
+                                    // virtual display.
+                                    reverseCleanupDeferred = true;
+                                    SaveDiagnostic("usb-reverse-legacy-receipt.json", new
+                                    { timestamp = DateTimeOffset.Now, reason = "missing-session-endpoint", receipt.Id });
+                                }
+                                else
+                                {
+                                    var cleanup = CleanupReverse(receipt, "watcher-host-exited");
+                                    if (cleanup?.Complete == true)
+                                        confirmedCleanedReverse = receipt;
+                                    else
+                                        // USB cleanup is secondary to exact
+                                        // display/driver reclamation. Preserve
+                                        // the receipt and diagnostic for the
+                                        // next owner-recovery pass, but never
+                                        // strand the VDD because a tablet is
+                                        // offline, excluded, changed, or now
+                                        // owns a conflicting mapping.
+                                        reverseCleanupDeferred = true;
+                                }
+                            }
+                        }
+                        if (confirmedCleanedReverse is not null)
+                        {
+                            // Removed/AlreadyAbsent are the only results that
+                            // consume crash-cleanup authority. Write the
+                            // immutable bootstrap first: if the renewable write
+                            // then fails, the next loop retries it without ever
+                            // rerunning cleanup against a future look-alike.
+                            var clearedInitial = initial with { ReverseLease = null };
+                            var clearedLast = last with { ReverseLease = null };
+                            WriteAtomic(BootstrapPath(file, expectedLeaseId), clearedInitial);
+                            WriteAtomic(file, clearedLast);
+                            initial = clearedInitial;
+                            last = clearedLast;
+                            confirmedCleanedReverse = null;
                         }
                     }
-                    if (result.Success)
+                    if (displayDetached)
                     {
                         // Retire ownership too: a delayed UI renewal must stop
                         // after the watchdog has already collected its output.
@@ -344,11 +422,10 @@ internal sealed class SessionGuard : IDisposable
                         detachedAfterOwnerExit = !running;
                         return 0;
                     }
-                    // Still attempt crash/explicit-stop cleanup while another desktop is active.
-                    // If Windows rejects that mutation, retry after it returns instead of abandoning
-                    // the exact owned display after three inaccessible-desktop attempts.
-                    if (desktop.IsUnavailable) { failedDetachAttempts = 0; return -1; }
-                    return ++failedDetachAttempts >= 3 ? 1 : -1;
+                    // Keep retrying the same exact lease. A fourth or later
+                    // native attempt can succeed after a transient desktop or
+                    // adapter failure; a retry never broadens display authority.
+                    return -1;
                 });
                 // Keep the compact proof for diagnosis and retry if a device
                 // was unavailable when its owned reverse mapping was retired.
@@ -475,7 +552,19 @@ internal sealed class SessionGuard : IDisposable
             ? receipt : null;
     }
 
-    static void CleanupReverse(UsbReverseLease receipt, string reason)
+    static UsbReverseLease? ReadReverseReceiptForWatcher(string file, WatchState state)
+    {
+        var backup = ReadState(BootstrapPath(file, state.Lease.LeaseId), state.Lease.LeaseId);
+        if (backup.OwnerPid != state.OwnerPid || backup.OwnerStartUtcTicks != state.OwnerStartUtcTicks ||
+            JsonSerializer.Serialize(backup.Lease) != JsonSerializer.Serialize(state.Lease))
+            throw new InvalidDataException("副屏保护初始记录中的设备或进程身份发生变化");
+        var receipt = backup.ReverseLease;
+        if (receipt is not null && (receipt.OwnerPid != state.OwnerPid || receipt.OwnerStartUtcTicks != state.OwnerStartUtcTicks))
+            throw new InvalidDataException("USB 通道记录不属于副屏保护记录中的连接进程");
+        return receipt;
+    }
+
+    static UsbReverseCleanupResult? CleanupReverse(UsbReverseLease receipt, string reason)
     {
         try
         {
@@ -484,10 +573,12 @@ internal sealed class SessionGuard : IDisposable
             // pool; never block the UI synchronization context's continuations.
             var result = Task.Run(() => UsbReverseLease.CleanupAfterOwnerExitAsync(receipt, timeout.Token)).GetAwaiter().GetResult();
             SaveDiagnostic("usb-reverse-recovery.json", new { timestamp = DateTimeOffset.Now, reason, receipt.Id, result });
+            return result;
         }
         catch (Exception ex) when (IsStorageFailure(ex) || ex is OperationCanceledException or TimeoutException)
         {
             SaveDiagnostic("usb-reverse-recovery-error.json", new { timestamp = DateTimeOffset.Now, reason, receipt.Id, error = ex.Message });
+            return null;
         }
     }
 
@@ -557,5 +648,6 @@ internal sealed class SessionGuard : IDisposable
     }
 
     internal sealed record WatchState(DisplayLease Lease, int OwnerPid, long OwnerStartUtcTicks, DateTime DeadlineUtc,
-        UsbReverseLease? ReverseLease = null, bool StopRequested = false);
+        [property: JsonPropertyName("ReverseLeaseV2")] UsbReverseLease? ReverseLease = null,
+        bool StopRequested = false);
 }

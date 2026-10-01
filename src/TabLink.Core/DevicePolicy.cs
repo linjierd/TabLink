@@ -131,4 +131,11 @@ public sealed class DevicePolicy
         serial.Contains("_adb-tls", StringComparison.OrdinalIgnoreCase);
 }
 
-public sealed class DevicePolicyException(string message) : InvalidOperationException(message);
+public class DevicePolicyException(string message) : InvalidOperationException(message);
+
+/// <summary>
+/// The explicitly approved physical USB device is still expected, but adb has
+/// not made that one transport ready yet. Callers may retry this condition;
+/// all identity, exclusion and approval failures remain DevicePolicyException.
+/// </summary>
+public sealed class AdbDeviceTemporarilyUnavailableException(string message) : DevicePolicyException(message);

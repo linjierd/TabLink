@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using TabLink.Windows;
 
 var assertions = 0;
@@ -80,6 +82,135 @@ using (var test = new Scenario())
     test.Owner = t => t.Seconds < 4 ? SessionGuard.OwnerLiveness.VerifiedRunning : SessionGuard.OwnerLiveness.Exited;
     Check(await test.Run() == 0 && test.DetachTimes.SequenceEqual([4]), "process exit has priority over an unexpired lease");
 }
+using (var test = new Scenario())
+{
+    test.Desktop = _ => available;
+    test.DetachSucceeds = t => t.DetachTimes.Count >= 4;
+    Check(await test.Run() == 0 && test.DetachTimes.SequenceEqual([22, 24, 26, 28]),
+        "a fourth exact-lease detach can recover after three transient native failures");
+    Check(test.DetachLeaseIds.All(id => id == test.Lease.LeaseId),
+        "unbounded detach retry never broadens authority beyond the original display lease");
+}
+try
+{
+    var endpointPort = 49152;
+    foreach (var complete in new[] { UsbReverseCleanupStatus.Removed, UsbReverseCleanupStatus.AlreadyAbsent })
+    {
+        using var test = new Scenario();
+        var receipt = new UsbReverseLease(Guid.NewGuid(), test.State.OwnerPid, test.State.OwnerStartUtcTicks,
+            new AdbReverseEndpoint(endpointPort++));
+        test.PublishReverse(receipt);
+        if (complete == UsbReverseCleanupStatus.Removed)
+        {
+            var currentJson = test.ReadRawState();
+            var currentObject = JsonNode.Parse(currentJson)!.AsObject();
+            var legacyReader = JsonSerializer.Deserialize<LegacyWatchState>(currentJson)!;
+            Check(currentObject.ContainsKey("ReverseLeaseV2") && !currentObject.ContainsKey("ReverseLease") &&
+                legacyReader.ReverseLease is null,
+                "v2 receipts use a property that pre-v2 readers ignore instead of interpreting as fixed-port authority");
+        }
+        test.Owner = _ => SessionGuard.OwnerLiveness.Exited;
+        var cleanupCalls = 0;
+        var driverCleanupCalls = 0;
+        UsbReverseLease.OnCleanup = (actual, _) =>
+        {
+            cleanupCalls++;
+            return Task.FromResult(actual == receipt
+                ? new UsbReverseCleanupResult(complete, "fake completed cleanup")
+                : new UsbReverseCleanupResult(UsbReverseCleanupStatus.Failed, "wrong receipt"));
+        };
+        test.AfterOwnerExitDetach = () => { driverCleanupCalls++; return Task.CompletedTask; };
+        Check(await test.Run() == 0 && cleanupCalls == 1 && driverCleanupCalls == 1 && test.ReadMarker() == Guid.Empty,
+            $"{complete} permits exact display and driver reclamation");
+        Check(test.ReadState().ReverseLease is null && test.ReadBootstrapState().ReverseLease is null,
+            $"{complete} consumes the reverse receipt in both persistent records");
+    }
+    foreach (var deferred in new[]
+    {
+        UsbReverseCleanupStatus.DeviceUnavailable,
+        UsbReverseCleanupStatus.MappingChanged,
+        UsbReverseCleanupStatus.Failed
+    })
+    {
+        using var test = new Scenario();
+        var receipt = new UsbReverseLease(Guid.NewGuid(), test.State.OwnerPid, test.State.OwnerStartUtcTicks,
+            new AdbReverseEndpoint(endpointPort++));
+        test.PublishReverse(receipt);
+        test.Owner = _ => SessionGuard.OwnerLiveness.Exited;
+        var cleanupCalls = 0;
+        var driverCleanupCalls = 0;
+        var diagnosticNames = new List<string>();
+        Diagnostics.OnSave = (name, _) => diagnosticNames.Add(name);
+        UsbReverseLease.OnCleanup = (actual, _) =>
+        {
+            Check(actual == receipt, $"{deferred} evaluates only the exact persisted reverse receipt");
+            cleanupCalls++;
+            return Task.FromResult(new UsbReverseCleanupResult(deferred, "fake deferred cleanup"));
+        };
+        test.AfterOwnerExitDetach = () => { driverCleanupCalls++; return Task.CompletedTask; };
+        Check(await test.Run() == 0 && cleanupCalls == 1 && driverCleanupCalls == 1 && test.ReadMarker() == Guid.Empty,
+            $"{deferred} cannot block exact display retirement or the driver cleanup callback");
+        Check(test.DetachTimes.SequenceEqual([0]) && test.DetachLeaseIds.Single() == test.Lease.LeaseId,
+            $"{deferred} detaches the original display exactly once");
+        Check(test.ReadState().ReverseLease == receipt && test.ReadBootstrapState().ReverseLease == receipt,
+            $"{deferred} retains both reverse receipts for the next owner-recovery pass");
+        Check(diagnosticNames.Contains("usb-reverse-recovery.json"),
+            $"{deferred} remains visible in the USB recovery diagnostic");
+        Diagnostics.OnSave = null;
+    }
+    using (var test = new Scenario())
+    {
+        var receipt = new UsbReverseLease(Guid.NewGuid(), test.State.OwnerPid, test.State.OwnerStartUtcTicks,
+            new AdbReverseEndpoint(endpointPort++));
+        test.PublishReverse(receipt);
+        test.Owner = _ => SessionGuard.OwnerLiveness.Exited;
+        var corrupted = false;
+        var cleanupCalls = 0;
+        test.DetachSucceeds = t =>
+        {
+            if (!corrupted)
+            {
+                corrupted = true;
+                t.CorruptBootstrap();
+            }
+            return true;
+        };
+        UsbReverseLease.OnCleanup = (_, _) =>
+        {
+            cleanupCalls++;
+            return Task.FromResult(new UsbReverseCleanupResult(UsbReverseCleanupStatus.AlreadyAbsent, "fake absence"));
+        };
+        test.AfterTick = t =>
+        {
+            if (t.Seconds != 2) return;
+            Check(t.ReadMarker() == t.Lease.LeaseId && t.ReadState().ReverseLease == receipt && cleanupCalls == 0,
+                "an unreadable bootstrap is retained as unknown authority and cannot retire the marker");
+            t.RestoreBootstrap();
+        };
+        Check(await test.Run() == 0 && cleanupCalls == 1 && test.DetachTimes.SequenceEqual([0]),
+            "watcher retries a transient bootstrap JSON failure without repeating an already successful display detach");
+    }
+    using (var test = new Scenario())
+    {
+        // A pre-v2 JSON used ReverseLease and had neither a random endpoint nor
+        // a schema. New readers ignore that legacy property entirely; old
+        // readers likewise ignore the new ReverseLeaseV2 property.
+        var legacyReceipt = new UsbReverseLease(Guid.NewGuid(), test.State.OwnerPid,
+            test.State.OwnerStartUtcTicks, default, SchemaVersion:0);
+        test.PublishLegacyReverseWithoutEndpoint(legacyReceipt);
+        test.Owner = _ => SessionGuard.OwnerLiveness.Exited;
+        UsbReverseLease.OnCleanup = (_, _) => throw new Exception("legacy receipt must never authorize ADB cleanup");
+        Check(await test.Run() == 0 && test.DetachTimes.SequenceEqual([0]) && test.ReadMarker() == Guid.Empty,
+            "a legacy receipt without a random endpoint cannot block exact display reclamation");
+        Check(test.ReadState().ReverseLease is null && test.ReadBootstrapState().ReverseLease is null,
+            "new readers ignore the legacy fixed-port receipt instead of granting it cleanup authority");
+    }
+}
+finally
+{
+    UsbReverseLease.OnCleanup = (_, _) => throw new Exception("Tests must not use ADB");
+    Diagnostics.OnSave = null;
+}
 Check(available.IsAvailable && !available.IsUnavailable && unavailable.IsUnavailable && !unknown.IsUnavailable,
     "availability states do not equate probe errors with confirmed desktop unavailability");
 var origin = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
@@ -91,6 +222,10 @@ Check(SessionPresentationDeadline.HasSafeEncoderProbeBudget &&
     "encoder probing has one explicit budget below the first-presentation deadline");
 Check(presentation.Evaluate(origin.AddSeconds(1), null, false, available).DeadlineUtc == origin.AddSeconds(45),
     "without progress or a recovery event, the first-presentation deadline remains fixed after encoder probing");
+var beforeBlockedRenew = origin.AddSeconds(44);
+var afterBlockedRenew = origin.AddSeconds(46);
+Check(beforeBlockedRenew <= origin.AddSeconds(45) && afterBlockedRenew > origin.AddSeconds(45),
+    "deadline enforcement must sample the clock again after a potentially blocking lease renewal");
 var oscillatingDeadlines = Enumerable.Range(5, 100).Select(second =>
     presentation.Evaluate(origin.AddSeconds(second), null, second % 2 == 1, available).DeadlineUtc).ToArray();
 Check(oscillatingDeadlines.All(deadline => deadline == origin.AddSeconds(45)),
@@ -134,6 +269,98 @@ presentation.Reset(origin.AddSeconds(200));
 Check(presentation.Evaluate(origin.AddSeconds(201), null, false, available).DeadlineUtc == origin.AddSeconds(245)
     && presentation.RecoveryDeadlineUtc == DateTime.MinValue,
     "a new connection cannot inherit the previous connection's desktop transition or grace");
+
+var usbRecovery = new UsbSessionRecoveryGate();
+Check(usbRecovery.TryBegin(origin, sessionActive:true, clientConnected:false) is null,
+    "USB recovery stays disarmed until this session has authenticated a client");
+
+var oneHealthyTick = new UsbSessionRecoveryGate();
+oneHealthyTick.ObserveConnected();
+var oneTickAttempt = oneHealthyTick.TryBegin(origin.AddSeconds(1), true, false)!.Value;
+for (var tick = 0; tick < 32; tick++) usbRecovery.ObserveConnected();
+var concurrentAttempts = new ConcurrentBag<UsbSessionRecoveryAttempt>();
+Parallel.For(0, 64, _ =>
+{
+    if (usbRecovery.TryBegin(origin.AddSeconds(1), true, false) is { } attempt)
+        concurrentAttempts.Add(attempt);
+});
+Check(concurrentAttempts.Count == 1 && usbRecovery.InFlight,
+    "concurrent disconnect observations admit exactly one in-flight repair");
+var usbAttempt1 = concurrentAttempts.Single();
+Check(usbAttempt1 is { Number:1 } && usbAttempt1.Generation == oneTickAttempt.Generation,
+    "repeated healthy ticks are idempotent and the first disconnect still starts attempt one");
+
+var launchReservations = 0;
+Parallel.For(0, 64, _ =>
+{
+    if (usbRecovery.TryReserveLaunch(usbAttempt1))
+        Interlocked.Increment(ref launchReservations);
+});
+Check(launchReservations == 1,
+    "a disconnect episode grants exactly one atomic client-launch reservation");
+Check(usbRecovery.TryBegin(origin.AddSeconds(1), true, false) is null,
+    "USB recovery remains single-flight while its admitted attempt is running");
+
+var usbDeadline = new SessionPresentationDeadline();
+usbDeadline.Reset(origin);
+var deadlineBeforeUsbRecovery = usbDeadline.Evaluate(origin.AddSeconds(1), null, false, available).DeadlineUtc;
+usbRecovery.Complete(usbAttempt1, origin.AddSeconds(2), clientConnected:false, retryable:true);
+var scheduledAfterAttempt1 = usbRecovery.NextAttemptUtc;
+usbRecovery.Complete(usbAttempt1, origin.AddSeconds(20), clientConnected:false, retryable:true);
+Check(usbRecovery.Failures == 1 && scheduledAfterAttempt1 == origin.AddSeconds(4)
+    && usbRecovery.NextAttemptUtc == scheduledAfterAttempt1
+    && usbRecovery.TryBegin(origin.AddSeconds(3), true, false) is null,
+    "attempt one uses a two-second backoff and a duplicate completion cannot reschedule it");
+
+var usbAttempt2 = usbRecovery.TryBegin(origin.AddSeconds(4), true, false)!.Value;
+Check(usbAttempt2.Number == 2 && usbRecovery.TryReserveLaunch(usbAttempt2)
+    && !usbRecovery.TryReserveLaunch(usbAttempt2),
+    "attempt two starts after two seconds and can launch at most once for that attempt");
+usbRecovery.Complete(usbAttempt1, origin.AddSeconds(4), clientConnected:false, retryable:true);
+Check(usbRecovery.InFlight,
+    "a stale token cannot complete the newer in-flight attempt");
+usbRecovery.Complete(usbAttempt2, origin.AddSeconds(5), clientConnected:false, retryable:true);
+var usbAttempt3 = usbRecovery.TryBegin(origin.AddSeconds(9), true, false)!.Value;
+Check(usbAttempt3.Number == 3 && usbRecovery.TryReserveLaunch(usbAttempt3)
+    && !usbRecovery.TryReserveLaunch(usbAttempt3),
+    "the third repair follows the four-second backoff with one bounded launch opportunity");
+usbRecovery.Complete(usbAttempt3, origin.AddSeconds(10), clientConnected:false, retryable:true);
+Check(usbRecovery.Failures == UsbSessionRecoveryGate.MaximumAttempts
+    && usbRecovery.TryBegin(origin.AddSeconds(30), true, false) is null,
+    "one disconnect episode stops permanently after three attempts and therefore at most three launches");
+Check(deadlineBeforeUsbRecovery == origin.AddSeconds(45)
+    && usbDeadline.Evaluate(origin.AddSeconds(30), null, false, available).DeadlineUtc == deadlineBeforeUsbRecovery,
+    "USB recovery scheduling cannot renew or manufacture presentation progress");
+
+usbRecovery.ObserveConnected();
+usbRecovery.ObserveConnected();
+var priorEpisodeAttempt = usbRecovery.TryBegin(origin.AddSeconds(31), true, false)!.Value;
+Check(priorEpisodeAttempt.Number == 1 && usbRecovery.TryReserveLaunch(priorEpisodeAttempt),
+    "an authenticated reconnection ends the old episode and gives a later episode fresh bounded state");
+usbRecovery.ObserveConnected();
+usbRecovery.ObserveConnected();
+usbRecovery.Complete(priorEpisodeAttempt, origin.AddSeconds(32), clientConnected:false, retryable:true);
+Check(usbRecovery.Armed && usbRecovery.Failures == 0 && !usbRecovery.InFlight,
+    "the healthy transition invalidates an in-flight episode and later healthy ticks remain no-ops");
+var unsafeAttempt = usbRecovery.TryBegin(origin.AddSeconds(33), true, false)!.Value;
+Check(usbRecovery.TryReserveLaunch(unsafeAttempt),
+    "a genuinely new disconnect episode owns a new single launch reservation");
+usbRecovery.Complete(priorEpisodeAttempt, origin.AddSeconds(34), clientConnected:false, retryable:true);
+Check(usbRecovery.InFlight,
+    "a completion from the prior episode cannot finish a current attempt");
+usbRecovery.Complete(unsafeAttempt, origin.AddSeconds(34), clientConnected:false, retryable:false);
+Check(usbRecovery.Disabled && usbRecovery.TryBegin(origin.AddSeconds(40), true, false) is null,
+    "identity, policy or mapping conflicts disable all remaining mutation in that episode");
+
+var staleGate = new UsbSessionRecoveryGate();
+staleGate.ObserveConnected();
+var staleAttempt = staleGate.TryBegin(origin.AddSeconds(1), true, false)!.Value;
+staleGate.Reset();
+Check(!staleGate.TryReserveLaunch(staleAttempt),
+    "Reset rejects launch reservations carried by an old session");
+staleGate.Complete(staleAttempt, origin.AddSeconds(2), false, true);
+Check(!staleGate.Armed && staleGate.Failures == 0 && !staleGate.InFlight,
+    "Reset makes every old completion inert until a new authenticated connection arms the gate");
 using (var first = new Scenario("FAKE-A"))
 using (var second = new Scenario("FAKE-B"))
 {
@@ -233,6 +460,7 @@ sealed class Scenario : IDisposable
     public Func<Scenario, SessionGuard.OwnerLiveness> Owner { get; set; } = _ => SessionGuard.OwnerLiveness.VerifiedRunning;
     public Func<Scenario, bool> DetachSucceeds { get; set; } = _ => true;
     public Action<Scenario>? AfterTick { get; set; }
+    public Func<Task>? AfterOwnerExitDetach { get; set; }
     public List<int> DetachTimes { get; } = [];
     public List<Guid> DetachLeaseIds { get; } = [];
     public Scenario(string deviceName = @"\\.\FAKE-TABLINK-ONLY")
@@ -250,6 +478,33 @@ sealed class Scenario : IDisposable
         State = state;
         File.WriteAllText(Path, JsonSerializer.Serialize(state));
     }
+    public void PublishReverse(UsbReverseLease receipt)
+    {
+        WriteState(State with { ReverseLease = receipt });
+        File.WriteAllText(BootstrapPath, JsonSerializer.Serialize(State));
+    }
+    public void PublishLegacyReverseWithoutEndpoint(UsbReverseLease receipt)
+    {
+        State = State with { ReverseLease = receipt };
+        var legacy = JsonNode.Parse(JsonSerializer.Serialize(State))!.AsObject();
+        var oldReceipt = legacy["ReverseLeaseV2"]!.DeepClone().AsObject();
+        oldReceipt.Remove("Endpoint");
+        oldReceipt.Remove("SchemaVersion");
+        legacy.Remove("ReverseLeaseV2");
+        legacy["ReverseLease"] = oldReceipt;
+        var json = legacy.ToJsonString();
+        File.WriteAllText(Path, json);
+        File.WriteAllText(BootstrapPath, json);
+    }
+    public SessionGuard.WatchState ReadState() =>
+        JsonSerializer.Deserialize<SessionGuard.WatchState>(File.ReadAllText(Path))!;
+    public SessionGuard.WatchState ReadBootstrapState() =>
+        JsonSerializer.Deserialize<SessionGuard.WatchState>(File.ReadAllText(BootstrapPath))!;
+    public string ReadRawState() => File.ReadAllText(Path);
+    public Guid ReadMarker() => JsonSerializer.Deserialize<Guid>(File.ReadAllText(Path + ".lease-id"));
+    public void CorruptBootstrap() => File.WriteAllText(BootstrapPath, "{broken-json");
+    public void RestoreBootstrap() => File.WriteAllText(BootstrapPath, JsonSerializer.Serialize(State));
+    string BootstrapPath => Path + "." + Lease.LeaseId.ToString("N") + ".initial.json";
     public Task<int> Run()
     {
         VirtualDisplayManager.OnDetach = lease =>
@@ -264,10 +519,13 @@ sealed class Scenario : IDisposable
             if (Seconds > 180) throw new Exception("Watcher failed to reach a bounded test outcome");
             AfterTick?.Invoke(this);
             return Task.CompletedTask;
-        }));
+        }, AfterOwnerExitDetach));
     }
     public void Dispose() => Directory.Delete(directory, true);
 }
+
+sealed record LegacyWatchState(DisplayLease Lease, int OwnerPid, long OwnerStartUtcTicks,
+    DateTime DeadlineUtc, JsonElement? ReverseLease = null, bool StopRequested = false);
 
 sealed class FakeDriverOwnerProcess(int id, long startTicks) : DriverOwnerWatchdog.IDriverOwnerProcess
 {

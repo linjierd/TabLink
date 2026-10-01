@@ -9,5 +9,6 @@
   <ItemGroup>
     <ProjectReference Include="../../src/TabLink.Core/TabLink.Core.csproj" />
     <Compile Include="../../src/TabLink.Windows/DisplaySessionAllocator.cs" Link="DisplaySessionAllocator.cs" />
+    <Compile Include="../../src/TabLink.Windows/UsbSessionRecoveryGate.cs" Link="UsbSessionRecoveryGate.cs" />
   </ItemGroup>
 </Project>

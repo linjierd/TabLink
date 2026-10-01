@@ -7,10 +7,9 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="../../src/TabLink.Windows/SessionGuard.cs" Link="SessionGuard.cs" />
-    <Compile Include="../../src/TabLink.Windows/InputDesktopAvailability.cs" Link="InputDesktopAvailability.cs" />
-    <Compile Include="../../src/TabLink.Windows/SessionPresentationDeadline.cs" Link="SessionPresentationDeadline.cs" />
+    <ProjectReference Include="../../src/TabLink.Core/TabLink.Core.csproj" />
+    <Compile Include="../../src/TabLink.Windows/UsbSessionRecoveryAttemptRunner.cs" Link="UsbSessionRecoveryAttemptRunner.cs" />
     <Compile Include="../../src/TabLink.Windows/UsbSessionRecoveryGate.cs" Link="UsbSessionRecoveryGate.cs" />
-    <Compile Include="../../src/TabLink.Windows/DriverOwnerWatchdog.cs" Link="DriverOwnerWatchdog.cs" />
+    <Compile Include="../../src/TabLink.Windows/UsbSessionSetupBarrier.cs" Link="UsbSessionSetupBarrier.cs" />
   </ItemGroup>
 </Project>

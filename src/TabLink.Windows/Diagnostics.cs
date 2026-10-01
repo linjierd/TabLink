@@ -29,19 +29,20 @@ internal static class Diagnostics
         var tick=0;
         await using var server=new FrameServer(()=>images[(Interlocked.Increment(ref tick)/10)%2],null,()=>{},10);
         var reversed=false;
+        AdbReverseEndpoint? reverseEndpoint=null;
         var began=DateTimeOffset.Now;
         try
         {
             server.Start();
-            await adb.ReversePortAsync(approved,cancellationToken:timeout.Token);reversed=true;
-            await adb.LaunchAsync(approved,server.Token,cancellationToken:timeout.Token);
+            reverseEndpoint=await adb.ReserveRandomReverseEndpointAsync(approved,timeout.Token);reversed=true;
+            await adb.LaunchAsync(approved,server.Token,reverseEndpoint.Value,timeout.Token);
             await Task.Delay(TimeSpan.FromSeconds(seconds),timeout.Token);
             var passed=server.PresentedFrames>=Math.Max(5,seconds*3)&&server.LastPresentedUtc>DateTime.UtcNow.AddSeconds(-5);
             var saved=Save("usb-smoke-result.json",()=>new{passed,began,ended=DateTimeOffset.Now,serial,server.FramesSent,server.PresentedFrames,server.PresentedWidth,server.PresentedHeight,server.LastPresentedUtc,desktopCaptured=false,virtualDisplayChanged=false});
             return passed&&saved?0:1;
         }
         catch(Exception e){Save("usb-smoke-result.json",()=>new{passed=false,serial,error=e.Message,began});throw;}
-        finally{if(reversed){try{using var cleanup=new CancellationTokenSource(TimeSpan.FromSeconds(8));await adb.RemoveReverseAsync(approved,cancellationToken:cleanup.Token);}catch(Exception e){Save("usb-smoke-cleanup.json",()=>new{error=e.Message});}}}
+        finally{if(reversed&&reverseEndpoint is { } endpoint){try{using var cleanup=new CancellationTokenSource(TimeSpan.FromSeconds(8));var mapping=await adb.InspectReversePortAsync(approved,endpoint,cleanup.Token);if(mapping.Status==AdbReversePortStatus.Existing)await adb.RemoveReverseAsync(approved,endpoint,cleanup.Token);else Save("usb-smoke-cleanup.json",()=>new{error="本次诊断的 USB 端点映射已经变化，未修改它。"});}catch(Exception e){Save("usb-smoke-cleanup.json",()=>new{error=e.Message});}}}
     }
 
     static byte[] CreateTestFrame(bool alternate)

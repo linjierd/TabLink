@@ -17,12 +17,26 @@ static class VirtualDisplayManager
     internal static DisplayLease ReuseRememberedPosition(DisplayLease fresh, DisplayLease remembered) => fresh;
     internal static string GetTargetStorageKey(DisplayLease lease) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(lease.DeviceName)));
 }
-internal sealed record UsbReverseLease(Guid Id, int OwnerPid, long OwnerStartUtcTicks)
+internal readonly record struct AdbReverseEndpoint(int DevicePort)
 {
-    internal static Task<object> CleanupAfterOwnerExitAsync(UsbReverseLease receipt, CancellationToken cancellationToken) =>
-        throw new Exception("Tests must not use ADB");
+    internal bool IsValid => DevicePort is >= 49152 and <= 65535;
+}
+internal sealed record UsbReverseLease(Guid Id, int OwnerPid, long OwnerStartUtcTicks,
+    AdbReverseEndpoint Endpoint, int SchemaVersion = 2)
+{
+    internal const int CurrentSchemaVersion = 2;
+    internal static Func<UsbReverseLease,CancellationToken,Task<UsbReverseCleanupResult>> OnCleanup =
+        (_,_) => throw new Exception("Tests must not use ADB");
+    internal static Task<UsbReverseCleanupResult> CleanupAfterOwnerExitAsync(UsbReverseLease receipt, CancellationToken cancellationToken) =>
+        OnCleanup(receipt,cancellationToken);
+}
+internal enum UsbReverseCleanupStatus { Removed, AlreadyAbsent, DeviceUnavailable, MappingChanged, Failed }
+internal sealed record UsbReverseCleanupResult(UsbReverseCleanupStatus Status, string Message)
+{
+    internal bool Complete => Status is UsbReverseCleanupStatus.Removed or UsbReverseCleanupStatus.AlreadyAbsent;
 }
 static class Diagnostics
 {
-    public static void Save(string name, object value) { }
+    internal static Action<string, object>? OnSave;
+    public static void Save(string name, object value) => OnSave?.Invoke(name, value);
 }

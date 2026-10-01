@@ -221,6 +221,47 @@ await Run("first connection prepares one driver before display discovery and dis
     Check(driver.Events.SequenceEqual(["ensure", "remove"]), "driver lifecycle order is prepare then remove");
 });
 
+await Run("terminal USB recovery failure precisely releases the sole display and driver", async () =>
+{
+    var driver = new FakeSingleDisplayDriverController();
+    var managed = new DisplaySessionAllocator(driver);
+    var reservation = await managed.AcquireAsync(Guid.NewGuid(), profile);
+    var gate = new UsbSessionRecoveryGate();
+    var now = DateTime.UtcNow;
+    gate.ObserveConnected();
+    var attempt = gate.TryBegin(now, sessionActive: true, clientConnected: false)!.Value;
+    gate.Complete(attempt, now.AddMilliseconds(1), clientConnected: false, retryable: false);
+    Check(gate.RequiresSessionStop, "terminal USB ownership or policy failure requires immediate session stop");
+    if(gate.RequiresSessionStop) await reservation.DisposeAsync();
+    Check(driver.EnsureCalls == 1 && driver.RemoveCalls == 1 && !driver.DevicePresent,
+        "terminal recovery failure removes exactly the one driver prepared by this reservation");
+    Check(reservation.Guard.DisposeCalls == 1 && VirtualDisplayManager.Active.Count == 0,
+        "terminal recovery failure disposes the exact display guard once");
+    await reservation.DisposeAsync();
+    Check(driver.RemoveCalls == 1 && reservation.Guard.DisposeCalls == 1,
+        "a repeated stop cannot remove the driver or display twice");
+});
+
+await Run("exhausted USB retries precisely release the same sole display", async () =>
+{
+    var driver = new FakeSingleDisplayDriverController();
+    var managed = new DisplaySessionAllocator(driver);
+    var reservation = await managed.AcquireAsync(Guid.NewGuid(), profile);
+    var gate = new UsbSessionRecoveryGate();
+    var now = DateTime.UtcNow;
+    gate.ObserveConnected();
+    foreach(var offset in new[]{0,2,6})
+    {
+        var attempt=gate.TryBegin(now.AddSeconds(offset),true,false)!.Value;
+        gate.Complete(attempt,now.AddSeconds(offset),clientConnected:false,retryable:true);
+    }
+    Check(gate.RequiresSessionStop && gate.Failures == UsbSessionRecoveryGate.MaximumAttempts,
+        "three retryable failures exhaust the fixed recovery episode");
+    if(gate.RequiresSessionStop)await reservation.DisposeAsync();
+    Check(driver.EnsureCalls == 1 && driver.RemoveCalls == 1 && reservation.Guard.DisposeCalls == 1,
+        "retry exhaustion cleans the original reservation without preparing a second display");
+});
+
 await Run("driver preparation refusal never discovers or activates a display", async () =>
 {
     var driver = new FakeSingleDisplayDriverController { FailEnsure = true };

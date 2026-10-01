@@ -41,7 +41,7 @@ internal sealed class FrameServer : IAsyncDisposable
     CancellationTokenSource? currentSession;
     long framesSent, bytesSent, presentedFrames, sessionFramesStarted;
     int presentedWidth, presentedHeight;
-    bool clientConnected;
+    bool clientConnected,hasAuthenticatedClient;
     bool capturePaused;
     DateTime? captureRecoveryStartedUtc;
     TabletDisplayProfile? clientDisplayProfile;
@@ -60,6 +60,7 @@ internal sealed class FrameServer : IAsyncDisposable
     public long FramesSent { get { lock (statisticsLock) return framesSent; } }
     public long BytesSent { get { lock (statisticsLock) return bytesSent; } }
     public bool ClientConnected { get { lock (statisticsLock) return clientConnected; } }
+    public bool HasAuthenticatedClient { get { lock (statisticsLock) return hasAuthenticatedClient; } }
     public DateTime? LastFrameUtc { get { lock (statisticsLock) return lastFrameUtc; } }
     public DateTime? LastPresentedUtc { get { lock (statisticsLock) return lastPresentedUtc; } }
     public DateTime? LastSubmittedUtc { get { lock(statisticsLock)return lastSubmittedUtc; } }
@@ -153,6 +154,7 @@ internal sealed class FrameServer : IAsyncDisposable
         lock (statisticsLock)
         {
             clientConnected = connected;
+            if(connected)hasAuthenticatedClient=true;
             capturePaused=false;captureRecoveryStartedUtc=null;
             // Rendering evidence is scoped to one authenticated connection. A
             // disconnected or newly reconnected client must never inherit it.

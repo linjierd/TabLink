@@ -8,6 +8,39 @@ static class GuardDisposalTests
     {
         using (var test = new DisposalScenario())
         {
+            var first = new UsbReverseLease(Guid.NewGuid(), Environment.ProcessId, test.OwnerStartTicks, new AdbReverseEndpoint(49155));
+            var second = new UsbReverseLease(Guid.NewGuid(), Environment.ProcessId, test.OwnerStartTicks, new AdbReverseEndpoint(49156));
+            test.Guard.AttachReverse(first);
+            check(test.ReadState().ReverseLease == first,
+                "the first created USB mapping publishes its exact crash-cleanup receipt");
+            test.Guard.ReplaceReverse(first, null);
+            check(test.ReadState().ReverseLease is null,
+                "a missing or uncertain mapping retires its old cleanup authority before repair");
+            test.Guard.ReplaceReverse(null, second);
+            check(test.ReadState().ReverseLease == second,
+                "a successfully recreated mapping publishes a fresh cleanup receipt");
+            check(Throws<IOException>(() => test.Guard.ReplaceReverse(first, null)),
+                "a stale recovery completion cannot replace the current USB receipt");
+            test.Guard.Dispose();
+        }
+
+        using (var test = new DisposalScenario())
+        {
+            var receipt = new UsbReverseLease(Guid.NewGuid(), Environment.ProcessId, test.OwnerStartTicks, new AdbReverseEndpoint(49157));
+            test.Guard.AttachReverse(receipt);
+            var trustedBootstrap = File.ReadAllText(test.BootstrapPath);
+            var valid = test.ReadState();
+            File.WriteAllText(test.Path, JsonSerializer.Serialize(valid with { OwnerPid = valid.OwnerPid + 1 }));
+            check(Throws<IOException>(() => test.Guard.ReplaceReverse(receipt, null)),
+                "a well-formed renewable file with changed owner identity cannot update USB cleanup authority");
+            check(File.ReadAllText(test.BootstrapPath) == trustedBootstrap,
+                "rejected renewable identity cannot be promoted into the immutable crash-cleanup proof");
+            File.WriteAllText(test.Path, JsonSerializer.Serialize(valid));
+            test.Guard.Dispose();
+        }
+
+        using (var test = new DisposalScenario())
+        {
             test.Detach = _ => new(false, false, "temporary native rejection");
             check(Throws<IOException>(test.Guard.Dispose), "failed UI detach is reported instead of marking cleanup complete");
             check(test.Marker == test.Lease.LeaseId && test.ReadState().StopRequested,
@@ -15,7 +48,8 @@ static class GuardDisposalTests
             var stoppedState = File.ReadAllText(test.Path);
             test.Guard.Renew(DateTime.UtcNow.AddSeconds(20));
             check(File.ReadAllText(test.Path) == stoppedState, "stopped guard cannot renew a pending cleanup lease");
-            check(Throws<IOException>(() => test.Guard.AttachReverse(new(Guid.NewGuid(), Environment.ProcessId, test.OwnerStartTicks))),
+            check(Throws<IOException>(() => test.Guard.AttachReverse(new(Guid.NewGuid(), Environment.ProcessId,
+                test.OwnerStartTicks, new AdbReverseEndpoint(49158)))),
                 "stopped guard cannot register another USB reverse receipt while cleanup is pending");
             check(Throws<IOException>(() => test.Guard.RefreshRememberedLayout()), "stopped guard cannot continue recording session layout");
             test.Detach = _ => new(true, true, "retry succeeded");
@@ -64,7 +98,8 @@ static class GuardDisposalTests
                 var state = File.ReadAllText(test.Path);
                 test.Guard.Renew(DateTime.UtcNow.AddSeconds(20));
                 check(File.ReadAllText(test.Path) == state, $"{failure} marker failure still prevents stopped guard renewal");
-                check(Throws<IOException>(() => test.Guard.AttachReverse(new(Guid.NewGuid(), Environment.ProcessId, test.OwnerStartTicks))),
+                check(Throws<IOException>(() => test.Guard.AttachReverse(new(Guid.NewGuid(), Environment.ProcessId,
+                    test.OwnerStartTicks, new AdbReverseEndpoint(49159)))),
                     $"{failure} marker failure still prevents USB receipt registration");
             }
             finally { markerLock?.Dispose(); }
@@ -114,6 +149,7 @@ static class GuardDisposalTests
         readonly string directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "TabLink-GuardDisposal-" + Guid.NewGuid().ToString("N"));
         internal string Path { get; }
         internal string MarkerPath => Path + ".lease-id";
+        internal string BootstrapPath => Path + "." + Lease.LeaseId.ToString("N") + ".initial.json";
         internal DisplayLease Lease { get; } = new(Guid.NewGuid(), @"\\.\FAKE-GUARD-DISPOSAL-ONLY");
         internal long OwnerStartTicks { get; }
         internal SessionGuard Guard { get; }

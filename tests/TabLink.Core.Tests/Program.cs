@@ -12,6 +12,7 @@ if (args.FirstOrDefault() == "--test-process")
 int passed = 0;
 var failures = new List<string>();
 var good = new AdbDevice("TEST-TABLET-SERIAL-0001", "device", "Test_Tablet");
+var endpoint = new AdbReverseEndpoint(54321);
 IReadOnlyList<UsbDeviceIdentity> inventory = [new("TEST-TABLET-SERIAL-0001", "18D1", "4EE7")];
 string temporary = Path.Combine(Path.GetTempPath(), "TabLink-Core-Tests-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(temporary);
@@ -101,14 +102,140 @@ try
         var policy = new DevicePolicy(new());
         var client = Client(policy, runner);
         var approved = await client.ApproveAsync(good);
-        await client.ReversePortAsync(approved);
-        await client.LaunchAsync(approved, "0123456789abcdef0123456789abcdef");
-        await client.RemoveReverseAsync(approved);
+        await client.ReversePortAsync(approved, endpoint);
+        await client.LaunchAsync(approved, "0123456789abcdef0123456789abcdef", endpoint);
+        await client.RemoveReverseAsync(approved, endpoint);
         var targets = runner.Calls.Where(x => x[0] != "devices").ToArray();
         Assert(targets.Length == 3 && targets.All(x => x[0] == "-s" && x[1] == "TEST-TABLET-SERIAL-0001"));
-        Assert(targets[0].SequenceEqual(new[] { "-s", "TEST-TABLET-SERIAL-0001", "reverse", "--no-rebind", "tcp:27183", "tcp:27183" }));
-        Assert(targets[2].SequenceEqual(new[] { "-s", "TEST-TABLET-SERIAL-0001", "reverse", "--remove", "tcp:27183" }));
+        Assert(targets[0].SequenceEqual(new[] { "-s", "TEST-TABLET-SERIAL-0001", "reverse", "--no-rebind", "tcp:54321", "tcp:27183" }));
+        Assert(targets[1].Last() == "54321");
+        Assert(targets[2].SequenceEqual(new[] { "-s", "TEST-TABLET-SERIAL-0001", "reverse", "--remove", "tcp:54321" }));
         Assert(!runner.Calls.SelectMany(x => x).Any(x => x is "kill-server" or "tcpip" or "--remove-all"));
+    });
+    await Test("Per-session endpoints use the cryptographic ephemeral range", () =>
+    {
+        var generated = Enumerable.Range(0, 128).Select(_ => AdbReverseEndpoint.CreateRandom()).ToArray();
+        Assert(generated.All(value => value.IsValid && value.DevicePort is >= 49152 and <= 65535));
+        Assert(generated.Select(value => value.DevicePort).Distinct().Count() > 100);
+        Assert(!default(AdbReverseEndpoint).IsValid);
+    });
+    await TestAsync("Random endpoint reservation skips occupied candidates without takeover", async () =>
+    {
+        var policy = new DevicePolicy(new());
+        var runner = new FakeRunner();
+        var candidates = new[] { new AdbReverseEndpoint(50001), new AdbReverseEndpoint(50002), new AdbReverseEndpoint(50003) };
+        var issued = 0;
+        AdbReverseEndpoint current = default;
+        AdbReverseEndpoint Next() => current = candidates[issued++];
+        runner.TargetHandler = command => command.Contains("--list")
+            ? new(0, issued switch
+            {
+                1 => $"UsbFfs tcp:{current.DevicePort} tcp:27183\n",
+                2 => $"UsbFfs tcp:{current.DevicePort} tcp:30000\n",
+                _ => ""
+            }, "")
+            : new(0, "", "");
+        var reserved = await Client(policy, runner).ReserveRandomReverseEndpointAsync(
+            policy.Approve(good, inventory), Next);
+        var targets = runner.Calls.Where(call => call[0] != "devices").ToArray();
+        Assert(reserved == candidates[2] && issued == 3);
+        Assert(targets.Count(call => call.Contains("--list")) == 3);
+        Assert(targets.Count(call => call.Contains("--no-rebind")) == 1);
+        Assert(targets.Last().SequenceEqual(new[] { "-s", good.Serial, "reverse", "--no-rebind", "tcp:50003", "tcp:27183" }));
+        Assert(!targets.Any(call => call.Contains("--remove")));
+    });
+    await TestAsync("Random endpoint reservation is bounded when every candidate is occupied", async () =>
+    {
+        var policy = new DevicePolicy(new());
+        var runner = new FakeRunner();
+        var nextPort = 51000;
+        AdbReverseEndpoint current = default;
+        AdbReverseEndpoint Next() => current = new(++nextPort);
+        runner.TargetHandler = command => command.Contains("--list")
+            ? new(0, $"UsbFfs tcp:{current.DevicePort} tcp:27183\n", "")
+            : throw new Exception("Occupied candidates must never be mutated.");
+        await ThrowsAsync<IOException>(() => Client(policy, runner).ReserveRandomReverseEndpointAsync(
+            policy.Approve(good, inventory), Next));
+        var targets = runner.Calls.Where(call => call[0] != "devices").ToArray();
+        Assert(targets.Length == AdbClient.MaximumEndpointReservationAttempts);
+        Assert(targets.All(call => call.Contains("--list")) && !targets.Any(call => call.Contains("--no-rebind") || call.Contains("--remove")));
+    });
+    await TestAsync("Missing TabLink reverse mapping is recreated without global adb mutation", async () =>
+    {
+        var policy = new DevicePolicy(new());
+        var runner = new FakeRunner { TargetHandler = command => command.Contains("--list")
+            ? new(0, "OtherTransport tcp:12345 tcp:12345\n", "") : new(0, "", "") };
+        var result = await Client(policy, runner).EnsureReversePortAsync(policy.Approve(good, inventory), endpoint);
+        var targets = runner.Calls.Where(call => call[0] != "devices").ToArray();
+        Assert(result.Status == AdbReversePortStatus.Created && targets.Length == 2);
+        Assert(targets[0].SequenceEqual(new[] { "-s", good.Serial, "reverse", "--list" }));
+        Assert(targets[1].SequenceEqual(new[] { "-s", good.Serial, "reverse", "--no-rebind", "tcp:54321", "tcp:27183" }));
+        Assert(!runner.Calls.SelectMany(call => call).Any(value => value is "kill-server" or "start-server" or "--remove-all" or "tcpip"));
+    });
+    await TestAsync("Existing exact reverse mapping is reused without rebinding", async () =>
+    {
+        var policy = new DevicePolicy(new());
+        var runner = new FakeRunner { TargetStandardOutput = "UsbFfs tcp:54321 tcp:27183\n" };
+        var result = await Client(policy, runner).EnsureReversePortAsync(policy.Approve(good, inventory), endpoint);
+        Assert(result.Status == AdbReversePortStatus.Existing);
+        Assert(runner.Calls.Count(call => call.Contains("--list")) == 1 && !runner.Calls.Any(call => call.Contains("--no-rebind")));
+    });
+    await TestAsync("Conflicting or malformed reverse tables fail closed without replacement", async () =>
+    {
+        var policy = new DevicePolicy(new());
+        var conflict = new FakeRunner { TargetStandardOutput = "UsbFfs tcp:54321 tcp:30000\n" };
+        var result = await Client(policy, conflict).EnsureReversePortAsync(policy.Approve(good, inventory), endpoint);
+        Assert(result.Status == AdbReversePortStatus.Conflicting && !conflict.Calls.Any(call => call.Contains("--no-rebind")));
+        var malformed = new FakeRunner { TargetStandardOutput = "unexpected reverse output\n" };
+        await ThrowsAsync<InvalidDataException>(() => Client(policy, malformed).EnsureReversePortAsync(policy.Approve(good, inventory), endpoint));
+        Assert(!malformed.Calls.Any(call => call.Contains("--no-rebind")));
+    });
+    await TestAsync("Recovery revalidates approval again before recreating the mapping", async () =>
+    {
+        var policy = new DevicePolicy(new());
+        var runner = new FakeRunner();
+        runner.TargetHandler = command =>
+        {
+            if(command.Contains("--list")){runner.DeviceState="offline";return new(0,"","");}
+            return new(0,"","");
+        };
+        await ThrowsAsync<DevicePolicyException>(() => Client(policy, runner).EnsureReversePortAsync(policy.Approve(good, inventory), endpoint));
+        Assert(runner.Calls.Count(call => call.Contains("--list")) == 1
+            && !runner.Calls.Any(call => call.Contains("--no-rebind")));
+    });
+    await TestAsync("ADB absence and offline state are typed as retryable without mutation", async () =>
+    {
+        var policy = new DevicePolicy(new());
+        foreach (var runner in new[]
+        {
+            new FakeRunner { DevicesStandardOutput = "List of devices attached\n" },
+            new FakeRunner { DeviceState = "offline" }
+        })
+        {
+            await ThrowsAsync<AdbDeviceTemporarilyUnavailableException>(() =>
+                Client(policy, runner).InspectReversePortAsync(policy.Approve(good, inventory), endpoint));
+            Assert(runner.Calls.All(call => call[0] == "devices"));
+        }
+    });
+    await TestAsync("Unauthorized and duplicate ADB identities remain terminal policy failures", async () =>
+    {
+        var policy = new DevicePolicy(new());
+        foreach (var runner in new[]
+        {
+            new FakeRunner { DeviceState = "unauthorized" },
+            new FakeRunner { DevicesStandardOutput = "List of devices attached\nTEST-TABLET-SERIAL-0001 device\nTEST-TABLET-SERIAL-0001 device\n" }
+        })
+        {
+            try
+            {
+                await Client(policy, runner).InspectReversePortAsync(policy.Approve(good, inventory), endpoint);
+                throw new Exception("Expected terminal DevicePolicyException");
+            }
+            catch (AdbDeviceTemporarilyUnavailableException)
+            { throw new Exception("Terminal identity failure was misclassified as retryable"); }
+            catch (DevicePolicyException) { }
+            Assert(runner.Calls.All(call => call[0] == "devices"));
+        }
     });
     await TestAsync("Disconnect and hardware change revoke target execution", async () =>
     {
@@ -116,10 +243,10 @@ try
         var runner = new FakeRunner();
         var approved = policy.Approve(good, inventory);
         var client = new AdbClient("fake-adb", policy, _ => Task.FromResult<IReadOnlyList<UsbDeviceIdentity>>([]), runner);
-        await ThrowsAsync<DevicePolicyException>(() => client.ReversePortAsync(approved));
+        await ThrowsAsync<DevicePolicyException>(() => client.ReversePortAsync(approved, endpoint));
         Assert(runner.Calls.All(x => x[0] == "devices"));
         var changed = new AdbClient("fake-adb", policy, _ => Task.FromResult<IReadOnlyList<UsbDeviceIdentity>>([new("TEST-TABLET-SERIAL-0001", "18D1", "2D00")]), runner);
-        await ThrowsAsync<DevicePolicyException>(() => changed.ReversePortAsync(approved));
+        await ThrowsAsync<DevicePolicyException>(() => changed.ReversePortAsync(approved, endpoint));
     });
     await TestAsync("Policy changes and approvals from another policy are rejected", async () =>
     {
@@ -128,8 +255,8 @@ try
         var approved = policy.Approve(good, inventory);
         var runner = new FakeRunner();
         settings.ExcludedDevices.Add(new() { Serial = "OTHER", Label = "new rule" });
-        await ThrowsAsync<DevicePolicyException>(() => Client(policy, runner).ReversePortAsync(approved));
-        await ThrowsAsync<DevicePolicyException>(() => Client(new DevicePolicy(new()), runner).ReversePortAsync(approved));
+        await ThrowsAsync<DevicePolicyException>(() => Client(policy, runner).ReversePortAsync(approved, endpoint));
+        await ThrowsAsync<DevicePolicyException>(() => Client(new DevicePolicy(new()), runner).ReversePortAsync(approved, endpoint));
         Assert(runner.Calls.All(x => x[0] == "devices"));
     });
     await TestAsync("Injection strings and non-TabLink ports are rejected", async () =>
@@ -139,8 +266,8 @@ try
         var runner = new FakeRunner();
         var client = Client(policy, runner);
         var approved = policy.Approve(good, inventory);
-        await ThrowsAsync<ArgumentException>(() => client.LaunchAsync(approved, "validtoken1234567;reboot"));
-        await ThrowsAsync<ArgumentOutOfRangeException>(() => client.ReversePortAsync(approved, 5555));
+        await ThrowsAsync<ArgumentException>(() => client.LaunchAsync(approved, "validtoken1234567;reboot", endpoint));
+        Throws<ArgumentOutOfRangeException>(() => _ = new AdbReverseEndpoint(5555));
         Assert(runner.Calls.Count == 0);
     });
     await TestAsync("APK path is one literal argument including spaces and metacharacters", async () =>
@@ -173,7 +300,7 @@ try
     {
         var policy = new DevicePolicy(new());
         var runner = new FakeRunner { TargetExitCode = 1 };
-        await ThrowsAsync<AdbCommandException>(() => Client(policy, runner).ReversePortAsync(policy.Approve(good, inventory)));
+        await ThrowsAsync<AdbCommandException>(() => Client(policy, runner).ReversePortAsync(policy.Approve(good, inventory), endpoint));
         Assert(runner.Calls.Count == 2);
     });
     await TestAsync("Android launch errors fail even when adb returns exit zero", async () =>
@@ -183,7 +310,7 @@ try
         {
             var policy = new DevicePolicy(new());
             var runner = new FakeRunner { TargetStandardOutput = error };
-            await ThrowsAsync<AdbCommandException>(() => Client(policy, runner).LaunchAsync(policy.Approve(good, inventory), "0123456789abcdef"));
+            await ThrowsAsync<AdbCommandException>(() => Client(policy, runner).LaunchAsync(policy.Approve(good, inventory), "0123456789abcdef", endpoint));
             Assert(runner.Calls.Count == 2);
         }
     });
@@ -191,13 +318,13 @@ try
     {
         var policy = new DevicePolicy(new());
         var runner = new FakeRunner { TargetStandardError = "Exception occurred while executing 'start':" };
-        await ThrowsAsync<AdbCommandException>(() => Client(policy, runner).LaunchAsync(policy.Approve(good, inventory), "0123456789abcdef"));
+        await ThrowsAsync<AdbCommandException>(() => Client(policy, runner).LaunchAsync(policy.Approve(good, inventory), "0123456789abcdef", endpoint));
     });
     await TestAsync("Existing reverse mapping is neither replaced nor automatically removed", async () =>
     {
         var policy = new DevicePolicy(new());
         var runner = new FakeRunner { TargetExitCode = 1, TargetStandardError = "error: cannot rebind existing socket" };
-        try { await Client(policy, runner).ReversePortAsync(policy.Approve(good, inventory)); throw new Exception("Expected reservation failure."); }
+        try { await Client(policy, runner).ReversePortAsync(policy.Approve(good, inventory), endpoint); throw new Exception("Expected reservation failure."); }
         catch (AdbCommandException ex) { Assert(ex.Message.Contains("explicitly remove", StringComparison.Ordinal)); }
         Assert(runner.Calls.Count == 2 && runner.Calls.Last().Contains("--no-rebind"));
         Assert(!runner.Calls.SelectMany(x => x).Any(x => x is "--remove" or "--remove-all"));
@@ -208,7 +335,7 @@ try
         {
             var policy = new DevicePolicy(new());
             var runner = new FakeRunner { DeviceState = state };
-            await ThrowsAsync<DevicePolicyException>(() => Client(policy, runner).ReversePortAsync(policy.Approve(good, inventory)));
+            await ThrowsAsync<DevicePolicyException>(() => Client(policy, runner).ReversePortAsync(policy.Approve(good, inventory), endpoint));
             Assert(runner.Calls.Count == 1 && runner.Calls[0][0] == "devices");
         }
     });
@@ -335,6 +462,7 @@ sealed class FakeRunner : IAdbProcessRunner
     public List<string[]> Calls { get; } = [];
     public int TargetExitCode { get; set; }
     public string DeviceState { get; set; } = "device";
+    public string? DevicesStandardOutput { get; set; }
     public string TargetStandardOutput { get; set; } = "";
     public string TargetStandardError { get; set; } = "";
     public Func<string[], AdbCommandResult>? TargetHandler { get; set; }
@@ -343,7 +471,7 @@ sealed class FakeRunner : IAdbProcessRunner
         cancellationToken.ThrowIfCancellationRequested();
         Calls.Add(arguments.ToArray());
         return Task.FromResult(arguments[0] == "devices"
-            ? new AdbCommandResult(0, $"List of devices attached\nTEST-TABLET-SERIAL-0001 {DeviceState} model:Test_Tablet transport_id:1\n", "")
+            ? new AdbCommandResult(0, DevicesStandardOutput ?? $"List of devices attached\nTEST-TABLET-SERIAL-0001 {DeviceState} model:Test_Tablet transport_id:1\n", "")
             : TargetHandler?.Invoke(arguments.ToArray()) ?? new AdbCommandResult(TargetExitCode, TargetStandardOutput, TargetStandardError));
     }
 }

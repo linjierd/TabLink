@@ -258,6 +258,9 @@ internal sealed partial class MainForm
             try
             {
                 current.Reservation.Guard.Renew(evaluation.DeadlineUtc);
+                // Cross-process renewal can block; enforce against a fresh
+                // post-renew clock just like the USB and native paths.
+                now=DateTime.UtcNow;
                 if(now>evaluation.DeadlineUtc){Log("浏览器超过首帧或后续呈现期限，停止该设备。");await host.StopSessionAsync(item.Key);}
             }
             catch(ObjectDisposedException){}

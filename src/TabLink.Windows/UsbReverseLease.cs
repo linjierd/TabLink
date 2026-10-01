@@ -6,14 +6,17 @@ namespace TabLink.Windows;
 // A receipt, never an instruction to reserve or replace a port. Create this only
 // after AdbClient.ReversePortAsync completed successfully for the selected USB.
 internal sealed record UsbReverseLease(Guid Id, string Serial, string Vid, string Pid,
-    int OwnerPid, long OwnerStartUtcTicks)
+    AdbReverseEndpoint Endpoint, int OwnerPid, long OwnerStartUtcTicks, int SchemaVersion)
 {
-    internal static UsbReverseLease Created(ApprovedUsbDevice approved)
+    internal const int CurrentSchemaVersion = 2;
+
+    internal static UsbReverseLease Created(ApprovedUsbDevice approved, AdbReverseEndpoint endpoint)
     {
         ArgumentNullException.ThrowIfNull(approved);
+        if (!endpoint.IsValid) throw new ArgumentException("USB 通道端点无效。", nameof(endpoint));
         using var owner = Process.GetCurrentProcess();
         return new(Guid.NewGuid(), approved.Serial, approved.UsbIdentity.Vid, approved.UsbIdentity.Pid,
-            owner.Id, owner.StartTime.ToUniversalTime().Ticks);
+            endpoint, owner.Id, owner.StartTime.ToUniversalTime().Ticks, CurrentSchemaVersion);
     }
 
     // Caller MUST retain the session ownership lock from checking the receipt
@@ -46,8 +49,11 @@ internal sealed record UsbReverseLease(Guid Id, string Serial, string Vid, strin
         IAdbProcessRunner runner, Func<int, long, bool> ownerIsRunning,
         CancellationToken cancellationToken = default)
     {
-        if (lease.Id == Guid.Empty || lease.OwnerPid <= 0 || lease.OwnerStartUtcTicks <= 0)
+        if (lease.SchemaVersion != CurrentSchemaVersion || lease.Id == Guid.Empty ||
+            lease.OwnerPid <= 0 || lease.OwnerStartUtcTicks <= 0)
             return new(UsbReverseCleanupStatus.Failed, "USB 通道所有权记录无效。");
+        if (!lease.Endpoint.IsValid)
+            return new(UsbReverseCleanupStatus.Failed, "USB 通道端点记录无效。");
         if (ownerIsRunning(lease.OwnerPid, lease.OwnerStartUtcTicks))
             return new(UsbReverseCleanupStatus.OwnerRunning, "原连接进程仍在运行，保留 USB 通道。");
         try
@@ -64,31 +70,22 @@ internal sealed record UsbReverseLease(Guid Id, string Serial, string Vid, strin
                 !string.Equals(lease.Pid, approved.UsbIdentity.Pid, StringComparison.OrdinalIgnoreCase))
                 return new(UsbReverseCleanupStatus.IdentityChanged, "USB 硬件身份变化，保留原通道。");
 
-            var listed = await runner.RunAsync(adbPath, ["-s", approved.Serial, "reverse", "--list"],
-                TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
-            if (listed.ExitCode != 0)
-                return new(UsbReverseCleanupStatus.Failed, "无法读取原平板的 USB 通道映射。");
-            var lines = listed.StandardOutput.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
-                .Select(line => line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)).ToArray();
-            // adb reverse --list emits: transport-name device-endpoint host-endpoint.
-            // Reject unknown formats rather than inferring ownership from a substring.
-            if (lines.Any(parts => parts.Length != 3))
-                return new(UsbReverseCleanupStatus.Failed, "USB 通道列表格式无法确认，保留原映射。");
-            var owned = lines.Where(parts => parts[1] == "tcp:27183").ToArray();
-            if (owned.Length == 0)
+            var mapping = await adb.InspectReversePortAsync(approved, lease.Endpoint, cancellationToken)
+                .ConfigureAwait(false);
+            if (mapping.Status == AdbReversePortStatus.Missing)
                 return new(UsbReverseCleanupStatus.AlreadyAbsent, "原 USB 通道已经移除。");
-            if (owned.Length != 1 || owned[0][2] != "tcp:27183")
+            if (mapping.Status != AdbReversePortStatus.Existing)
                 return new(UsbReverseCleanupStatus.MappingChanged, "端口已指向其他映射，未修改它。");
             // PID reuse and owner-state changes remain fail-closed. TargetAsync
             // then rechecks fresh ADB, USB identity, and exclusions once again.
             if (ownerIsRunning(lease.OwnerPid, lease.OwnerStartUtcTicks))
                 return new(UsbReverseCleanupStatus.OwnerRunning, "原连接进程仍在运行，保留 USB 通道。");
-            await adb.RemoveReverseAsync(approved, cancellationToken: cancellationToken).ConfigureAwait(false);
+            await adb.RemoveReverseAsync(approved, lease.Endpoint, cancellationToken).ConfigureAwait(false);
             return new(UsbReverseCleanupStatus.Removed, "已清理本次连接创建的 USB 通道。");
         }
         catch (OperationCanceledException) { throw; }
         catch (DevicePolicyException ex) { return new(UsbReverseCleanupStatus.PolicyBlocked, ex.Message); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or TimeoutException)
+        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException or TimeoutException)
         { return new(UsbReverseCleanupStatus.Failed, ex.Message); }
     }
 

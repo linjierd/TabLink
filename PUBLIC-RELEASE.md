@@ -7,10 +7,16 @@ TabLink is created and maintained by **张林杰 (Jey)** (GitHub
 [@linjierd](https://github.com/linjierd)); the author's blog is
 [Linjie / 开发笔记](https://linjie.space/).
 
-- It includes the self-contained Windows x64 0.8.5 Preview 1 application,
+- It includes the self-contained Windows x64 0.8.6 Preview 1 application,
   updater, signed Virtual Display Driver, two separately licensed patched
   FFmpeg helper executables plus complete corresponding source, and the
-  Android 0.8.5 / versionCode 17 preview APK.
+  Android 0.8.6 / versionCode 18 preview APK.
+- The optional ADB USB compatibility path assigns a cryptographically random
+  device-side port to each session, while forwarding to the fixed loopback
+  frame server on the PC. A stopped ADB service or missing reverse mapping is
+  repaired only after the originally selected serial, Windows USB VID/PID and
+  current exclusion policy are checked again. It never issues `kill-server`,
+  `--remove-all`, `tcpip`, or a command against an implicit/default device.
 - The 0.8.5 media clock follows real monotonic elapsed time when capture is
   slower than the requested rate. Its patched DDA helper uses a nonblocking
   desktop query only after a valid cached frame exists with `dup_frames=1`;
@@ -59,7 +65,7 @@ TabLink is created and maintained by **张林杰 (Jey)** (GitHub
 The Windows public ZIP is self-contained for Windows x64 and does not require
 a separate .NET installation.
 
-The signed `stable` update channel remains at 0.8.0. Publishing 0.8.5 Preview
+The signed `stable` update channel remains at 0.8.0. Publishing 0.8.6 Preview
 1 assets on GitHub must not move the stable manifest or cause installed stable
 clients to update automatically.
 

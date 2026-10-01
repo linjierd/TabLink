@@ -117,8 +117,12 @@ internal sealed class NativeNetworkSession : IAsyncDisposable
         }
         if(preparation.CurrentCount==0)return;
         var now=DateTime.UtcNow;
-        var state=deadline.Evaluate(now,server.LastClientProgressUtc,server.CapturePaused,desktop);
+        var state=deadline.Evaluate(now,server.LastPresentedUtc,server.CapturePaused,desktop);
         display.Guard.Renew(state.DeadlineUtc);
+        // Renew may wait on the cross-process ownership mutex. Re-read the
+        // clock so an already-expired presentation lease cannot survive on a
+        // stale pre-renew timestamp.
+        now=DateTime.UtcNow;
         if(now>state.DeadlineUtc){State="设备超过首帧或后续呈现期限";await DisposeAsync();return;}
         var progress=server.HasRecentPresentation?$"呈现回调 {server.ClientPresentedFps:F1} 帧/秒":server.HasRecentSubmission?$"解码提交 {server.ClientSubmittedFps:F1} 帧/秒（呈现待验证）":"等待画面";
         State=state.CapturePaused?"画面暂停，连接保留":server.ClientConnected?$"{profile!.Width} × {profile.Height} · {progress}":"等待设备重连";

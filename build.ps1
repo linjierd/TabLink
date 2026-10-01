@@ -30,7 +30,7 @@ if ($PSBoundParameters.ContainsKey('OutputDirectory')) {
 else {
     $publishRoot = Join-Path $projectRoot 'dist\TabLink'
 }
-$apkPath = Join-Path $projectRoot $(if ($PublicRelease) { 'android\artifacts\TabLink-android-0.8.5-preview.apk' } else { 'android\artifacts\TabLink-android-0.8.5-debug.apk' })
+$apkPath = Join-Path $projectRoot $(if ($PublicRelease) { 'android\artifacts\TabLink-android-0.8.6-preview.apk' } else { 'android\artifacts\TabLink-android-0.8.6-debug.apk' })
 $ffmpegRoot = Join-Path $projectRoot 'third_party\ffmpeg-tablink'
 $ffmpegHardwareBinary = Join-Path $ffmpegRoot 'bin\ffmpeg.exe'
 $ffmpegSoftwareBinary = Join-Path $ffmpegRoot 'bin\ffmpeg-x264.exe'
@@ -486,6 +486,7 @@ foreach ($windowsTest in @(
     'TabLink.Diagnostics.Tests',
     'TabLink.Transport.Tests',
     'TabLink.UsbLease.Tests',
+    'TabLink.UsbRecovery.Tests',
     'TabLink.Video.Tests'
 )) {
     dotnet run --project (Join-Path $projectRoot ('tests\'+$windowsTest+'\'+$windowsTest+'.csproj')) -c Release
@@ -587,8 +588,8 @@ Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md') -Destination $publis
 Copy-Item -LiteralPath (Join-Path $projectRoot 'AUTHORS.md') -Destination $publishRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot 'LICENSE') -Destination $publishRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot 'THIRD_PARTY_NOTICES.md') -Destination $publishRoot
-Copy-Item -LiteralPath (Join-Path $projectRoot 'RELEASE-0.8.5.md') -Destination $publishRoot
-Copy-Item -LiteralPath (Join-Path $projectRoot 'VERIFICATION-0.8.5.md') -Destination $publishRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot 'RELEASE-0.8.6.md') -Destination $publishRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot 'VERIFICATION-0.8.6.md') -Destination $publishRoot
 if ($PublicRelease) {
     Copy-Item -LiteralPath (Join-Path $projectRoot 'PUBLIC-RELEASE.md') -Destination $publishRoot
     Copy-Item -LiteralPath (Join-Path $projectRoot 'ADB-SETUP.md') -Destination $publishRoot
