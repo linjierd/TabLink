@@ -487,6 +487,7 @@ foreach ($windowsTest in @(
     'TabLink.DisplayLifecycle.Tests',
     'TabLink.ConnectionHealth.Tests',
     'TabLink.Diagnostics.Tests',
+    'TabLink.NetworkMonitor.Tests',
     'TabLink.Transport.Tests',
     'TabLink.TrustedPairing.Tests',
     'TabLink.UsbLease.Tests',

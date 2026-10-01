@@ -1273,7 +1273,7 @@ internal sealed partial class MainForm : Form
         stop.Enabled=!busy&&!stopping&&!closing&&!exitStarting&&!updateExitStarted&&(server is not null||HasPendingNetworkStart);
         trayStop.Enabled=!busy&&!stopping&&!closing&&!exitStarting&&!updateExitStarted&&(HasAnySessions||HasPendingNetworkStart);
         var canEditRules=ready&&settingsValid;
-        repairAdb.Enabled=canEditRules;
+        repairAdb.Enabled=canEditRules;exportSupportBundle.Enabled=ready&&!exportingSupportBundle;
         addRule.Enabled=canEditRules;removeRule.Enabled=canEditRules&&rules.SelectedItem is RuleChoice;serial.Enabled=canEditRules;vid.Enabled=canEditRules;pid.Enabled=canEditRules;label.Enabled=canEditRules;
         UpdateNetworkButtons(idle);
         UpdateAdditionalButtons();

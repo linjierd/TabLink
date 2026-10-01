@@ -1,4 +1,8 @@
 using System.Collections.Concurrent;
+using System.IO.Compression;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using TabLink.Windows;
 
@@ -287,7 +291,190 @@ try
         return Task.CompletedTask;
     });
 
-    Console.WriteLine($"PASS: {scenarios} diagnostic persistence scenarios, {assertions} assertions. Temporary filesystem fixtures only; real MainForm and live connection were not exercised.");
+    await Run("support bundle exports only the fixed reviewed entry allow-list", () =>
+    {
+        var folder = Folder("support-bundle");
+        Directory.CreateDirectory(folder);
+        var target = Path.Combine(folder, "TabLink-Support.zip");
+        var prepared = SupportBundleExporter.Prepare(SampleSupportBundle());
+        SupportBundleExporter.WriteAtomic(target, prepared);
+        Check(File.Exists(target), "support ZIP is committed");
+        using var archive = ZipFile.OpenRead(target);
+        string[] expected = ["manifest.json", "compatibility.json", "diagnostics.json", "issue-summary.txt", "README.txt"];
+        Check(archive.Entries.Select(entry => entry.FullName).SequenceEqual(expected), "support ZIP has the exact ordered allow-list");
+        Check(archive.Entries.All(entry => entry.LastWriteTime.Year==2000&&entry.LastWriteTime.Month==1&&entry.LastWriteTime.Day==1&&
+            entry.LastWriteTime.Hour==0&&entry.LastWriteTime.Minute==0&&entry.LastWriteTime.Second==0),
+            "support ZIP entry timestamps are fixed and reveal no export timezone");
+        Check(archive.Entries.All(entry=>entry.ExternalAttributes==0),"support ZIP entry attributes are fixed");
+        var extracted = archive.Entries.ToDictionary(entry => entry.FullName, entry =>
+        {
+            using var input = entry.Open();
+            using var output = new MemoryStream();
+            input.CopyTo(output);
+            return output.ToArray();
+        }, StringComparer.Ordinal);
+        Check(extracted.All(item => prepared.Entries[item.Key].SequenceEqual(item.Value)), "ZIP bytes exactly match the in-app preview payload");
+        var combined = Encoding.UTF8.GetString(extracted.Values.SelectMany(value => value).ToArray());
+        foreach (var forbidden in new[] { @"C:\Users\TEST-USER\Private", "10.20.30.40", "TEST-SERIAL-001", "USB\\VID_1234&PID_5678", "PAIRING-TOKEN-TEST" })
+            Check(!combined.Contains(forbidden, StringComparison.OrdinalIgnoreCase), "support ZIP excludes marker: " + forbidden);
+        using (var compatibility = JsonDocument.Parse(extracted["compatibility.json"]))
+        {
+            var rootElement = compatibility.RootElement;
+            Check(rootElement.GetProperty("tabLinkVersion").GetString() == "0.8.8", "compatibility keeps the useful application version");
+            Check(rootElement.GetProperty("windowsVersion").GetString() == "10.0.26100", "compatibility keeps the Windows build");
+            Check(rootElement.GetProperty("display").GetProperty("requestedRefreshRate").GetInt32() == 90, "compatibility keeps the requested refresh rate");
+            Check(rootElement.GetProperty("encoder").GetProperty("encoder").GetString() == "nvenc", "compatibility keeps the encoder class");
+        }
+        using (var diagnostics = JsonDocument.Parse(extracted["diagnostics.json"]))
+        {
+            Check(diagnostics.RootElement.GetProperty("health").GetArrayLength() == 6, "diagnostics contains all six typed health stages");
+            Check(diagnostics.RootElement.GetProperty("clientConnected").GetBoolean(),"diagnostics labels real client connectivity explicitly");
+            Check(!diagnostics.RootElement.TryGetProperty("connectionActive",out _),"diagnostics does not conflate pending work with a connected client");
+        }
+        using (var manifest = JsonDocument.Parse(extracted["manifest.json"]))
+        {
+            var entries = manifest.RootElement.GetProperty("entries").EnumerateArray().ToArray();
+            Check(entries.Length == 4, "manifest hashes every non-manifest entry");
+            foreach (var entry in entries)
+            {
+                var name = entry.GetProperty("name").GetString()!;
+                Check(entry.GetProperty("size").GetInt32() == extracted[name].Length, "manifest size matches " + name);
+                Check(entry.GetProperty("sha256").GetString() == Convert.ToHexString(SHA256.HashData(extracted[name])), "manifest hash matches " + name);
+            }
+        }
+        Check(!Directory.EnumerateFiles(folder).Any(path => Path.GetFileName(path).StartsWith(".TabLink-Support.zip.", StringComparison.Ordinal)), "successful export leaves no staging file");
+        return Task.CompletedTask;
+    });
+
+    await Run("support bundle rejects free-form metadata and preview divergence", () =>
+    {
+        var sample = SampleSupportBundle();
+        foreach(var type in new[] { typeof(SupportBundleSnapshot),typeof(SupportDisplayProfile),typeof(SupportVideoStatus),typeof(SupportHealthStep) })
+            Check(!type.GetProperties().Any(property=>property.PropertyType==typeof(string)),
+                type.Name+" exposes no free-form string field for paths, serials, addresses or tokens");
+        CheckThrows<ArgumentNullException>(() => SupportBundleExporter.Prepare(sample with
+        {
+            ApplicationVersion = null!
+        }), "missing typed application version is rejected");
+        CheckThrows<ArgumentOutOfRangeException>(() => SupportBundleExporter.Prepare(sample with
+        {
+            WindowsVersion = new Version(10,0,1_000_000,0)
+        }), "unbounded numeric token cannot masquerade as version metadata");
+        CheckThrows<ArgumentOutOfRangeException>(() => SupportBundleExporter.Prepare(sample with
+        {
+            OsArchitecture = (Architecture)int.MaxValue
+        }), "unknown architecture enum is rejected");
+        var duplicate = sample.Health.ToArray();
+        duplicate[5] = duplicate[0];
+        CheckThrows<ArgumentException>(() => SupportBundleExporter.Prepare(sample with { Health = duplicate }), "duplicate health stage is rejected");
+        CheckThrows<ArgumentException>(() => SupportBundleExporter.Prepare(sample with { Health = sample.Health.Reverse().ToArray() }),
+            "out-of-order health stages are rejected");
+
+        Check(SupportBundleExporter.MapEncoderBackend("Nvenc")==SupportEncoderBackend.Nvenc,"known encoder backend maps exactly");
+        CheckThrows<ArgumentOutOfRangeException>(()=>SupportBundleExporter.MapEncoderBackend("FutureBackend"),
+            "unknown encoder backend fails closed");
+        Check(SupportBundleExporter.NormalizeRate(double.NaN) is null&&SupportBundleExporter.NormalizeRate(double.PositiveInfinity) is null&&
+            SupportBundleExporter.NormalizeRate(1001) is null,"unknown or out-of-range rates remain unavailable instead of becoming zero");
+        var sensitivePath=@"E:\Private\User Name\support.zip";
+        Check(!SupportBundleExporter.FailureSummary(new IOException("write failed: "+sensitivePath)).Contains(sensitivePath,StringComparison.Ordinal),
+            "I/O failure summary does not retain a destination path");
+        Check(!SupportBundleExporter.FailureSummary(new UnauthorizedAccessException("denied: "+sensitivePath)).Contains(sensitivePath,StringComparison.Ordinal),
+            "access failure summary does not retain a destination path");
+
+        var prepared = SupportBundleExporter.Prepare(sample);
+        var folder = Folder("support-preview-mismatch");
+        Directory.CreateDirectory(folder);
+        var target = Path.Combine(folder, "support.zip");
+        CheckThrows<InvalidDataException>(() => SupportBundleExporter.WriteAtomic(target,
+            prepared with { PreviewText = prepared.PreviewText + "unexpected" }), "changed content cannot differ from the reviewed preview");
+        Check(!File.Exists(target), "preview mismatch creates no target");
+        Check(!Directory.EnumerateFiles(folder).Any(), "preview mismatch creates no staging file");
+
+        var changedEntries=prepared.Entries.ToDictionary(item=>item.Key,item=>item.Value.ToArray(),StringComparer.Ordinal);
+        changedEntries["diagnostics.json"][^2]^=1;
+        CheckThrows<InvalidDataException>(()=>SupportBundleExporter.WriteAtomic(target,
+            new PreparedSupportBundle(changedEntries,PreviewFor(changedEntries))),
+            "manifest hashes are revalidated even when content and preview are changed together");
+        Check(!Directory.EnumerateFiles(folder).Any(),"manifest mismatch creates no staging file");
+
+        var valid = SupportBundleExporter.Prepare(sample);
+        CheckThrows<ArgumentException>(() => SupportBundleExporter.WriteAtomic(Path.Combine(folder,"support.zip:secret.zip"),valid),
+            "NTFS alternate data stream syntax is rejected");
+        CheckThrows<ArgumentException>(() => SupportBundleExporter.WriteAtomic(Path.Combine(folder,".zip"),valid),
+            "empty ZIP base name is rejected");
+        CheckThrows<ArgumentException>(() => SupportBundleExporter.WriteAtomic(Path.Combine(folder,"support.zip."),valid),
+            "trailing dot is rejected");
+        CheckThrows<ArgumentException>(() => SupportBundleExporter.WriteAtomic(Path.Combine(folder,"support.zip "),valid),
+            "trailing space is rejected");
+        CheckThrows<ArgumentException>(() => SupportBundleExporter.WriteAtomic(Path.Combine(folder,"CON.zip"),valid),
+            "Windows reserved device name is rejected");
+        CheckThrows<ArgumentException>(() => SupportBundleExporter.WriteAtomic(Path.Combine(folder,"support.txt"),valid),
+            "wrong extension is rejected");
+        CheckThrows<ArgumentException>(() => SupportBundleExporter.WriteAtomic("relative-support.zip",valid),
+            "relative destination is rejected");
+        CheckThrows<DirectoryNotFoundException>(() => SupportBundleExporter.WriteAtomic(Path.Combine(folder,"missing","support.zip"),valid),
+            "missing destination directory is rejected without fallback");
+        Check(!Directory.EnumerateFiles(folder).Any(), "invalid destinations create no file or alternate stream");
+        return Task.CompletedTask;
+    });
+
+    await Run("support bundle reports only a current connected display", () =>
+    {
+        var stale=new SupportDisplayProfile(1920,1200,1200,1920,1,90);
+        var pendingCandidate=SupportBundleExporter.CreateNativeCandidate(false,null,stale);
+        Check(!pendingCandidate.ClientConnected&&pendingCandidate.Display is null,
+            "disconnected native source discards a prepared or last-known display");
+        var adbCandidate=SupportBundleExporter.CreateNativeCandidate(true,null,stale);
+        Check(adbCandidate.ClientConnected&&ReferenceEquals(adbCandidate.Display,stale),
+            "connected ADB source uses its lifecycle-bound prepared display when no network profile exists");
+        var reported=new SupportDisplayProfile(1200,1920,1200,1920,0,60);
+        var networkCandidate=SupportBundleExporter.CreateNativeCandidate(true,reported,stale);
+        Check(ReferenceEquals(networkCandidate.Display,reported),"current client-reported profile takes priority over a prepared fallback");
+        var pending=SupportBundleExporter.SelectCurrentConnection([pendingCandidate],false,stale);
+        Check(!pending.ClientConnected&&pending.Display is null&&pending.NativeSourceIndex==-1,
+            "pending or last-known profiles are not reported as a current display");
+        var native=SupportBundleExporter.SelectCurrentConnection([adbCandidate],false,null);
+        Check(native.ClientConnected&&ReferenceEquals(native.Display,stale)&&native.NativeSourceIndex==0,
+            "connected primary native display is selected");
+        var additional=SupportBundleExporter.SelectCurrentConnection([new(false,null),new(true,stale)],false,null);
+        Check(additional.ClientConnected&&ReferenceEquals(additional.Display,stale)&&additional.NativeSourceIndex==1,
+            "connected native-client session is selected when the primary listener is idle");
+        var browser=SupportBundleExporter.SelectCurrentConnection([],true,stale);
+        Check(browser.ClientConnected&&ReferenceEquals(browser.Display,stale),"streaming browser display is selected");
+        var nativeWins=SupportBundleExporter.SelectCurrentConnection([new(true,stale)],true,new SupportDisplayProfile(720,1280,720,1280,0,60));
+        Check(ReferenceEquals(nativeWins.Display,stale)&&nativeWins.NativeSourceIndex==0,
+            "native display wins deterministically if an impossible dual-state snapshot is observed");
+        return Task.CompletedTask;
+    });
+
+    await Run("support bundle failed write preserves the previous target and cleans staging", () =>
+    {
+        var folder = Folder("support-atomic-failure");
+        Directory.CreateDirectory(folder);
+        var target = Path.Combine(folder, "support.zip");
+        var previous = Encoding.ASCII.GetBytes("previous support artifact");
+        File.WriteAllBytes(target, previous);
+        var prepared = SupportBundleExporter.Prepare(SampleSupportBundle());
+        CheckThrows<IOException>(() => SupportBundleExporter.WriteAtomic(target, prepared, (stream, _) =>
+        {
+            stream.Write([1, 2, 3, 4]);
+            throw new IOException("simulated archive failure");
+        }), "partial archive failure propagates");
+        Check(File.ReadAllBytes(target).SequenceEqual(previous), "failed export retains the previous target byte-for-byte");
+        Check(Directory.GetFiles(folder).Select(Path.GetFileName).SequenceEqual(new[] { "support.zip" }), "failed export removes its staging file");
+        using (var held=new FileStream(target,FileMode.Open,FileAccess.Read,FileShare.Read))
+            CheckThrowsEither<IOException,UnauthorizedAccessException>(()=>SupportBundleExporter.WriteAtomic(target,prepared),
+                "locked destination rejects replacement");
+        Check(File.ReadAllBytes(target).SequenceEqual(previous),"locked replacement retains the previous target byte-for-byte");
+        Check(Directory.GetFiles(folder).Select(Path.GetFileName).SequenceEqual(new[] { "support.zip" }),
+            "locked replacement removes its staging file");
+        SupportBundleExporter.WriteAtomic(target, prepared);
+        using var archive = ZipFile.OpenRead(target);
+        Check(archive.Entries.Count == 5, "a later retry atomically replaces the old target with a complete ZIP");
+        return Task.CompletedTask;
+    });
+
+    Console.WriteLine($"PASS: {scenarios} diagnostics/support-bundle scenarios, {assertions} assertions. Temporary filesystem fixtures only; real MainForm and live connection were not exercised.");
 }
 finally
 {
@@ -300,10 +487,43 @@ finally
 }
 
 string Folder(string name) => Path.Combine(root, name);
+SupportBundleSnapshot SampleSupportBundle()
+{
+    SupportHealthStep[] health =
+    [
+        new(SupportHealthStage.RouteAndListener,SupportHealthState.Healthy,SupportHealthReason.Ready,SupportHealthRecovery.None),
+        new(SupportHealthStage.AuthenticationAndDisplayProfile,SupportHealthState.Healthy,SupportHealthReason.DisplayProfileReceived,SupportHealthRecovery.None),
+        new(SupportHealthStage.SingleVirtualDisplay,SupportHealthState.Healthy,SupportHealthReason.DisplayReady,SupportHealthRecovery.None),
+        new(SupportHealthStage.CaptureEncodeSend,SupportHealthState.Healthy,SupportHealthReason.FrameSent,SupportHealthRecovery.None),
+        new(SupportHealthStage.ClientDecodeSubmission,SupportHealthState.Healthy,SupportHealthReason.DecodeSubmitted,SupportHealthRecovery.None),
+        new(SupportHealthStage.ClientPresentationCallback,SupportHealthState.Healthy,SupportHealthReason.FramePresented,SupportHealthRecovery.None)
+    ];
+    return new(new DateTimeOffset(2026,10,2,2,30,0,TimeSpan.Zero),new Version(0,8,8),new Version(10,0,26100),new Version(10,0,0),Architecture.X64,Architecture.X64,
+        SupportQualityPreset.Automatic,SupportEncoderPreference.Automatic,false,true,SupportConnectionPath.NativeNetwork,
+        new SupportDisplayProfile(1920,1200,1200,1920,1,90),
+        new SupportVideoStatus(SupportEncoderBackend.Nvenc,true,1920,1200,90,90,false,10800,10790,10780,89.8,89.7),health);
+}
 void Check(bool condition, string message)
 {
     if (!condition) throw new InvalidOperationException("FAILED: " + message);
     assertions++;
+}
+void CheckThrows<T>(Action action, string message) where T : Exception
+{
+    try { action(); }
+    catch (T) { assertions++; return; }
+    throw new InvalidOperationException("FAILED: " + message);
+}
+void CheckThrowsEither<TFirst,TSecond>(Action action,string message) where TFirst:Exception where TSecond:Exception
+{
+    try { action(); }
+    catch(Exception error) when(error is TFirst or TSecond) { assertions++; return; }
+    throw new InvalidOperationException("FAILED: "+message);
+}
+string PreviewFor(IReadOnlyDictionary<string,byte[]> entries)
+{
+    string[] order=["manifest.json","compatibility.json","diagnostics.json","issue-summary.txt","README.txt"];
+    return string.Join("\r\n\r\n",order.Select(name=>$"===== {name} =====\r\n{Encoding.UTF8.GetString(entries[name])}"));
 }
 void CheckNoTemporaryFiles(string folder, params string[] expectedNames)
 {

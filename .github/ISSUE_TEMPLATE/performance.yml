@@ -1,0 +1,98 @@
+name: "性能问题 / Performance issue"
+description: "报告帧率、延迟、卡顿、资源占用或持续运行方面的问题。"
+title: "[Performance] "
+labels:
+  - "bug"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        性能数据需要完整条件才能比较。这里是公开页面：请勿填写或上传设备序列号、USB/PnP ID、IP/MAC 地址、本机或网络路径、配对链接、token、证书、密钥、原始日志或未经检查的诊断文件。
+
+  - type: input
+    id: tablink_version
+    attributes:
+      label: "TabLink 版本与构建"
+      placeholder: "例如：Windows 0.8.8 Preview 1；Android 0.8.8 / build 20"
+    validations:
+      required: true
+
+  - type: input
+    id: windows
+    attributes:
+      label: "Windows 版本与硬件概况"
+      description: "填写 Windows 版本/build/架构，以及 CPU、GPU 的公开型号和显卡驱动版本。不要填写硬件唯一 ID、用户名或路径。"
+      placeholder: "例如：Windows 11 24H2 build 26100 x64；GPU 公开型号；驱动版本"
+    validations:
+      required: true
+
+  - type: input
+    id: android
+    attributes:
+      label: "Android 设备与系统"
+      description: "填写公开型号、Android 版本/API、屏幕分辨率和刷新率；不要填写序列号或 USB/PnP ID。"
+      placeholder: "例如：某厂商公开型号；Android 14 / API 34；1920×1200 @ 90 Hz"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: connection
+    attributes:
+      label: "连接方式"
+      options:
+        - "Wi-Fi 局域网"
+        - "USB 网络共享（免调试）"
+        - "ADB USB 调试兼容通道"
+        - "浏览器接收端"
+        - "其他"
+    validations:
+      required: true
+
+  - type: textarea
+    id: measurements
+    attributes:
+      label: "画面设置、测量结果与对照基线"
+      description: "填写分辨率、请求刷新率、质量预设、实际编码器和软件回退状态；再分别写出发送、解码提交、呈现回调、物理面板或资源占用数据、测量时长/工具，以及预期值或旧版对照。不要把请求 Hz 当作实测 fps。"
+      placeholder: "设置：…\n测量时长与工具：…\n发送/提交/回调/面板/资源占用：…\n预期或旧版对照：…"
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: "复现步骤与负载"
+      description: "列出连接、显示设置、前台内容、运行时长，以及问题出现前的操作。"
+      placeholder: |
+        1. …
+        2. …
+        3. …
+    validations:
+      required: true
+
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: "复现稳定性"
+      options:
+        - "每次都发生"
+        - "经常发生"
+        - "偶尔发生"
+        - "只在长时间运行后发生"
+        - "只发生过一次"
+    validations:
+      required: true
+
+  - type: textarea
+    id: support_bundle
+    attributes:
+      label: "可选：用户主动附加的脱敏支持包"
+      description: "只有在你主动选择、已在 TabLink 中预览并再次检查内容后，才可把“导出脱敏支持包”生成的 ZIP 拖到这里。可以留空；TabLink 不会自动上传或附加文件。不要上传原始日志。"
+      placeholder: "可将已检查的脱敏支持包拖入此处，或留空。"
+
+  - type: checkboxes
+    id: privacy_confirmation
+    attributes:
+      label: "公开信息确认"
+      options:
+        - label: "我已确认本 Issue 及附件不含序列号、USB/PnP ID、IP/MAC、路径、配对链接、token、证书、密钥或原始日志；支持包如有附加，是我主动检查并选择的。"
+          required: true

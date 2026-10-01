@@ -1,0 +1,97 @@
+name: "设备兼容性 / Device compatibility"
+description: "报告特定 Windows、Android、GPU、显示模式或连接方式的兼容性。"
+title: "[Compatibility] "
+labels:
+  - "bug"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请只提供厂商公开型号和非唯一的兼容性信息。这里是公开页面：不要填写或上传序列号、USB/PnP ID（包括实例路径）、IP/MAC 地址、本机或网络路径、配对链接、token、证书、密钥、原始日志或未经检查的诊断文件。
+
+  - type: dropdown
+    id: report_kind
+    attributes:
+      label: "报告类型"
+      options:
+        - "无法连接或无法使用"
+        - "部分功能异常"
+        - "间歇性兼容问题"
+        - "确认可以使用"
+        - "其他"
+    validations:
+      required: true
+
+  - type: input
+    id: tablink_version
+    attributes:
+      label: "TabLink 版本与构建"
+      placeholder: "例如：Windows 0.8.8 Preview 1；Android 0.8.8 / build 20"
+    validations:
+      required: true
+
+  - type: input
+    id: windows
+    attributes:
+      label: "Windows、电脑与显卡环境"
+      description: "填写 Windows 版本/build/架构、电脑/主板公开型号、GPU 公开型号、驱动版本和 TabLink 实际编码器。不要填写用户名、路径、序列号、硬件 ID 或 PnP 实例 ID。"
+      placeholder: "例如：Windows 11 24H2 build 26100 x64；电脑与 GPU 公开型号；驱动版本；NVENC/QSV/AMF/x264"
+    validations:
+      required: true
+
+  - type: input
+    id: android
+    attributes:
+      label: "Android 设备、系统与显示能力"
+      description: "填写厂商、公开型号、Android 版本/API、原生方向、分辨率、支持/请求刷新率和 decoder 公开名称。不要填写设备序列号、USB ID 或 MAC 地址。"
+      placeholder: "例如：某厂商公开型号；Android 14 / API 34；横屏 1920×1200；60/90 Hz；decoder 公开名称"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: connection
+    attributes:
+      label: "连接方式"
+      options:
+        - "Wi-Fi 局域网"
+        - "USB 网络共享（免调试）"
+        - "ADB USB 调试兼容通道"
+        - "浏览器接收端"
+        - "其他"
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: "复现或验证步骤"
+      description: "按顺序写出安装、连接和触发结果的步骤。即使报告“可以使用”，也请写出验证过的流程。"
+      placeholder: |
+        1. …
+        2. …
+        3. …
+    validations:
+      required: true
+
+  - type: textarea
+    id: result
+    attributes:
+      label: "预期结果与实际结果"
+      description: "分别说明预期行为和观察到的行为；不要粘贴原始日志、堆栈或完整命令输出。"
+    validations:
+      required: true
+
+  - type: textarea
+    id: support_bundle
+    attributes:
+      label: "可选：用户主动附加的脱敏支持包"
+      description: "只有在你主动选择、已在 TabLink 中预览并再次检查内容后，才可把“导出脱敏支持包”生成的 ZIP 拖到这里。可以留空；TabLink 不会自动上传或附加文件。不要上传原始日志。"
+      placeholder: "可将已检查的脱敏支持包拖入此处，或留空。"
+
+  - type: checkboxes
+    id: privacy_confirmation
+    attributes:
+      label: "公开信息确认"
+      options:
+        - label: "我已确认本 Issue 及附件不含序列号、USB/PnP ID、IP/MAC、路径、配对链接、token、证书、密钥或原始日志；支持包如有附加，是我主动检查并选择的。"
+          required: true

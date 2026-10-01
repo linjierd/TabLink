@@ -8,5 +8,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../src/TabLink.Windows/DiagnosticStore.cs" Link="DiagnosticStore.cs" />
+    <Compile Include="../../src/TabLink.Windows/SupportBundleExporter.cs" Link="SupportBundleExporter.cs" />
   </ItemGroup>
 </Project>

@@ -14,6 +14,7 @@ internal sealed partial class MainForm
     readonly Button repairConnection=new(){Text="重建连接"};
     readonly Button repairSuggested=new(){Text="修复所选问题"};
     readonly Button openDiagnosticFolder=new(){Text="日志目录"};
+    readonly Button exportSupportBundle=new(){Text="导出脱敏支持包"};
     readonly ComboBox requestedModes=new(){DropDownStyle=ComboBoxStyle.DropDownList,Width=310};
     readonly Button refreshModes=new(){Text="读取设备请求模式"};
     readonly Button repairMode=new(){Text="配置选中显示模式"};
@@ -23,7 +24,7 @@ internal sealed partial class MainForm
     Guid healthConnectionId;
     long healthSentFrames,healthSubmittedFrames,healthPresentedFrames;
     bool healthCapturePaused,healthSubmissionFresh,healthPresentationFresh;
-    bool diagnosing;
+    bool diagnosing,exportingSupportBundle;
 
     Control BuildDiagnosticsPanel()
     {
@@ -37,7 +38,7 @@ internal sealed partial class MainForm
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));layout.RowStyles.Add(new RowStyle(SizeType.Absolute,180));
         var healthIntro=new Label{Dock=DockStyle.Top,AutoSize=true,ForeColor=muted,Text="按真实事件检查线路、认证、副屏、发送、客户端解码提交和呈现回调；呈现回调仍不等于物理面板测量。"};
         layout.Controls.Add(healthIntro,0,0);layout.Controls.Add(healthSummary,0,1);
-        layout.Controls.Add(Flow(repairSuggested,diagnose,repairConnection,openDiagnosticFolder),0,2);
+        layout.Controls.Add(Flow(repairSuggested,diagnose,repairConnection,openDiagnosticFolder,exportSupportBundle),0,2);
         layout.Controls.Add(healthStages,0,3);layout.Controls.Add(healthDetail,0,4);
         var modeTools=Flow(refreshModes,requestedModes,repairMode,modeHint);layout.Controls.Add(modeTools,0,5);
         layout.Controls.Add(Flow(repairAdb),0,6);layout.Controls.Add(diagnosticReport,0,7);page.Controls.Add(layout);
@@ -49,6 +50,7 @@ internal sealed partial class MainForm
         repairMode.Click+=async(_,_)=>await GuardAsync(ConfigureDisplayModeFromUiAsync);
         requestedModes.SelectedIndexChanged+=(_,_)=>UpdateHealthRepairButton();
         openDiagnosticFolder.Click+=(_,_)=>OpenDiagnosticFolder();
+        exportSupportBundle.Click+=async(_,_)=>await ExportSupportBundleFromUiAsync();
         healthStages.SelectedIndexChanged+=(_,_)=>{UpdateHealthRepairButton();UpdateHealthDetail();};
         healthStages.SizeChanged+=(_,_)=>healthStages.Columns[2].Width=Math.Max(220,healthStages.ClientSize.Width-healthStages.Columns[0].Width-healthStages.Columns[1].Width-8);
         page.SizeChanged+=(_,_)=>(healthIntro.MaximumSize,healthSummary.MaximumSize,modeHint.MaximumSize)=(
@@ -342,6 +344,199 @@ internal sealed partial class MainForm
         Directory.CreateDirectory(Diagnostics.Folder);
         var start=new ProcessStartInfo("explorer.exe"){UseShellExecute=true};start.ArgumentList.Add(Diagnostics.Folder);Process.Start(start);
     }
+
+    async Task ExportSupportBundleFromUiAsync()
+    {
+        if(exportingSupportBundle||closing)return;
+        exportingSupportBundle=true;exportSupportBundle.Enabled=false;
+        try{await ExportSupportBundleAsync();}
+        catch(Exception error)
+        {
+            var summary=SupportBundleExporter.FailureSummary(error);
+            Log("脱敏支持包导出失败。"+summary);
+            if(!IsDisposed&&!Disposing&&!closing)MessageBox.Show(this,"脱敏支持包导出失败：\r\n"+summary,"TabLink",MessageBoxButtons.OK,MessageBoxIcon.Information);
+        }
+        finally
+        {
+            exportingSupportBundle=false;
+            if(!IsDisposed)exportSupportBundle.Enabled=!busy&&!stopping&&!closing&&!exitStarting&&!updateExitStarted;
+        }
+    }
+
+    async Task ExportSupportBundleAsync()
+    {
+        var prepared=SupportBundleExporter.Prepare(CreateSupportBundleSnapshot());
+        if(ShowSupportBundlePreview(prepared.PreviewText)!=DialogResult.OK)return;
+        using var dialog=new SaveFileDialog
+        {
+            Title="保存 TabLink 脱敏支持包",
+            Filter="ZIP 支持包 (*.zip)|*.zip",
+            DefaultExt="zip",
+            AddExtension=true,
+            OverwritePrompt=true,
+            FileName="TabLink-Support-"+DateTime.UtcNow.ToString("yyyyMMdd-HHmmss")+".zip"
+        };
+        if(dialog.ShowDialog(this)!=DialogResult.OK)return;
+        await Task.Run(()=>SupportBundleExporter.WriteAtomic(dialog.FileName,prepared));
+        Log("已导出脱敏支持包。没有复制原始日志、身份、路径、地址、配对材料或桌面内容。");
+        if(!IsDisposed&&!Disposing&&!closing)
+            MessageBox.Show(this,"脱敏支持包已保存到：\r\n"+dialog.FileName+"\r\n\r\n上传到公开 Issue 前仍建议再打开检查一次。",
+                "TabLink",MessageBoxButtons.OK,MessageBoxIcon.Information);
+    }
+
+    SupportBundleSnapshot CreateSupportBundleSnapshot()
+    {
+        var health=connectionHealth.Snapshot();
+        var nativeSources=new List<(FrameServer Source,SupportNativeCandidate Candidate)>();
+        if(server is { } primary)
+        {
+            var connected=primary.ClientConnected;
+            nativeSources.Add((primary,SupportBundleExporter.CreateNativeCandidate(connected,
+                primary.ClientDisplayProfile is { } reported?ToSupportDisplay(reported):null,
+                tabletProfile is { } prepared?ToSupportDisplay(prepared):null)));
+        }
+        foreach(var session in additionalSessions.Where(session=>!session.IsStopped))
+        {
+            if(session.Server is not { } additional)continue;
+            var connected=additional.ClientConnected;
+            nativeSources.Add((additional,SupportBundleExporter.CreateNativeCandidate(connected,
+                additional.ClientDisplayProfile is { } reported?ToSupportDisplay(reported):null,
+                session.Profile is { } prepared?ToSupportDisplay(prepared):null)));
+        }
+        var browserState=browserStates.Values.FirstOrDefault(state=>
+            (state.State is "streaming" or "paused")&&browserDisplays.ContainsKey(state.Id));
+        SupportDisplayProfile? browserDisplay=browserState is not null&&browserDisplays.TryGetValue(browserState.Id,out var ownedBrowser)
+            ? ToSupportDisplay(ownedBrowser.Profile):null;
+        var current=SupportBundleExporter.SelectCurrentConnection(nativeSources.Select(item=>item.Candidate).ToArray(),
+            browserState is not null,browserDisplay);
+        var source=current.NativeSourceIndex>=0?nativeSources[current.NativeSourceIndex].Source:null;
+        SupportVideoStatus? video=null;
+        if(source is not null&&current.Display is not null&&encoderRuntime is {} runtime)
+        {
+            video=new(SupportBundleExporter.MapEncoderBackend(runtime.Backend),runtime.Hardware,runtime.Width,runtime.Height,
+                runtime.RequestedFps,runtime.EffectiveFps,
+                source.CapturePaused,Math.Max(0,source.FramesSent),Math.Max(0,source.SubmittedFrames),
+                Math.Max(0,source.PresentedFrames),SupportBundleExporter.NormalizeRate(source.ClientSubmittedFps),
+                SupportBundleExporter.NormalizeRate(source.ClientPresentedFps));
+        }
+        return new(DateTimeOffset.UtcNow,
+            typeof(MainForm).Assembly.GetName().Version??new Version(0,0,0),
+            Environment.OSVersion.Version,Environment.Version,
+            System.Runtime.InteropServices.RuntimeInformation.OSArchitecture,
+            System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture,
+            MapSupportQuality(selectedQuality),MapSupportEncoderPreference(selectedEncoder),allowSoftwareFallback,
+            current.ClientConnected,MapSupportPath(health.Path),current.Display,video,
+            health.Steps.Select(step=>new SupportHealthStep(MapSupportStage(step.Stage),MapSupportState(step.State),
+                MapSupportReason(step.Reason),MapSupportRecovery(step.Recovery))).ToArray());
+    }
+
+    DialogResult ShowSupportBundlePreview(string preview)
+    {
+        using var previewFont=new Font(FontFamily.GenericMonospace,9);
+        using var window=new Form
+        {
+            Text="TabLink · 脱敏支持包预览",StartPosition=FormStartPosition.CenterParent,
+            Size=new Size(820,640),MinimumSize=new Size(620,460),ShowInTaskbar=false,
+            Font=Font,BackColor=Color.White,ForeColor=ink
+        };
+        var layout=new TableLayoutPanel{Dock=DockStyle.Fill,Padding=new Padding(14),ColumnCount=1,RowCount=3};
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));layout.RowStyles.Add(new RowStyle(SizeType.Percent,100));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        var explanation=new Label
+        {
+            AutoSize=true,Dock=DockStyle.Fill,MaximumSize=new Size(760,0),Margin=new Padding(0,0,0,10),
+            Text="下面是 ZIP 中将保存的全部文本内容。程序不会上传文件，也不会读取原始日志、配置、信任库、设备身份或桌面画面。请检查后再保存。"
+        };
+        var content=new TextBox
+        {
+            Multiline=true,ReadOnly=true,WordWrap=false,ScrollBars=ScrollBars.Both,Dock=DockStyle.Fill,
+            Text=preview,Font=previewFont,BackColor=Color.White
+        };
+        var save=new Button{Text="保存本地 ZIP",AutoSize=true,DialogResult=DialogResult.OK};
+        var cancel=new Button{Text="取消",AutoSize=true,DialogResult=DialogResult.Cancel};
+        var actions=new FlowLayoutPanel{Dock=DockStyle.Fill,AutoSize=true,FlowDirection=FlowDirection.RightToLeft,WrapContents=false,Margin=new Padding(0,10,0,0)};
+        actions.Controls.Add(save);actions.Controls.Add(cancel);
+        layout.Controls.Add(explanation,0,0);layout.Controls.Add(content,0,1);layout.Controls.Add(actions,0,2);
+        window.Controls.Add(layout);window.AcceptButton=save;window.CancelButton=cancel;
+        return window.ShowDialog(this);
+    }
+
+    static SupportDisplayProfile ToSupportDisplay(TabletDisplayProfile value)=>new(value.Width,value.Height,value.NativeWidth,
+        value.NativeHeight,value.Rotation,value.RequestedRefreshRate);
+    static SupportConnectionPath MapSupportPath(ConnectionHealthPath value)=>value switch
+    {
+        ConnectionHealthPath.None=>SupportConnectionPath.None,
+        ConnectionHealthPath.NativeNetwork=>SupportConnectionPath.NativeNetwork,
+        ConnectionHealthPath.AdbCompatibility=>SupportConnectionPath.AdbCompatibility,
+        ConnectionHealthPath.Browser=>SupportConnectionPath.Browser,
+        _=>throw new ArgumentOutOfRangeException(nameof(value))
+    };
+    static SupportQualityPreset MapSupportQuality(VideoQualityPreset value)=>value switch
+    {
+        VideoQualityPreset.Automatic=>SupportQualityPreset.Automatic,
+        VideoQualityPreset.LowLatency=>SupportQualityPreset.LowLatency,
+        VideoQualityPreset.Balanced=>SupportQualityPreset.Balanced,
+        VideoQualityPreset.HighQuality=>SupportQualityPreset.HighQuality,
+        _=>throw new ArgumentOutOfRangeException(nameof(value))
+    };
+    static SupportEncoderPreference MapSupportEncoderPreference(VideoEncoderPreference value)=>value switch
+    {
+        VideoEncoderPreference.Automatic=>SupportEncoderPreference.Automatic,
+        VideoEncoderPreference.Nvenc=>SupportEncoderPreference.Nvenc,
+        VideoEncoderPreference.Qsv=>SupportEncoderPreference.Qsv,
+        VideoEncoderPreference.Amf=>SupportEncoderPreference.Amf,
+        VideoEncoderPreference.LibX264=>SupportEncoderPreference.LibX264,
+        _=>throw new ArgumentOutOfRangeException(nameof(value))
+    };
+    static SupportHealthStage MapSupportStage(ConnectionHealthStage value)=>value switch
+    {
+        ConnectionHealthStage.RouteAndListener=>SupportHealthStage.RouteAndListener,
+        ConnectionHealthStage.AuthenticationAndDisplayProfile=>SupportHealthStage.AuthenticationAndDisplayProfile,
+        ConnectionHealthStage.SingleVirtualDisplay=>SupportHealthStage.SingleVirtualDisplay,
+        ConnectionHealthStage.CaptureEncodeSend=>SupportHealthStage.CaptureEncodeSend,
+        ConnectionHealthStage.AndroidDecodeSubmission=>SupportHealthStage.ClientDecodeSubmission,
+        ConnectionHealthStage.PhysicalPresentation=>SupportHealthStage.ClientPresentationCallback,
+        _=>throw new ArgumentOutOfRangeException(nameof(value))
+    };
+    static SupportHealthState MapSupportState(ConnectionHealthState value)=>value switch
+    {
+        ConnectionHealthState.Waiting=>SupportHealthState.Waiting,
+        ConnectionHealthState.Working=>SupportHealthState.Working,
+        ConnectionHealthState.Healthy=>SupportHealthState.Healthy,
+        ConnectionHealthState.Paused=>SupportHealthState.Paused,
+        ConnectionHealthState.Attention=>SupportHealthState.Attention,
+        _=>throw new ArgumentOutOfRangeException(nameof(value))
+    };
+    static SupportHealthReason MapSupportReason(ConnectionHealthReason value)=>value switch
+    {
+        ConnectionHealthReason.Idle=>SupportHealthReason.Idle,
+        ConnectionHealthReason.Starting=>SupportHealthReason.Starting,
+        ConnectionHealthReason.Ready=>SupportHealthReason.Ready,
+        ConnectionHealthReason.Authenticating=>SupportHealthReason.Authenticating,
+        ConnectionHealthReason.DisplayProfileReceived=>SupportHealthReason.DisplayProfileReceived,
+        ConnectionHealthReason.DisplayPreparing=>SupportHealthReason.DisplayPreparing,
+        ConnectionHealthReason.DisplayReady=>SupportHealthReason.DisplayReady,
+        ConnectionHealthReason.PipelineStarting=>SupportHealthReason.PipelineStarting,
+        ConnectionHealthReason.FrameSent=>SupportHealthReason.FrameSent,
+        ConnectionHealthReason.CapturePaused=>SupportHealthReason.CapturePaused,
+        ConnectionHealthReason.DecodeSubmitted=>SupportHealthReason.DecodeSubmitted,
+        ConnectionHealthReason.FramePresented=>SupportHealthReason.FramePresented,
+        ConnectionHealthReason.Reconnecting=>SupportHealthReason.Reconnecting,
+        ConnectionHealthReason.NeedsAttention=>SupportHealthReason.NeedsAttention,
+        ConnectionHealthReason.Stopped=>SupportHealthReason.Stopped,
+        _=>throw new ArgumentOutOfRangeException(nameof(value))
+    };
+    static SupportHealthRecovery MapSupportRecovery(ConnectionHealthRecovery value)=>value switch
+    {
+        ConnectionHealthRecovery.None=>SupportHealthRecovery.None,
+        ConnectionHealthRecovery.RefreshRoute=>SupportHealthRecovery.RefreshRoute,
+        ConnectionHealthRecovery.RecreatePairing=>SupportHealthRecovery.RecreatePairing,
+        ConnectionHealthRecovery.ConfigureDisplayMode=>SupportHealthRecovery.ConfigureDisplayMode,
+        ConnectionHealthRecovery.ReclaimOwnedDisplay=>SupportHealthRecovery.ReclaimOwnedDisplay,
+        ConnectionHealthRecovery.RestartVideo=>SupportHealthRecovery.RestartVideo,
+        ConnectionHealthRecovery.OpenLogs=>SupportHealthRecovery.OpenLogs,
+        _=>throw new ArgumentOutOfRangeException(nameof(value))
+    };
 
     void RefreshRequestedModes()
     {

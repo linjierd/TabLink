@@ -27,6 +27,12 @@ APK 会读取平板的原生尺寸、当前方向、支持的刷新率和活动�
 >
 > My goal is to keep building small, free, useful tools that solve real problems. If you have an idea, a feature request, or a problem you'd like software to solve, feel free to open a [GitHub Issue](https://github.com/linjierd/TabLink/issues).
 
+## 反馈与脱敏支持包
+
+缺陷、性能问题、设备兼容性和功能建议请从 [GitHub Issue Forms](https://github.com/linjierd/TabLink/issues/new/choose) 选择对应入口；安全漏洞请使用 [私密 Security Advisory](https://github.com/linjierd/TabLink/security/advisories/new)，不要发布公开 Issue。
+
+Windows 程序的“检测与日志”页提供“导出脱敏支持包”。保存前会展示 ZIP 中的全部文本内容；v1 只按固定字段清单生成版本、兼容性和连接健康摘要，不读取或复制原始日志。程序不会自动上传或附加支持包，只有用户主动保存、检查并在 Issue 中选择该文件时，文件才会离开本机。公开 Issue 仍不得包含序列号、USB/PnP ID、IP/MAC、路径、配对链接、token、证书、密钥或原始日志。
+
 ## 作者
 
 - **张林杰（Jey）** · GitHub：[@linjierd](https://github.com/linjierd)
