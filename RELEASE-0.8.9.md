@@ -2,7 +2,13 @@
 
 <!-- tablink-version-contract: version=0.8.9; channel=preview; preview=1; androidVersionCode=21 -->
 
-TabLink 0.8.9 Preview 1 当前是完成核心 W202DS 实机验收的源码候选。它把 0.8.8 发布后的线路恢复、安全清理、脱敏诊断和公开兼容性证据归入新的版本身份：Windows 为 `0.8.9`，Android 为 `0.8.9` / `versionCode 21`。保留数据覆盖安装、唯一副屏、设备实际 1920 × 1200 / 90 Hz 模式、位置变化不断线、物理呈现测量和退出后的 VDD 回收已经通过；公共构建、tag、Release 和公开回下载核验仍待完成。GitHub 上可下载的最新预览仍是 0.8.8 Preview 1；已签名的公网 `stable` 自动更新频道仍保持 0.8.0。
+TabLink 0.8.9 Preview 1 当前是完成核心 W202DS 实机验收和受保护 USB 会话连续重连验收的源码候选。它把 0.8.8 发布后的线路恢复、安全清理、脱敏诊断和公开兼容性证据归入新的版本身份：Windows 为 `0.8.9`，Android 为 `0.8.9` / `versionCode 21`。保留数据覆盖安装、唯一副屏、设备实际 1920 × 1200 / 90 Hz 模式、位置变化不断线、物理呈现测量、连续两轮 Windows 会话交接和退出后的 VDD 回收已经通过；最终发布提交的公共构建、tag、Release 和公开回下载核验仍待完成。GitHub 上可下载的最新预览仍是 0.8.8 Preview 1；已签名的公网 `stable` 自动更新频道仍保持 0.8.0。
+
+## 受保护的 USB 会话交接
+
+0.8.9 不再把 USB 会话 token 和端口直接交给可由其他应用启动的 Android Activity。Windows 先通过受 `android.permission.DUMP` 保护的 Provider 登记一份仅存在于 APK 进程内存、30 秒过期且只能消费一次的配置，再用 128 位随机激活标记唤醒 Activity。Activity 不接受原始 token / port extras；普通桌面启动、伪造 extras 或错误标记都不能替换会话，网络可信会话也不会被 ADB 静默抢占。
+
+新的 Windows 会话可以明确停止仍在重试旧随机端口的 USB Session，并应用新的受保护配置。发布与激活之间会再次核对 Android 当前用户，完整事务串行执行；Provider 报错、用户切换、取消或并发启动都会失败关闭。恢复流程在这些失败中继续保留精确反向映射的清理所有权，随后只回收本会话创建的端点。
 
 ## 线路变化时如何恢复
 
@@ -24,7 +30,7 @@ Windows 的“检测与日志”页可以由用户主动导出支持包。保存
 
 `compatibility/catalog.json` 是人工审核的静态证据目录，并由严格验证器生成 Schema 和 Markdown 视图。目录拒绝未知字段、不一致的能力组合、缺少文档或提交闭环的证据、常见地址/路径/token/设备标识模式、reparse 边界逃逸以及非原子写入。它没有遥测，不会自动导入 Issue 或支持包，客户端也不会下载它。
 
-当前公开兼容性目录仍只包含精确绑定 0.8.8 Preview 1 的 W202DS 记录。本轮已经取得 0.8.9 核心实机证据，但新的兼容性记录必须在最终发布提交和 tag 确定后，以新的记录 ID、精确 `sourceCommit` 和实际测量值添加；不会改写旧记录，也不会提前把 `e34b2a9` 候选写成最终发布证据。
+当前公开兼容性目录仍只包含精确绑定 0.8.8 Preview 1 的 W202DS 记录。本轮已经取得 0.8.9 核心实机证据，但新的兼容性记录必须在最终发布提交和 tag 确定后，以新的记录 ID、精确 `sourceCommit` 和实际测量值添加；不会改写旧记录，也不会提前把任何发布前候选写成最终发布证据。
 
 ## 构建与版本门禁
 
@@ -32,7 +38,7 @@ Windows 的“检测与日志”页可以由用户主动导出支持包。保存
 
 CI 同时覆盖 Windows 两种浏览器功能配置、DriverSetup、所有 managed 测试、Android JVM 测试、`assembleDebug`、`lintDebug` 和 APK 签名验证。完整、逐项的当前结果和尚未完成的硬件边界见 [0.8.9 验证记录](VERIFICATION-0.8.9.md)。
 
-候选提交 `e34b2a99449884cb36b30342ab95defaacbfee5a` 对应的 [GitHub Actions run 36920331236](https://github.com/linjierd/TabLink/actions/runs/36920331236) 已成功完成 Windows 与 Android 两个 job。实机记录提交后形成的最终发布提交仍须取得自己的成功 CI，当前 run 不替代最终 tag 提交的门禁。
+受保护交接与 USB 恢复修复提交 `6dcc75e65c848643d200787ec9271051e3701a14` 对应的 [GitHub Actions run 36926091128](https://github.com/linjierd/TabLink/actions/runs/36926091128) 已成功完成 Windows 与 Android 两个 job。本文实机记录提交后形成的最终发布提交仍须取得自己的成功 CI，当前 run 不替代最终 tag 提交的门禁。
 
 ## 安卓安装兼容与帧率证据
 
@@ -42,11 +48,13 @@ ADB 兼容页先读取 Android 当前前台用户。安装操作把 APK 明确�
 
 ## W202DS 核心实机候选结果
 
-唯一授权的 W202DS 已从 0.8.8 / build 20 保留数据覆盖安装到 0.8.9 / build 21。ADB 返回独立 `Success`，首次安装时间保持不变；设备回拉 APK 为 344,073 字节，SHA-256 `655CF12CDAFFA7E93ED690E1FEEA94BCA2F9B705D8957A6427AB004DBE4F9728`，与通过固定 Preview 签名门禁的干净候选 APK 逐字一致。
+唯一授权的 W202DS 先从 0.8.8 / build 20 保留数据覆盖安装到 0.8.9 / build 21；加入受保护 USB 会话交接后，又以相同固定 Preview 签名原位覆盖最终代码候选。最后一次事务使用 `--no-streaming -r` 并返回独立 `Success`，首次安装时间保持不变、更新时间推进。设备回拉 APK 为 346,098 字节，SHA-256 `34DB1B9F2FD808D8BA7958F1744AA8915677F93FA7DABD820A62C86823F07C7D`，与提交 `6dcc75e65c848643d200787ec9271051e3701a14` 的完整 PublicRelease APK 逐字一致；新增的受保护 Provider 也已在安装包状态中出现。
 
 本轮 ADB 兼容连接只创建一块 TabLink VDD 和一个 Android 视频 Surface。W202DS 实际报告横屏逻辑 1920 × 1200、原生 1200 × 1920、旋转 1/4 圈、支持 60 / 90 Hz，当前与请求均为 90 Hz；NVENC 硬件编码的请求和有效速率均为 90 fps。把副屏位置沿相邻边缘移动 100 像素并恢复时，同一会话保持连接、帧计数持续推进，VDD 与 Surface 数量始终各为 1。退出 TabLink 后约 7.205 秒内 VDD 从 1 回到 0，活动桌面从 2 回到 1，ToDesk 的虚拟显示适配器未受影响。
 
 30.115 秒连续 SurfaceFlinger 测量得到物理 actual-present 86.9661 fps；同一最终样本的 Windows 呈现回调、Android 解码提交和 Android 呈现回调分别为 90.1825、89.9522 和 90.0041 fps。P95 / P99 / 最大间隔为 11.141 / 22.220 / 33.346 ms，覆盖缺口为 0。各指标含义与原始证据边界见 [0.8.9 验证记录](VERIFICATION-0.8.9.md)。
+
+安装新 APK 后又连续执行两轮“启动 Windows 候选 → 收到真实呈现 → 正常退出”，两轮之间没有强停、清数据或重新安装 Android 客户端。两轮均使用 ADB、1920 × 1200 / 90 Hz，只创建一块 TabLink VDD，并在 12 秒稳定窗口中继续增加发送和呈现帧；第二轮成功接管了仍在后台重试旧端点的 Android Session。每轮退出后 Windows 进程、TabLink VDD 和该设备上的反向映射数量都回到 0。
 
 一次性 token 实机重放、二维码轮换、逐连接挑战、活动撤销、整机重启、真实 Wi-Fi / USB 网络共享线路迁移、支持包真实 UI 和单独的 UI“停止连接”故障注入尚未完成，因此不包含在本次 Preview 的实机通过声明中；离线状态机测试不能替代这些实机边界。
 
