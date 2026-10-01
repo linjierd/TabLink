@@ -2,7 +2,7 @@
 
 <!-- tablink-version-contract: version=0.8.9; channel=preview; preview=1; androidVersionCode=21 -->
 
-TabLink 0.8.9 Preview 1 当前是源码候选。它把 0.8.8 发布后的线路恢复、安全清理、脱敏诊断和公开兼容性证据归入新的版本身份：Windows 为 `0.8.9`，Android 为 `0.8.9` / `versionCode 21`。在候选完成实机、公共构建、tag、Release 和公开回下载核验前，GitHub 上可下载的最新预览仍是 0.8.8 Preview 1；已签名的公网 `stable` 自动更新频道仍保持 0.8.0。
+TabLink 0.8.9 Preview 1 当前是完成核心 W202DS 实机验收的源码候选。它把 0.8.8 发布后的线路恢复、安全清理、脱敏诊断和公开兼容性证据归入新的版本身份：Windows 为 `0.8.9`，Android 为 `0.8.9` / `versionCode 21`。保留数据覆盖安装、唯一副屏、设备实际 1920 × 1200 / 90 Hz 模式、位置变化不断线、物理呈现测量和退出后的 VDD 回收已经通过；公共构建、tag、Release 和公开回下载核验仍待完成。GitHub 上可下载的最新预览仍是 0.8.8 Preview 1；已签名的公网 `stable` 自动更新频道仍保持 0.8.0。
 
 ## 线路变化时如何恢复
 
@@ -37,6 +37,16 @@ CI 同时覆盖 Windows 两种浏览器功能配置、DriverSetup、所有 manag
 ADB 兼容页先读取 Android 当前前台用户。安装操作把 APK 明确装入该用户；每次 USB 副屏会话再独立固定一次当前用户，让屏幕能力 provider、首次 Activity 启动与断线恢复始终使用同一个会话用户。若前台用户已经变化，恢复会在检查或重建反向通道前终止，不会静默切换到另一个用户。安装使用 Google Platform-Tools 的 `--no-streaming` 路径先完成文件传输、再交给系统包管理器提交，并且只有 ADB 返回独立的 `Success` 行才显示安装成功。这规避了部分厂商安装器在 streaming 事务中已经显示结果页、却一直不向 ADB 返回最终结果的问题；超时或含糊输出仍按失败处理，不会自动叠加第二个安装事务。每条命令继续绑定用户选中的唯一 USB 设备，并在执行前复核 Windows USB 身份、ADB 状态和设备排除规则。
 
 物理呈现测量工具同时修复了与 `session-health.json` 的字段漂移。0.8.9 分别记录 SurfaceFlinger actual-present 物理呈现、Windows 呈现回调增量、Android 解码提交和 Android 呈现回调，后三项都不能替代物理呈现。ADB 会话健康数据使用带域分隔的设备序列号 SHA-256 绑定测量目标，测量 JSON 不再保存原始序列号；该跨 C# / PowerShell 规范和字段映射已经加入根构建与 CI 门禁。
+
+## W202DS 核心实机候选结果
+
+唯一授权的 W202DS 已从 0.8.8 / build 20 保留数据覆盖安装到 0.8.9 / build 21。ADB 返回独立 `Success`，首次安装时间保持不变；设备回拉 APK 为 344,073 字节，SHA-256 `655CF12CDAFFA7E93ED690E1FEEA94BCA2F9B705D8957A6427AB004DBE4F9728`，与通过固定 Preview 签名门禁的干净候选 APK 逐字一致。
+
+本轮 ADB 兼容连接只创建一块 TabLink VDD 和一个 Android 视频 Surface。W202DS 实际报告横屏逻辑 1920 × 1200、原生 1200 × 1920、旋转 1/4 圈、支持 60 / 90 Hz，当前与请求均为 90 Hz；NVENC 硬件编码的请求和有效速率均为 90 fps。把副屏位置沿相邻边缘移动 100 像素并恢复时，同一会话保持连接、帧计数持续推进，VDD 与 Surface 数量始终各为 1。退出 TabLink 后约 7.205 秒内 VDD 从 1 回到 0，活动桌面从 2 回到 1，ToDesk 的虚拟显示适配器未受影响。
+
+30.115 秒连续 SurfaceFlinger 测量得到物理 actual-present 86.9661 fps；同一最终样本的 Windows 呈现回调、Android 解码提交和 Android 呈现回调分别为 90.1825、89.9522 和 90.0041 fps。P95 / P99 / 最大间隔为 11.141 / 22.220 / 33.346 ms，覆盖缺口为 0。各指标含义与原始证据边界见 [0.8.9 验证记录](VERIFICATION-0.8.9.md)。
+
+一次性 token 实机重放、二维码轮换、逐连接挑战、活动撤销、整机重启、真实 Wi-Fi / USB 网络共享线路迁移、支持包真实 UI 和单独的 UI“停止连接”故障注入尚未完成，因此不包含在本次 Preview 的实机通过声明中；离线状态机测试不能替代这些实机边界。
 
 ## 兼容性与不变项
 

@@ -4,7 +4,7 @@
 
 验证开始日期：2026-10-02。候选身份为 Windows `0.8.9`、Android `0.8.9` / `versionCode 21`，计划 tag 为 `v0.8.9-preview.1`。本文把离线源码门禁、实机结果和公共发布结果分开记录；0.8.8 的构建哈希、W202DS 帧率、线路表现或 Release 回下载结果不能替代 0.8.9 验证。
 
-当前结论：**0.8.9 Preview 1 源码候选，尚未完成实机与公共发布验收。** 公开下载仍为 0.8.8 Preview 1，签名 `stable` 清单仍为 0.8.0。
+当前结论：**0.8.9 Preview 1 已完成 W202DS 核心实机候选验收，公共构建、tag、Release 与公开回下载仍待完成。** 已通过范围包括保留数据覆盖安装、唯一副屏、设备实际显示参数、90 fps 编解码链路、位置变化不断线、物理呈现测量和退出后的精确 VDD 回收。一次性 token 重放、二维码轮换、撤销、整机重启、真实线路迁移和支持包真实 UI 仍是明确未测边界，不属于本次通过声明。公开下载仍为 0.8.8 Preview 1，签名 `stable` 清单仍为 0.8.0。
 
 ## 本版验证范围
 
@@ -28,7 +28,7 @@
 | Android JVM、`assembleDebug`、`lintDebug`、APK 签名 | 通过；debug APK 为 430,494 字节，SHA-256 `9F672878F77B642B7CC5FD2C2103D2F59174AD8C873215EE1CFA3C2E75CD19E8` | 包名 `com.tablink.client`、0.8.9 / build 21、minSdk 23、targetSdk 35；不运行真实 Android Keystore、MediaCodec 或网络迁移 |
 | `git diff --check` 与 18 个候选文件的隐私扫描 | 通过 | 覆盖 15 个已跟踪修改文件和 3 个新增文件；未发现个人用户目录、项目绝对路径、真实设备序列号、MAC 或配对秘密；命中项仅为回环/文档地址、固定工具哈希和明确标注的测试向量。只覆盖仓库文本与生成内容 |
 
-最近一次 0.8.8 后开发基线的 GitHub Actions run 为 [`36911542956`](https://github.com/linjierd/TabLink/actions/runs/36911542956)，Windows 与 Android 两个 job 均成功。它发生在版本提升之前，只能作为变更基线，不能证明 0.8.9 身份或产物。
+0.8.9 候选提交 `e34b2a99449884cb36b30342ab95defaacbfee5a` 对应的 GitHub Actions run 为 [`36920331236`](https://github.com/linjierd/TabLink/actions/runs/36920331236)，`windows-managed-tests` 与 `android-debug-tests` 均成功。后续实机记录提交会形成新的发布提交，因此创建 tag 前仍须等待精确最终提交对应的新 CI；这里的成功只证明该次候选提交。
 
 本轮 Windows、managed 和 Android 日志位于 E 盘 `artifacts/v0.8.9-offline-20261002-031634/`；版本契约的隔离负例结果位于 `artifacts/tmp/v089-contract-tests/`。首次 Windows 本地构建发生在版本提交之前，回读 FileVersion 为 `0.8.9.0`，ProductVersion 中的源修订仍是变更前基线 `7049c73dd934dd4d4927797d9b04b9c09aa560d8`；该记录只证明版本字段已经生效，不能作为最终发布提交证据。最终公共构建仍必须从干净提交重新生成并核对精确 ProductVersion。
 
@@ -36,20 +36,21 @@
 
 ## 身份与打包
 
-- [ ] 从干净候选提交构建 Windows，核对 `TabLink.exe` 的 FileVersion 为 `0.8.9.0`，ProductVersion 含 `0.8.9` 和精确源提交。
-- [x] 本地构建不可调试的 Android Release Preview；包名 `com.tablink.client`、`versionName 0.8.9`、`versionCode 21`、v1/v2 签名及固定签名证书 SHA-256 均通过门禁。该本地 APK 为 344,039 字节，SHA-256 `B7C0B31EA66F4A4F7C03D528BF419DF8AEB656A721771DD6D145FE370A2243F1`；它不是最终 GitHub 资产，提交后必须重建。
-- [ ] 在 W202DS 上从 0.8.8 覆盖安装，并从设备回读包名、版本、build、签名和候选 APK 哈希。
-- [ ] 完整 Windows 包包含对应 Android APK、许可、FFmpeg 两个 helper 及完整对应源码；公共包不包含 Google ADB 或受地域限制的浏览器依赖。
+- [x] 从干净候选提交 `e34b2a99449884cb36b30342ab95defaacbfee5a` 完成完整 `-PublicRelease`；`TabLink.exe` 的 FileVersion 为 `0.8.9.0`，ProductVersion 为 `0.8.9+e34b2a99449884cb36b30342ab95defaacbfee5a`。实机记录提交后仍须从精确最终提交重建，不能把该目录直接上传。
+- [x] 构建不可调试的 Android Release Preview；包名 `com.tablink.client`、`versionName 0.8.9`、`versionCode 21`、v1/v2 签名及固定签名证书 SHA-256 均通过门禁。该干净候选 APK 为 344,073 字节，SHA-256 `655CF12CDAFFA7E93ED690E1FEEA94BCA2F9B705D8957A6427AB004DBE4F9728`。
+- [x] 在唯一授权的 W202DS 上从 0.8.8 / build 20 保留数据覆盖安装到 0.8.9 / build 21；ADB 返回独立 `Success`，`firstInstallTime` 保持不变，`lastUpdateTime` 推进。设备回拉 `base.apk` 为 344,073 字节且 SHA-256 与候选 APK 完全一致，因此也逐字包含已通过构建门禁的同一固定签名。
+- [x] 候选 Windows 包共 463 个文件，包内清单覆盖除清单自身外的 462 项；包含对应 Android APK、许可、FFmpeg 两个 helper 及完整对应源码，没有 PDB、Google ADB 三件套或受地域限制的浏览器依赖。最终发布提交仍须重新执行同一检查。
 
-首次真机尝试使用提交前生成的 0.8.9 Preview APK 和默认 streaming 安装路径。W202DS 厂商安装器显示了不含版本/session 身份的“安装完成”页面，但 ADB 安装客户端没有返回，包管理器回读仍为 0.8.8 / build 20；该次尝试已只终止挂起的单个 ADB 客户端，未停止共享 ADB 服务，也没有卸载或清除应用数据。因此它明确记为**未完成**，不能作为 0.8.9 安装证据。后续只使用最终干净提交的 PublicRelease APK，通过唯一 W202DS 读取当前前台用户并执行一次对应用户的 `--no-streaming -r` 安装；只有 ADB 独立成功、设备版本/build、原安装时间、回拉 APK 哈希和固定签名全部匹配后才勾选本项。
+首次真机尝试使用提交前生成的 0.8.9 Preview APK 和默认 streaming 安装路径。W202DS 厂商安装器显示了不含版本/session 身份的“安装完成”页面，但 ADB 安装客户端没有返回，包管理器回读仍为 0.8.8 / build 20；该次尝试已只终止挂起的单个 ADB 客户端，未停止共享 ADB 服务，也没有卸载或清除应用数据。因此它明确记为**未完成**，不能作为 0.8.9 安装证据。随后使用干净候选提交的 PublicRelease APK、固定哈希的 Google r37 三件套和唯一 W202DS，读取当前前台用户后只启动一次 `--no-streaming -r` 事务；厂商安装器依次显示“允许安装”和“安装”时，只确认了这一个已有事务，没有发起重试。该事务最终返回独立 `Success`，并由上面的版本、时间与回拉 APK 证据闭环。
 
 ## W202DS 基本功能与单屏生命周期
 
-- [ ] 0.8.9 完成首次登记或既有可信身份重连，认证及屏幕参数完成前没有显示驱动变更。
-- [ ] 连接后只有一块 TabLink VDD 和一个接收设备；使用平板当前方向与真实上报模式。
-- [ ] 核对 1920 × 1200 逻辑尺寸、原生 1200 × 1920、面板 90 Hz / 请求 90 Hz；若设备状态不同，按实际值记录。
-- [ ] 正常停止、准备失败、超时和应用退出只回收本会话精确拥有的显示，并在停止后卸载 TabLink 虚拟显示设备。
-- [ ] 更改 Windows 显示器相对位置不应断开已经认证的会话。
+- [x] 0.8.9 ADB 兼容连接开始前 TabLink VDD 为 0；唯一 W202DS 的设备批准、Android 用户固定和屏幕参数读取完成后才出现本会话的一块 VDD。
+- [x] 连接后只有一块 TabLink VDD、一个接收设备和一个 Android 视频 Surface；Windows 从一个活动桌面变为两个，没有创建第二块 TabLink 副屏。
+- [x] W202DS 本轮实际报告横屏逻辑 1920 × 1200、原生 1200 × 1920、旋转 1/4 圈，支持 60 / 90 Hz，当前 90 Hz、请求 90 Hz；NVENC 硬件编码请求和有效速率均为 90 fps。
+- [x] 沿相邻边缘把 Windows 副屏位置移动 100 像素时，同一 Windows 进程、同一 ADB 会话、一块 VDD 和一个 Android Surface 均保持，发送与呈现帧继续增长；随后已恢复原位置，未发生断线。
+- [x] 在活动连接中请求 TabLink 自身正常退出后，程序完成 `StopAllAsync` 清理：约 7.205 秒内 TabLink 进程归零、VDD 从 1 回到 0、活动桌面从 2 回到 1；ToDesk 的虚拟显示适配器数量保持不变。
+- [ ] 本轮没有单独注入准备失败或首次呈现超时，也没有单独点击 UI 的“停止连接”；这些路径由离线状态机测试覆盖，但不作为新增实机通过项。
 
 ## 配对、撤销与整机重启
 
@@ -80,12 +81,20 @@
 
 | 指标 | 0.8.9 结果 | 测量方法 |
 | --- | ---: | --- |
-| 平板支持 / 当前面板 Hz | 未测 | 待设备只读能力与当前模式回读 |
-| Windows 请求 Hz | 未测 | 待当前会话配置记录 |
-| Windows 呈现回调增量 fps | 未测 | `session-health.measuredPresentedFps`；只表示回调增量，不是物理呈现 |
-| Android 解码提交 fps | 未测 | `session-health.ClientSubmittedFps` |
-| Android 呈现回调 fps | 未测 | `session-health.ClientPresentedFps` / `OnFrameRenderedListener`；不是物理呈现 |
-| 物理呈现 fps | 未测 | `Measure-AndroidPresentation.ps1` 的 SurfaceFlinger actual-present 时间戳；若不测则保持“未测” |
+| 平板支持 / 当前面板 Hz | 60 / 90；当前 90 | APK 显示能力与活动模式回读 |
+| Windows 请求 Hz | 90 | 当前会话目标配置；NVENC 有效编码 90 fps |
+| Windows 呈现回调增量 fps | 90.1825 | `session-health.measuredPresentedFps`；只表示回调增量，不是物理呈现 |
+| Android 解码提交 fps | 89.9522 | `session-health.ClientSubmittedFps` |
+| Android 呈现回调 fps | 90.0041 | `session-health.ClientPresentedFps` / `OnFrameRenderedListener`；不是物理呈现 |
+| 物理呈现 fps | 86.9661 | `Measure-AndroidPresentation.ps1` 的 SurfaceFlinger actual-present 时间戳 |
+
+本轮连续窗口为 30.115 秒，共观察到 2,619 次新 actual-present；P95 / P99 / 最大呈现间隔分别为 11.141 / 22.220 / 33.346 ms，估算错过 93 个垂直同步槽，环形记录覆盖缺口为 0，尾部没有停止推进。原始测量 JSON 与 latency 记录只保存在未提交的 E 盘私有验证目录；公开文档不保存原始设备序列号或其绑定值。
+
+## 本次 Preview 发布门禁与已知边界
+
+0.8.9 Preview 1 的硬件核心发布门禁是：保留数据覆盖安装、唯一目标与唯一副屏、设备实际方向/分辨率/刷新率、持续视频呈现、位置变化不断线、退出后精确 VDD 回收、干净提交的完整公共构建、精确提交 CI、annotated tag、四项 Release 资产及公开 HTTPS 回下载逐项一致。这些核心项通过后，可以带下面的明确限制发布 Preview。
+
+一次性 token 实机重放、二维码轮换、逐连接挑战值、活动撤销、整机重启后的可信重连、真实 Wi-Fi / USB 网络共享线路迁移、真实支持包 UI 保存和独立的 UI“停止连接”故障注入仍保持未勾选。离线自动测试覆盖相应协议与状态机，不等于实机通过；这些项目不阻止本次明确标为 Preview 的核心预发行，也不得在发布说明中写成已验证。
 
 ## 公共发布
 
