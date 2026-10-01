@@ -187,7 +187,10 @@ function Assert-FfmpegBinarySafe {
 
     $encoderNames = @(
         foreach ($line in ($encoders -split "`r?`n")) {
-            $encoderMatch = [regex]::Match($line, '^\s*[VAS\.FSCXBD]{6}\s+(?<Name>\S+)')
+            # FFmpeg uses the same six-column flag shape for legend rows such
+            # as `V..... = Video`. Requiring an identifier here prevents the
+            # legend's `=` token from being audited as an encoder name.
+            $encoderMatch = [regex]::Match($line, '^\s*[VAS\.FSCXBD]{6}\s+(?<Name>[A-Za-z0-9][A-Za-z0-9_.-]*)')
             if ($encoderMatch.Success) { $encoderMatch.Groups['Name'].Value }
         }
     )
