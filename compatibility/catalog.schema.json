@@ -1,0 +1,415 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TabLink curated compatibility catalog",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "reports"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "reports": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1000,
+      "items": {
+        "$ref": "#/$defs/report"
+      },
+      "description": "Records must have unique ids and be sorted by id using ordinal order."
+    }
+  },
+  "$defs": {
+    "publicLabel": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "Normalized public model or capability label. The validator rejects markup and private identifiers."
+    },
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "result",
+        "verifiedOn",
+        "source",
+        "tabLink",
+        "host",
+        "receiver",
+        "connection",
+        "display",
+        "video",
+        "verifiedFeatures",
+        "limitations",
+        "evidence"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^tlc-[0-9]{6}$"
+        },
+        "result": {
+          "type": "string",
+          "enum": [
+            "failed",
+            "limited",
+            "verified"
+          ]
+        },
+        "verifiedOn": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "community-verification",
+            "maintainer-verification"
+          ]
+        },
+        "tabLink": {
+          "$ref": "#/$defs/tabLink"
+        },
+        "host": {
+          "$ref": "#/$defs/host"
+        },
+        "receiver": {
+          "$ref": "#/$defs/receiver"
+        },
+        "connection": {
+          "type": "string",
+          "enum": [
+            "adb",
+            "browser",
+            "native-network",
+            "usb-tethering",
+            "wifi"
+          ]
+        },
+        "display": {
+          "$ref": "#/$defs/display"
+        },
+        "video": {
+          "$ref": "#/$defs/video"
+        },
+        "verifiedFeatures": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 11,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "app-process-restart-reconnect",
+              "browser-mode",
+              "extended-desktop",
+              "hardware-decoding",
+              "native-orientation",
+              "ninety-hz",
+              "single-display-cleanup",
+              "touch-input",
+              "trusted-reconnect",
+              "trusted-registration",
+              "usb-no-debug"
+            ]
+          },
+          "description": "Values must be sorted using ordinal order."
+        },
+        "limitations": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "active-revocation-not-tested",
+              "reduced-refresh-rate",
+              "route-migration-not-tested",
+              "software-decode-only",
+              "system-restart-not-tested",
+              "token-replay-not-tested",
+              "unstable",
+              "usb-debug-required"
+            ]
+          },
+          "description": "Values must be sorted using ordinal order."
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        }
+      }
+    },
+    "tabLink": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "channel",
+        "releaseTag"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+        },
+        "channel": {
+          "type": "string",
+          "enum": [
+            "development",
+            "preview",
+            "stable"
+          ]
+        },
+        "releaseTag": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operatingSystem",
+        "architecture",
+        "gpuVendor",
+        "gpuModel"
+      ],
+      "properties": {
+        "operatingSystem": {
+          "$ref": "#/$defs/publicLabel"
+        },
+        "architecture": {
+          "type": "string",
+          "enum": [
+            "arm64",
+            "x64"
+          ]
+        },
+        "gpuVendor": {
+          "$ref": "#/$defs/publicLabel"
+        },
+        "gpuModel": {
+          "$ref": "#/$defs/publicLabel"
+        }
+      }
+    },
+    "receiver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "platform",
+        "client",
+        "manufacturer",
+        "model",
+        "operatingSystem",
+        "decoder"
+      ],
+      "properties": {
+        "platform": {
+          "type": "string",
+          "enum": [
+            "android",
+            "harmonyos",
+            "ipados",
+            "ios",
+            "linux",
+            "macos",
+            "windows"
+          ]
+        },
+        "client": {
+          "type": "string",
+          "enum": [
+            "android-native",
+            "browser"
+          ]
+        },
+        "manufacturer": {
+          "$ref": "#/$defs/publicLabel"
+        },
+        "model": {
+          "$ref": "#/$defs/publicLabel"
+        },
+        "operatingSystem": {
+          "$ref": "#/$defs/publicLabel"
+        },
+        "decoder": {
+          "$ref": "#/$defs/publicLabel"
+        }
+      }
+    },
+    "display": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "logicalWidth",
+        "logicalHeight",
+        "nativeWidth",
+        "nativeHeight",
+        "rotationQuarterTurns",
+        "activeRefreshHz",
+        "requestedRefreshHz",
+        "supportedRefreshHz"
+      ],
+      "properties": {
+        "logicalWidth": {
+          "type": "integer",
+          "minimum": 320,
+          "maximum": 16384
+        },
+        "logicalHeight": {
+          "type": "integer",
+          "minimum": 320,
+          "maximum": 16384
+        },
+        "nativeWidth": {
+          "type": "integer",
+          "minimum": 320,
+          "maximum": 16384
+        },
+        "nativeHeight": {
+          "type": "integer",
+          "minimum": 320,
+          "maximum": 16384
+        },
+        "rotationQuarterTurns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "activeRefreshHz": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 480
+        },
+        "requestedRefreshHz": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 480
+        },
+        "supportedRefreshHz": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 480
+          },
+          "description": "Values must be sorted in ascending numeric order."
+        }
+      }
+    },
+    "video": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "codec",
+        "encoder",
+        "decoder",
+        "requestedFps",
+        "effectiveFps",
+        "submittedFps",
+        "presentationCallbackFps"
+      ],
+      "properties": {
+        "codec": {
+          "type": "string",
+          "enum": [
+            "h264"
+          ]
+        },
+        "encoder": {
+          "type": "string",
+          "enum": [
+            "amf",
+            "nvenc",
+            "quicksync",
+            "software",
+            "unknown"
+          ]
+        },
+        "decoder": {
+          "type": "string",
+          "enum": [
+            "hardware",
+            "software",
+            "unknown"
+          ]
+        },
+        "requestedFps": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 480,
+          "description": "The strict validator accepts at most three fractional digits and no exponent notation."
+        },
+        "effectiveFps": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 480,
+          "description": "The strict validator accepts at most three fractional digits and no exponent notation."
+        },
+        "submittedFps": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 480,
+          "description": "The strict validator accepts at most three fractional digits and no exponent notation."
+        },
+        "presentationCallbackFps": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 480,
+          "description": "The strict validator accepts at most three fractional digits and no exponent notation."
+        },
+        "physicalPresentationFps": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 480,
+          "description": "The strict validator accepts at most three fractional digits and no exponent notation."
+        },
+        "physicalPresentationMethod": {
+          "type": "string",
+          "enum": [
+            "external-camera",
+            "surfaceflinger"
+          ]
+        }
+      },
+      "dependentRequired": {
+        "physicalPresentationFps": [
+          "physicalPresentationMethod"
+        ],
+        "physicalPresentationMethod": [
+          "physicalPresentationFps"
+        ]
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "document",
+        "sourceCommit"
+      ],
+      "properties": {
+        "document": {
+          "type": "string",
+          "pattern": "^VERIFICATION-(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.md$"
+        },
+        "sourceCommit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    }
+  }
+}

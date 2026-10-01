@@ -39,6 +39,34 @@ personal data, or absolute paths from a contributor's computer. Use obvious
 test values such as `TEST-SERIAL-001` in code and tests. Raw device diagnostics
 belong outside the repository.
 
+## Compatibility catalog
+
+The public compatibility catalog is a curated evidence index, not telemetry and
+not a direct export of an Issue or support bundle. Each report describes one
+specific TabLink version, host, receiver, transport and display configuration.
+Maintain the distinction between requested refresh rate, decoder-submitted
+frames, presentation callbacks and physical presentation measurements. Missing
+evidence must remain explicitly unverified; do not generalize one successful
+configuration to a whole device family.
+
+Only maintainers should transcribe reviewed, public, non-unique facts into
+`compatibility/catalog.json`. Never copy an Issue body, ZIP member, attachment
+name or raw diagnostic output into the catalog. The validator rejects unknown
+fields and common identity, address, path and token patterns, but automated
+checks cannot prove that a model label is public or that a test claim is true.
+Human review remains required.
+
+After editing the catalog, regenerate the schema and Markdown view, then verify
+that the committed outputs are byte-for-byte current:
+
+```powershell
+dotnet run --project .\tools\TabLink.CompatibilityCatalog\TabLink.CompatibilityCatalog.csproj -c Release -- --root . --write
+dotnet run --project .\tools\TabLink.CompatibilityCatalog\TabLink.CompatibilityCatalog.csproj -c Release -- --root . --check
+```
+
+The tool is offline. It does not open Issues, unpack support bundles, inspect
+devices, or access the network. Review the resulting diff before committing.
+
 ## Licensing
 
 By contributing, you agree that your TabLink-authored contribution is provided

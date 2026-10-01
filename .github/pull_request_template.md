@@ -14,3 +14,13 @@ Do not claim physical-display success from source inspection or synthetic tests.
 - [ ] Driver, update, transport and input changes preserve ownership and
       fail-closed checks.
 - [ ] New third-party material includes its license and provenance.
+
+## Compatibility catalog (when applicable)
+
+- [ ] The report was manually transcribed from reviewed public, non-unique
+      facts; no Issue body, support-bundle JSON, attachment name or raw
+      diagnostic output was copied into the catalog.
+- [ ] Unverified capabilities remain unverified, and requested Hz is not
+      presented as measured FPS.
+- [ ] The catalog `--check` command passes and generated schema/Markdown files
+      are synchronized.

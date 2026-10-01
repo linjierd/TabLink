@@ -17,6 +17,9 @@ jobs:
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
+      - name: Verify compatibility catalog
+        shell: pwsh
+        run: dotnet run --project .\tools\TabLink.CompatibilityCatalog\TabLink.CompatibilityCatalog.csproj -c Release -- --root . --check
       - name: Build Windows projects
         shell: pwsh
         run: |

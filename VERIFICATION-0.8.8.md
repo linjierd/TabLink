@@ -50,11 +50,12 @@
 
 本节只记录已授权 W202DS 的 0.8.8 实机结果。没有向排除列表中的 F50 Pro 或其他设备发送安装、ADB、USB 切换或网络命令；文档、日志和发布资产不记录真实设备序列号。
 
+- [x] 本轮公开环境为 Windows 11 x64、NVIDIA RTX 4060 Laptop GPU 与 Android 13 的中兴 W202DS。W202DS 原生竖屏为 `1200 × 1920`，报告支持 60 / 90 Hz；本轮横屏 `1920 × 1200` 对应原生方向旋转 1/4 圈。这里只记录公开商品型号和非唯一能力信息。
 - [x] 覆盖安装公共候选 APK；从设备回读的安装包与候选逐字节一致：包名 `com.tablink.client`、`versionName 0.8.8`、`versionCode 20`、344,075 字节、SHA-256 `C2CEA0B404B0B624E77AE9CB67B6F7F9B19CB4483A1FD39E853823361945AFD7`。
 - [x] 使用五分钟登记链接首次登记；Android 外部链接先显示“确认连接这台电脑”，用户确认后 Windows 只新增一条可信设备记录。没有在文档或日志中保存二维码 bearer。
 - [x] 停止并重新启动 Android 客户端时没有再次传入配对 URI；客户端通过已保存的电脑证书固定和签名挑战自动恢复连接。
 - [x] Windows TabLink 重新启动后仍使用已有信任，平板无需重新扫码恢复；没有观察到第二条可信设备记录或第二块 VDD。
-- [x] 成功连接时 Windows 只有一块 TabLink VDD 和两块活动桌面；W202DS 当前方向上报并使用 `1920 × 1200`、屏幕 90 Hz / 请求 90 Hz。Android 解码器为 `c2.unisoc.avc.decoder`，电脑端编码为 NVENC / 90 fps；实测提交约 90.1、呈现约 90.0 帧/秒。
+- [x] 成功连接时 Windows 只有一块 TabLink VDD 和两块活动桌面；W202DS 当前方向上报并使用 `1920 × 1200`、屏幕 90 Hz / 请求 90 Hz。Android 解码器为 `c2.unisoc.avc.decoder`，电脑端编码为 NVENC / 90 fps；实测解码提交约 90.1、呈现回调约 90.0 帧/秒。这两个客户端计数不等同于 SurfaceFlinger 或外部相机测得的物理呈现帧率，本轮 0.8.8 核心路径没有记录物理呈现测量值。
 - [x] 找到并修复正常停止后的精确卸载阻塞：最终 generation 已退休时，同一进程 incarnation 的临时 bootstrap 已失去 marker 权限，但旧扫描仍把它误判为活动 owner。修复仅在空 marker 分支接受相同 PID 加相同进程启动时间；非空 marker、缺 marker、不同 owner、PID 复用和损坏状态继续失败关闭。定向驱动配置测试现为 93 条断言，并保留 192 条显示生命周期、22 场景 / 96 条单屏清理和 30 条分配回归。
 - [x] 在同一 Windows 进程中连续完成两轮“连接 → 正常停止”：每轮连接后活动屏为 2、PresentOnly VDD 为 1；停止后活动屏为 1、PresentOnly VDD 为 0，页面显示“已停止连接，虚拟副屏设备已卸载”。第二轮连接没有被旧 pending cleanup 拦截。
 - [ ] 尚未实机重放同一登记 token、轮换两枚二维码或逐次记录两个挑战值；对应协议边界已有离线固定向量和状态机测试，不把它们写成实机通过。
@@ -77,7 +78,7 @@
 | `SHA256SUMS.txt` | 326 | `960EBAC583853F35C1B11BDA325C86A771C42F02F505F3F77CB6F481BAD185E1` |
 
 - [x] 四项资产已从 GitHub Release 公开 URL 下载到独立 E 盘目录并重新计算哈希，结果与发布前资产及 GitHub 页面 digest 一致。Windows ZIP 有 462 个文件；与最终公共构建逐文件比对后，重复、越界、缺失、额外和内容哈希差异均为 0。公开 APK 与实机已安装候选具有同一 SHA-256，因此沿用已通过的包身份和签名结论。
-- [x] 三个交付目录 `E:\My\Documents\ChatGPT\日常\TabLink\dist\TabLink`、`E:\My\Desktop\output\tablink` 和 `E:\OneDrive\Desktop\TabLink` 均已同步为最终公共构建；每个目录包含 462 个文件，全部预期文件逐项哈希通过，`TabLink.exe` SHA-256 均为 `4310D8D78084A14AD6A6C5089F784AEE10AEBCD14F4C7346289BECA16E6021B7`。
+- [x] 源码树交付目录、桌面输出副本和 OneDrive 副本均已同步为最终公共构建；每个目录包含 462 个文件，全部预期文件逐项哈希通过，`TabLink.exe` SHA-256 均为 `4310D8D78084A14AD6A6C5089F784AEE10AEBCD14F4C7346289BECA16E6021B7`。公开记录不保留贡献者电脑上的绝对路径。
 - [x] 已从正式 HTTPS 地址重新下载稳定清单并使用固定 P-256 公钥按 ECDSA/SHA-256 验签。清单 `releaseId` 为 `tablink-0.8.0`，Windows 与 Android 平台版本均为 `0.8.0`，rollout 为 100%；0.8.8 Preview 1 没有推进 `stable`。
 
 公共 ZIP 的最终外层哈希不能写回该 ZIP 内的本文，否则会形成自引用并改变资产。最终资产级文件名、大小、SHA-256 和 GitHub 下载复核以 Release 外层 `SHA256SUMS.txt` 与发布记录为准；发布后在 `main` 补写的 post-release 证据不改变发布 tag，也不表示 tag 内的本文包含自身 ZIP 的最终哈希。

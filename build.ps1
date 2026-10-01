@@ -475,11 +475,14 @@ New-Item -ItemType Directory -Path $publishRoot -Force | Out-Null
 if (-not $PublicRelease) {
     & (Join-Path $projectRoot 'tools\Prepare-BundledAdb.ps1') -VerifyOnly
 }
+dotnet run --project (Join-Path $projectRoot 'tools\TabLink.CompatibilityCatalog\TabLink.CompatibilityCatalog.csproj') -c Release -- --root $projectRoot --check
+if ($LASTEXITCODE -ne 0) { throw 'Compatibility catalog verification failed.' }
 dotnet run --project (Join-Path $projectRoot 'tests\TabLink.Core.Tests\TabLink.Core.Tests.csproj') -c Release
 if ($LASTEXITCODE -ne 0) { throw 'Core tests failed.' }
 foreach ($windowsTest in @(
     'TabLink.AdbLocator.Tests',
     'TabLink.Browser.Tests',
+    'TabLink.CompatibilityCatalog.Tests',
     'TabLink.DriverConfiguration.Tests',
     'TabLink.DisplayAllocation.Tests',
     'TabLink.DisplayCleanup.Tests',

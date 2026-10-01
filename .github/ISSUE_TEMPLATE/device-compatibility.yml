@@ -1,5 +1,5 @@
 name: "设备兼容性 / Device compatibility"
-description: "报告特定 Windows、Android、GPU、显示模式或连接方式的兼容性。"
+description: "报告特定 Windows、接收设备、GPU、显示模式或连接方式的兼容性。"
 title: "[Compatibility] "
 labels:
   - "bug"
@@ -8,6 +8,8 @@ body:
     attributes:
       value: |
         请只提供厂商公开型号和非唯一的兼容性信息。这里是公开页面：不要填写或上传序列号、USB/PnP ID（包括实例路径）、IP/MAC 地址、本机或网络路径、配对链接、token、证书、密钥、原始日志或未经检查的诊断文件。
+
+        Issue 正文和附件只是供维护者审查的候选证据，不会自动导入公开兼容性目录，也不会被客户端下载。维护者只会逐字段手工整理公开、非唯一的信息；提交者的隐私确认和自动校验都不能代替人工复核。
 
   - type: dropdown
     id: report_kind
@@ -40,11 +42,11 @@ body:
       required: true
 
   - type: input
-    id: android
+    id: receiver
     attributes:
-      label: "Android 设备、系统与显示能力"
-      description: "填写厂商、公开型号、Android 版本/API、原生方向、分辨率、支持/请求刷新率和 decoder 公开名称。不要填写设备序列号、USB ID 或 MAC 地址。"
-      placeholder: "例如：某厂商公开型号；Android 14 / API 34；横屏 1920×1200；60/90 Hz；decoder 公开名称"
+      label: "接收设备、系统与显示能力"
+      description: "填写原生 Android 客户端或浏览器客户端、厂商与公开型号、Android/iOS/iPadOS/HarmonyOS/桌面系统版本、原生方向、分辨率、支持/请求刷新率和 decoder 公开名称。不要填写设备序列号、USB ID 或 MAC 地址。"
+      placeholder: "例如：浏览器客户端；某厂商公开型号；iPadOS 18；横屏 1920×1200；60/90 Hz；decoder 公开名称"
     validations:
       required: true
 
