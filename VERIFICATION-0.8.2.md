@@ -62,7 +62,7 @@
 
 上游 `mttvdd.cat` 与 `MttVDD.dll` 的固定 SHA-256 与来源记录一致，PowerShell `Get-AuthenticodeSignature` 和 SignTool 通用 Authenticode 策略 `/pa` 均通过；catalog 覆盖包内精确的 INF 与 DLL，INF 文本本身没有独立的嵌入签名。该签名不是 Microsoft WHQL 或 attestation 签名；本机 `signtool verify /kp` 对 catalog 返回“不受驱动 trust provider 信任的根”，因此本记录不声称通过 Windows 内核/驱动策略验签，也不据此声称所有电脑都能安装。TabLink 不会安装证书、启用测试签名、关闭安全启动或降低系统签名策略。完全相同哈希的驱动文件曾在 2026-09-30 的 0.8.1 本机真机生命周期中成功按需安装并正常回收，但那是历史兼容性证据，不替代 0.8.2 的独立验收。本轮没有执行 0.8.2 驱动安装；目标 Windows 的实际接受或拒绝属于下方真机验收范围。
 
-Android 候选包为 `android/artifacts/TabLink-android-0.8.2-preview.apk`。`aapt dump badging` 确认包名 `com.tablink.client`、`versionCode 14`、`versionName 0.8.2`、minSdk 23、targetSdk 35；签名证书 SHA-256 为 `B0035FFE0539E43DED2F5C40E3B7E4D4EDFB5D8F8063459FACA911EDC7500554`。该 release APK 使用既有开发证书，以便测试设备覆盖升级；不是商店生产签名。APK 包含构建提交元数据，因此最终字节数和 SHA-256 由同次 GitHub Release 外层 `SHA256SUMS.txt` 记录，避免版本控制文档反过来改变所记录的制品。显示与 pacing ContentProvider 由 `android.permission.DUMP` 限制读取，普通第三方应用不能直接轮询实时 codec 指标；目标平板上的 ADB shell 读取行为尚未实机确认。
+Android 候选包为 `android/artifacts/TabLink-android-0.8.2-preview.apk`。`aapt dump badging` 确认包名 `com.tablink.client`、`versionCode 14`、`versionName 0.8.2`、minSdk 23、targetSdk 35；签名证书 SHA-256 为 `B0035FFE0539E43DED2F5C40E3B7E4D4EDFB5D8F8063459FACA911EDC7500554`。该 release APK 从干净提交构建，并使用既有开发证书，以便测试设备覆盖升级；它不是应用商店生产签名。最终 APK 字节数和 SHA-256 由同次 GitHub Release 外层 `SHA256SUMS.txt` 绑定。显示与 pacing ContentProvider 由 `android.permission.DUMP` 限制读取，普通第三方应用不能直接轮询实时 codec 指标；目标平板上的 ADB shell 读取行为尚未实机确认。
 
 ## 真机验收
 
