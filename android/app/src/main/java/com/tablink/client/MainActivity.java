@@ -69,6 +69,8 @@ import javax.net.ssl.SSLHandshakeException;
 public final class MainActivity extends Activity {
     private enum ConfigurationDecision { APPLIED, CONFIRMATION_REQUIRED, IGNORED }
     private static final String ACTION_SET_RENDER_PACING = "com.tablink.client.SET_RENDER_PACING";
+    private static final String ACTION_APPLY_ADB_SESSION = "com.tablink.client.APPLY_ADB_SESSION";
+    private static final String EXTRA_ADB_ACTIVATION = "adbActivation";
     private static final int SCAN_REQUEST = 71;
     private static final long METRIC_FRESHNESS_MILLIS = 5000;
     private static final int BACKGROUND = Color.rgb(16, 25, 34);
@@ -232,10 +234,38 @@ public final class MainActivity extends Activity {
     }
 
     private ConfigurationDecision readConfiguration(Intent intent, boolean reentry) {
-        String pairing = intent.getDataString();
-        PairingLink parsedPairing = null;
         Session activeSession = session;
         boolean hasLiveSession = activeSession != null && activeSession.running;
+        AdbSessionConfiguration.Pending adbConfiguration = null;
+        if (ACTION_APPLY_ADB_SESSION.equals(intent.getAction()))
+            adbConfiguration = AdbSessionConfiguration.consume(intent.getStringExtra(EXTRA_ADB_ACTIVATION));
+        boolean sameUsbConfiguration = adbConfiguration != null && activeSession != null
+                && adbConfiguration.port == activeSession.sessionPort
+                && adbConfiguration.token.equals(activeSession.sessionToken);
+        AdbSessionHandoffPolicy.Decision adbHandoff = AdbSessionHandoffPolicy.decide(
+                adbConfiguration != null, hasLiveSession,
+                activeSession != null && activeSession.connected,
+                activeSession != null && activeSession.identity == null,
+                sameUsbConfiguration);
+        if (adbHandoff.applyConfiguration) {
+            if (adbHandoff.stopActiveSession) disconnect();
+            pendingExternalPairing = null;
+            configurationError = null;
+            networkPairing = null;
+            trustedComputer = null;
+            token = adbConfiguration.token;
+            port = adbConfiguration.port;
+            setIntent(new Intent(this, MainActivity.class).setAction(Intent.ACTION_MAIN));
+            return ConfigurationDecision.APPLIED;
+        }
+        if (adbConfiguration != null || ACTION_APPLY_ADB_SESSION.equals(intent.getAction()) && hasLiveSession) {
+            // The one-shot value has already been consumed. Never retain it in
+            // the exported Activity Intent or let a forged marker alter state.
+            return ConfigurationDecision.IGNORED;
+        }
+
+        String pairing = intent.getDataString();
+        PairingLink parsedPairing = null;
         if (pairing != null) {
             try {
                 parsedPairing = PairingLink.parse(pairing);
@@ -303,19 +333,16 @@ public final class MainActivity extends Activity {
             }
             return ConfigurationDecision.APPLIED;
         }
-        token = intent.getBooleanExtra("profileOnly", false) ? null : intent.getStringExtra("token");
-        port = intent.getIntExtra("port", 27183);
-        String host = intent.getStringExtra("host");
-        if (host != null && !"127.0.0.1".equals(host)) {
-            configurationError = "ADB 通道仅允许 127.0.0.1；网络连接请扫描电脑端二维码";
-        } else if (port < 1024 || port > 65535) {
-            configurationError = "电脑端提供的端口无效，请重新连接";
-        } else if (token != null && (token.isEmpty() || token.length() > 512)) {
-            configurationError = "电脑端提供的连接凭证无效，请重新连接";
-        }
-        if (token == null && host == null && !intent.getBooleanExtra("profileOnly", false))
+        // MainActivity is exported for launcher and tablink:// links. Raw ADB
+        // credentials in extras are therefore never trusted here; only the
+        // DUMP-protected provider can publish a matching one-shot marker.
+        token = null;
+        port = 27183;
+        if (!intent.getBooleanExtra("profileOnly", false)) {
             trustedComputer = loadTrustedComputer();
-        setIntent(intent);
+            if (trustedComputer != null) port = trustedComputer.port;
+        }
+        setIntent(new Intent(this, MainActivity.class).setAction(Intent.ACTION_MAIN));
         return ConfigurationDecision.APPLIED;
     }
 

@@ -95,6 +95,8 @@ try {
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\TrustedDeviceProtocol.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\TrustedComputer.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\PairingIntentPolicy.java'),
+        (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\AdbSessionConfiguration.java'),
+        (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\AdbSessionHandoffPolicy.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\TrustedComputerForgetCoordinator.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\DiscoveryCandidateSet.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\WireProtocol.java'),
@@ -134,6 +136,7 @@ try {
         (Join-Path $projectDirectory 'tests\TrustedDeviceProtocolTest.java'),
         (Join-Path $projectDirectory 'tests\TrustedComputerTest.java'),
         (Join-Path $projectDirectory 'tests\PairingIntentPolicyTest.java'),
+        (Join-Path $projectDirectory 'tests\AdbSessionHandoffTest.java'),
         (Join-Path $projectDirectory 'tests\TrustedComputerForgetCoordinatorTest.java'),
         (Join-Path $projectDirectory 'tests\DiscoveryCandidateSetTest.java')
     )
@@ -193,6 +196,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Trusted computer state test failed.' }
     & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.PairingIntentPolicyTest
     if ($LASTEXITCODE -ne 0) { throw 'External pairing intent policy test failed.' }
+    & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.AdbSessionHandoffTest
+    if ($LASTEXITCODE -ne 0) { throw 'Protected ADB session handoff test failed.' }
     & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.TrustedComputerForgetCoordinatorTest
     if ($LASTEXITCODE -ne 0) { throw 'Trusted computer removal transaction test failed.' }
     & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.DiscoveryCandidateSetTest

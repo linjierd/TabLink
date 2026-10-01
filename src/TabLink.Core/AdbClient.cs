@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 
 namespace TabLink.Core;
@@ -99,6 +100,7 @@ public sealed class AdbClient
     private readonly Func<CancellationToken, Task<IReadOnlyList<UsbDeviceIdentity>>> _inventoryProvider;
     private readonly IAdbProcessRunner _runner;
     private readonly SemaphoreSlim _commands = new(1, 1);
+    private readonly SemaphoreSlim _launches = new(1, 1);
 
     public AdbClient(string adbPath, DevicePolicy policy,
         Func<CancellationToken, Task<IReadOnlyList<UsbDeviceIdentity>>> inventoryProvider,
@@ -380,11 +382,31 @@ public sealed class AdbClient
         if (token is null || !Regex.IsMatch(token, @"\A[A-Za-z0-9_-]{16,256}\z", RegexOptions.CultureInvariant))
             throw new ArgumentException("The session token must contain 16–256 URL-safe alphanumeric characters.", nameof(token));
         ValidateUserBinding(user);
-        await ValidateCurrentAndroidUserAsync(user,cancellationToken).ConfigureAwait(false);
-        var androidUser=user.UserId.ToString(CultureInfo.InvariantCulture);
-        await TargetAsync(user.Device,
-            ["shell", "am", "start", "--user", androidUser, "-n", "com.tablink.client/.MainActivity", "--es", "token", token, "--ei", "port", endpoint.DevicePort.ToString(CultureInfo.InvariantCulture)],
-            TimeSpan.FromSeconds(15), cancellationToken, validateLaunchOutput: true).ConfigureAwait(false);
+        await _launches.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await ValidateCurrentAndroidUserAsync(user,cancellationToken).ConfigureAwait(false);
+            var androidUser=user.UserId.ToString(CultureInfo.InvariantCulture);
+            var activation=Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
+            var publication=await TargetAsync(user.Device,
+                ["shell", "content", "insert", "--uri", "content://com.tablink.client.adb/session",
+                    "--user", androidUser, "--bind", "activation:s:"+activation,
+                    "--bind", "token:s:"+token,
+                    "--bind", "port:i:"+endpoint.DevicePort.ToString(CultureInfo.InvariantCulture)],
+                TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
+            if (HasAndroidContentFailure(publication))
+                throw new AdbResponseException(new InvalidDataException(
+                    "Android rejected the protected session publication."));
+            // The provider write and Activity activation are separate shell calls.
+            // Revalidate the selected foreground Android user immediately before the
+            // activation so a user switch cannot redirect the one-shot marker.
+            await ValidateCurrentAndroidUserAsync(user,cancellationToken).ConfigureAwait(false);
+            await TargetAsync(user.Device,
+                ["shell", "am", "start", "--user", androidUser, "-n", "com.tablink.client/.MainActivity",
+                    "-a", "com.tablink.client.APPLY_ADB_SESSION", "--es", "adbActivation", activation],
+                TimeSpan.FromSeconds(15), cancellationToken, validateLaunchOutput: true).ConfigureAwait(false);
+        }
+        finally { _launches.Release(); }
     }
 
     void ValidateUserBinding(ApprovedAndroidUser user)
@@ -444,6 +466,14 @@ public sealed class AdbClient
         return output.Contains("Error:", StringComparison.OrdinalIgnoreCase) ||
             output.Contains("Exception", StringComparison.OrdinalIgnoreCase) ||
             Regex.IsMatch(output, @"(?im)^\s*Error\s+type\s+\d+\b", RegexOptions.CultureInvariant);
+    }
+
+    private static bool HasAndroidContentFailure(AdbCommandResult result)
+    {
+        var output = result.StandardOutput + "\n" + result.StandardError;
+        return output.Contains("Error while accessing provider", StringComparison.OrdinalIgnoreCase) ||
+            output.Contains("Exception", StringComparison.OrdinalIgnoreCase) ||
+            Regex.IsMatch(output, @"(?im)^\s*(?:Error\s*:|\[ERROR\])", RegexOptions.CultureInvariant);
     }
 
     private async Task<AdbCommandResult> RunCheckedAsync(IReadOnlyList<string> arguments, TimeSpan timeout, CancellationToken cancellationToken)

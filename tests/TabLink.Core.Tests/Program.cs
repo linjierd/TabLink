@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using TabLink.Core;
 
 // Child-process modes exercise ArgumentList and timeout handling without ever executing adb.
@@ -177,6 +178,22 @@ try
             client.LaunchAsync(sessionUser, "0123456789abcdef", endpoint));
         Assert(!runner.Calls.Any(call => call.Contains("query") || call.Contains("start")));
     });
+    await TestAsync("ADB handoff rechecks the Android user between protected publication and activation", async () =>
+    {
+        var policy = new DevicePolicy(new());
+        var runner = new FakeRunner { CurrentAndroidUserOutput = "12\n" };
+        runner.TargetHandler = command =>
+        {
+            if (command.Contains("insert")) runner.CurrentAndroidUserOutput = "13\n";
+            return new(0, "", "");
+        };
+        var client = Client(policy, runner);
+        var sessionUser = await client.BindCurrentAndroidUserAsync(policy.Approve(good, inventory));
+        await ThrowsAsync<AndroidUserChangedException>(() =>
+            client.LaunchAsync(sessionUser, "0123456789abcdef", endpoint));
+        Assert(runner.Calls.Count(call => call.Contains("insert")) == 1);
+        Assert(!runner.Calls.Any(call => call.Contains("start")));
+    });
     await TestAsync("All target commands use explicitly approved serial and bounded reverse", async () =>
     {
         var runner = new FakeRunner();
@@ -188,12 +205,28 @@ try
         await client.LaunchAsync(sessionUser, "0123456789abcdef0123456789abcdef", endpoint);
         await client.RemoveReverseAsync(approved, endpoint);
         var targets = runner.Calls.Where(x => x[0] != "devices").ToArray();
-        Assert(targets.Length == 5 && targets.All(x => x[0] == "-s" && x[1] == "TEST-TABLET-SERIAL-0001"));
+        Assert(targets.Length == 7 && targets.All(x => x[0] == "-s" && x[1] == "TEST-TABLET-SERIAL-0001"));
         Assert(targets[0].SequenceEqual(new[] { "-s", "TEST-TABLET-SERIAL-0001", "reverse", "--no-rebind", "tcp:54321", "tcp:27183" }));
         Assert(targets[1].SequenceEqual(new[] { "-s", "TEST-TABLET-SERIAL-0001", "shell", "am", "get-current-user" }));
         Assert(targets[2].SequenceEqual(targets[1]));
-        Assert(targets[3].Contains("--user") && targets[3].Contains("0") && targets[3].Last() == "54321");
-        Assert(targets[4].SequenceEqual(new[] { "-s", "TEST-TABLET-SERIAL-0001", "reverse", "--remove", "tcp:54321" }));
+        var publication = targets[3];
+        Assert(publication.Contains("content") && publication.Contains("insert")
+            && publication.Contains("content://com.tablink.client.adb/session")
+            && publication.Contains("token:s:0123456789abcdef0123456789abcdef")
+            && publication.Contains("port:i:54321"));
+        var publicationUser = Array.IndexOf(publication, "--user");
+        Assert(publicationUser >= 0 && publication[publicationUser + 1] == "0");
+        var activationBinding = publication.Single(value => value.StartsWith("activation:s:", StringComparison.Ordinal));
+        var activation = activationBinding["activation:s:".Length..];
+        Assert(Regex.IsMatch(activation, "\\A[0-9a-f]{32}\\z", RegexOptions.CultureInvariant));
+        Assert(targets[4].SequenceEqual(targets[1]));
+        var launch = targets[5];
+        Assert(launch.Contains("com.tablink.client.APPLY_ADB_SESSION") && launch.Contains("adbActivation")
+            && launch.Contains(activation) && !launch.Any(value => value.Contains("0123456789abcdef0123456789abcdef", StringComparison.Ordinal))
+            && !launch.Any(value => value.Contains("54321", StringComparison.Ordinal)));
+        var launchUser = Array.IndexOf(launch, "--user");
+        Assert(launchUser >= 0 && launch[launchUser + 1] == "0");
+        Assert(targets[6].SequenceEqual(new[] { "-s", "TEST-TABLET-SERIAL-0001", "reverse", "--remove", "tcp:54321" }));
         Assert(!runner.Calls.SelectMany(x => x).Any(x => x is "kill-server" or "tcpip" or "--remove-all"));
     });
     await Test("Per-session endpoints use the cryptographic ephemeral range", () =>
@@ -499,20 +532,103 @@ try
             "java.lang.SecurityException: Permission Denial", "Error type 3" })
         {
             var policy = new DevicePolicy(new());
-            var runner = new FakeRunner { TargetStandardOutput = error };
+            var runner = new FakeRunner
+            {
+                TargetHandler = command => command.Contains("start")
+                    ? new(0, error, "") : new(0, "", "")
+            };
             var client = Client(policy, runner);
             var sessionUser = await client.BindCurrentAndroidUserAsync(policy.Approve(good, inventory));
             await ThrowsAsync<AdbCommandException>(() => client.LaunchAsync(sessionUser, "0123456789abcdef", endpoint));
-            Assert(runner.Calls.Count == 6);
+            Assert(runner.Calls.Count == 10);
+            Assert(runner.Calls.Count(call => call.Contains("start")) == 1);
         }
     });
     await TestAsync("Android launch stderr exception also fails with exit zero", async () =>
     {
         var policy = new DevicePolicy(new());
-        var runner = new FakeRunner { TargetStandardError = "Exception occurred while executing 'start':" };
+        var runner = new FakeRunner
+        {
+            TargetHandler = command => command.Contains("start")
+                ? new(0, "", "Exception occurred while executing 'start':") : new(0, "", "")
+        };
         var client = Client(policy, runner);
         var sessionUser = await client.BindCurrentAndroidUserAsync(policy.Approve(good, inventory));
         await ThrowsAsync<AdbCommandException>(() => client.LaunchAsync(sessionUser, "0123456789abcdef", endpoint));
+    });
+    await TestAsync("Protected provider errors fail closed even when content exits zero", async () =>
+    {
+        const string privateMarker = "PRIVATE-PROVIDER-ERROR-MARKER";
+        foreach (var error in new[]
+        {
+            "Error while accessing provider:\njava.lang.SecurityException: " + privateMarker,
+            "[ERROR] Unsupported type: private-provider-value " + privateMarker
+        })
+        {
+            var policy = new DevicePolicy(new());
+            var runner = new FakeRunner
+            {
+                TargetHandler = command => command.Contains("insert")
+                    ? new(0, "", error)
+                    : new(0, "Starting: Intent { cmp=com.tablink.client/.MainActivity }", "")
+            };
+            var client = Client(policy, runner);
+            var sessionUser = await client.BindCurrentAndroidUserAsync(policy.Approve(good, inventory));
+            try
+            {
+                await client.LaunchAsync(sessionUser, "0123456789abcdef", endpoint);
+                throw new Exception("Expected the protected publication to fail closed.");
+            }
+            catch (AdbResponseException ex)
+            {
+                Assert(!ex.Message.Contains(privateMarker, StringComparison.Ordinal));
+                Assert(!SafeErrorSummary.ForUser(ex).Contains(privateMarker, StringComparison.Ordinal));
+            }
+            Assert(runner.Calls.Count(call => call.Contains("insert")) == 1);
+            Assert(!runner.Calls.Any(call => call.Contains("start")));
+        }
+    });
+    await TestAsync("Concurrent protected launches cannot overwrite each other's one-shot marker", async () =>
+    {
+        var policy = new DevicePolicy(new());
+        var publicationEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releasePublication = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var publications = 0;
+        var runner = new FakeRunner
+        {
+            AsyncTargetHandler = async command =>
+            {
+                if (command.Contains("insert") && Interlocked.Increment(ref publications) == 1)
+                {
+                    publicationEntered.TrySetResult();
+                    await releasePublication.Task;
+                }
+                return command.Contains("start")
+                    ? new(0, "Starting: Intent { cmp=com.tablink.client/.MainActivity }", "")
+                    : new(0, "", "");
+            }
+        };
+        var client = Client(policy, runner);
+        var sessionUser = await client.BindCurrentAndroidUserAsync(policy.Approve(good, inventory));
+        var first = client.LaunchAsync(sessionUser, "aaaaaaaaaaaaaaaa", endpoint);
+        await publicationEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var second = client.LaunchAsync(sessionUser, "bbbbbbbbbbbbbbbb", endpoint);
+        try
+        {
+            await Task.Delay(50);
+            Assert(Volatile.Read(ref publications) == 1);
+        }
+        finally { releasePublication.TrySetResult(); }
+        await Task.WhenAll(first, second);
+        var transactions = runner.Calls.Where(call => call.Contains("insert") || call.Contains("start")).ToArray();
+        Assert(transactions.Length == 4);
+        for (var index = 0; index < transactions.Length; index += 2)
+        {
+            Assert(transactions[index].Contains("insert") && transactions[index + 1].Contains("start"));
+            var binding = transactions[index].Single(value => value.StartsWith("activation:s:", StringComparison.Ordinal));
+            var activation = binding["activation:s:".Length..];
+            Assert(transactions[index + 1].Contains(activation));
+        }
     });
     await TestAsync("Existing reverse mapping is neither replaced nor automatically removed", async () =>
     {
@@ -697,6 +813,7 @@ sealed class FakeRunner : IAdbProcessRunner
     public string CurrentAndroidUserOutput { get; set; } = "0\n";
     public Exception? TargetException { get; set; }
     public Func<string[], AdbCommandResult>? TargetHandler { get; set; }
+    public Func<string[], Task<AdbCommandResult>>? AsyncTargetHandler { get; set; }
     public Task<AdbCommandResult> RunAsync(string executable, IReadOnlyList<string> arguments, TimeSpan timeout, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -706,6 +823,7 @@ sealed class FakeRunner : IAdbProcessRunner
         if (arguments.Count >= 5 && arguments[^2] == "am" && arguments[^1] == "get-current-user")
             return Task.FromResult(new AdbCommandResult(0, CurrentAndroidUserOutput, ""));
         if (TargetException is not null) return Task.FromException<AdbCommandResult>(TargetException);
+        if (AsyncTargetHandler is not null) return AsyncTargetHandler(arguments.ToArray());
         return Task.FromResult(TargetHandler?.Invoke(arguments.ToArray()) ??
             new AdbCommandResult(TargetExitCode, TargetStandardOutput, TargetStandardError));
     }
