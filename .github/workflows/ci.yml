@@ -13,8 +13,8 @@ jobs:
   windows-managed-tests:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
       - name: Build Windows projects
@@ -38,21 +38,25 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Set up JDK 17
         uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
       - name: Install Android SDK platform and build tools
         shell: pwsh
         run: |
+          $androidSdk = @($env:ANDROID_SDK_ROOT, $env:ANDROID_HOME) |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and (Test-Path -LiteralPath $_ -PathType Container) } |
+            Select-Object -First 1
+          if (-not $androidSdk) { throw 'GitHub Windows runner did not provide an Android SDK.' }
           $sdkManager = Get-Command sdkmanager.bat -ErrorAction SilentlyContinue
           if (-not $sdkManager) { $sdkManager = Get-Command sdkmanager -ErrorAction Stop }
-          & $sdkManager.Source 'platforms;android-35' 'build-tools;35.0.0'
+          & $sdkManager.Source "--sdk_root=$androidSdk" 'platforms;android-35' 'build-tools;35.0.0'
           if ($LASTEXITCODE -ne 0) { throw 'Android SDK package installation failed.' }
+          "ANDROID_SDK_ROOT=$androidSdk" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "ANDROID_HOME=$androidSdk" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Set up Gradle 8.13
         uses: gradle/actions/setup-gradle@v6
         with:
