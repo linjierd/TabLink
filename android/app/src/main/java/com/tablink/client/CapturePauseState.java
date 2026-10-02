@@ -12,6 +12,6 @@ public final class CapturePauseState {
         if (explicitPaused == null) return this;
         if (!explicitPaused) return new CapturePauseState();
         String value = newMessage == null ? "" : newMessage.trim();
-        return new CapturePauseState(true, value.isEmpty() ? "电脑暂时无法采集画面，等待恢复" : value);
+        return new CapturePauseState(true, value.isEmpty() ? "capture-paused" : value);
     }
 }

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Globalization;
 using TabLink.Core;
 
 // Child-process modes exercise ArgumentList and timeout handling without ever executing adb.
@@ -19,6 +20,56 @@ string temporary = Path.Combine(Path.GetTempPath(), "TabLink-Core-Tests-" + Guid
 Directory.CreateDirectory(temporary);
 try
 {
+    await Test("Language preference follows system culture until explicitly saved", () =>
+    {
+        var path = Path.Combine(temporary, "language-preference", "language.json");
+        var preferences = new LanguagePreferencesStore(path);
+        var missingChinese = preferences.Load(CultureInfo.GetCultureInfo("zh-SG"));
+        var missingEnglish = preferences.Load(CultureInfo.GetCultureInfo("en-SG"));
+        Assert(missingChinese.Mode == ProductLanguageMode.System &&
+            missingChinese.EffectiveLanguage == ProductLanguage.SimplifiedChinese &&
+            missingChinese.Status == LanguagePreferencesLoadStatus.MissingSystemDefault);
+        Assert(missingEnglish.Mode == ProductLanguageMode.System &&
+            missingEnglish.EffectiveLanguage == ProductLanguage.English &&
+            missingEnglish.Status == LanguagePreferencesLoadStatus.MissingSystemDefault);
+        preferences.Save(ProductLanguageMode.English);
+        var explicitEnglish = preferences.Load(CultureInfo.GetCultureInfo("zh-CN"));
+        Assert(explicitEnglish.Mode == ProductLanguageMode.English &&
+            explicitEnglish.EffectiveLanguage == ProductLanguage.English &&
+            explicitEnglish.Status == LanguagePreferencesLoadStatus.Loaded);
+        preferences.Save(ProductLanguageMode.SimplifiedChinese);
+        Assert(preferences.Load(CultureInfo.GetCultureInfo("en-US")).EffectiveLanguage == ProductLanguage.SimplifiedChinese);
+        preferences.Save(ProductLanguageMode.System);
+        var explicitSystem = preferences.Load(CultureInfo.GetCultureInfo("zh-TW"));
+        Assert(explicitSystem.Mode == ProductLanguageMode.System &&
+            explicitSystem.EffectiveLanguage == ProductLanguage.SimplifiedChinese &&
+            explicitSystem.Status == LanguagePreferencesLoadStatus.Loaded);
+    });
+    await Test("Damaged language preference safely returns to the system language", () =>
+    {
+        var folder = Path.Combine(temporary, "damaged-language-preference");
+        Directory.CreateDirectory(folder);
+        var path = Path.Combine(folder, "language.json");
+        var preferences = new LanguagePreferencesStore(path);
+        foreach (var damaged in new[]
+        {
+            "{", "{}", "{\"schemaVersion\":1,\"language\":\"fr\"}",
+            "{\"schemaVersion\":1,\"language\":\"en\",\"extra\":true}",
+            "{\"schemaVersion\":1,\"schemaVersion\":1,\"language\":\"en\"}"
+        })
+        {
+            File.WriteAllText(path, damaged);
+            var result = preferences.Load(CultureInfo.GetCultureInfo("zh-HK"));
+            Assert(result.Mode == ProductLanguageMode.System &&
+                result.EffectiveLanguage == ProductLanguage.SimplifiedChinese &&
+                result.Status == LanguagePreferencesLoadStatus.InvalidSystemDefault);
+        }
+        File.WriteAllBytes(path, [0xff, 0xfe, 0xfd]);
+        var invalidUtf8 = preferences.Load(CultureInfo.GetCultureInfo("en-GB"));
+        Assert(invalidUtf8.Mode == ProductLanguageMode.System &&
+            invalidUtf8.EffectiveLanguage == ProductLanguage.English &&
+            invalidUtf8.Status == LanguagePreferencesLoadStatus.InvalidSystemDefault);
+    });
     await Test("ADB child process ignores caller-controlled routing and serial environment", () =>
     {
         var names = new[] { "ADB_SERVER_SOCKET", "ADB_VENDOR_KEYS", "ANDROID_ADB_SERVER_PORT", "ANDROID_SERIAL" };

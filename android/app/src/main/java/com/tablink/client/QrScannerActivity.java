@@ -2,6 +2,7 @@ package com.tablink.client;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
@@ -47,6 +48,10 @@ public final class QrScannerActivity extends Activity implements TextureView.Sur
     private int previewWidth;
     private int previewHeight;
 
+    @Override protected void attachBaseContext(Context base) {
+        super.attachBaseContext(AppLanguage.wrap(base));
+    }
+
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON | WindowManager.LayoutParams.FLAG_SECURE);
@@ -63,18 +68,18 @@ public final class QrScannerActivity extends Activity implements TextureView.Sur
         controls.setPadding(dp(20), dp(16), dp(20), dp(20));
         controls.setBackgroundColor(0xdd101922);
         instruction = new TextView(this);
-        instruction.setText("对准电脑端 TabLink 的连接二维码\n请让整个二维码出现在取景框内");
+        instruction.setText(R.string.qr_instruction);
         instruction.setTextSize(17);
         instruction.setTextColor(Color.WHITE);
         instruction.setGravity(Gravity.CENTER);
         instruction.setPadding(0, 0, 0, dp(12));
         controls.addView(instruction);
         Button paste = new Button(this);
-        paste.setText("改为粘贴连接链接");
+        paste.setText(R.string.qr_paste_instead);
         paste.setOnClickListener(v -> { setResult(RESULT_PASTE); finish(); });
         controls.addView(paste, new LinearLayout.LayoutParams(-1, dp(52)));
         Button cancel = new Button(this);
-        cancel.setText("返回");
+        cancel.setText(R.string.action_back);
         cancel.setOnClickListener(v -> finish());
         controls.addView(cancel, new LinearLayout.LayoutParams(-1, dp(48)));
         root.addView(controls, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
@@ -111,7 +116,7 @@ public final class QrScannerActivity extends Activity implements TextureView.Sur
         super.onRequestPermissionsResult(request, permissions, results);
         if (request != CAMERA_PERMISSION) return;
         if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) scheduleOpen();
-        else showMessage("未授予相机权限。可返回后重试，或使用下方的粘贴连接链接。它不需要相机权限。");
+        else showMessage(getString(R.string.qr_camera_permission_denied));
     }
 
     @Override public void onSurfaceTextureAvailable(SurfaceTexture texture, int width, int height) {
@@ -170,7 +175,7 @@ public final class QrScannerActivity extends Activity implements TextureView.Sur
             requestFrame(camera, expected);
         } catch (IOException | RuntimeException unavailable) {
             closeCamera();
-            showMessage("无法使用相机，可能正被其他应用占用。关闭占用相机的应用后重试，或使用粘贴连接链接。");
+            showMessage(getString(R.string.qr_camera_unavailable));
         }
     }
 
@@ -210,11 +215,11 @@ public final class QrScannerActivity extends Activity implements TextureView.Sur
             } catch (ReaderException noQrInThisFrame) {
                 // A camera frame without a readable QR is normal.
             } catch (IllegalArgumentException invalidLink) {
-                showMessage("这个二维码不是有效的 TabLink 连接码。请扫描电脑端当前会话的二维码。");
+                showMessage(getString(R.string.qr_invalid_code));
             }
             cameraWork.postDelayed(() -> {
                 try { requestFrame(active, expected); }
-                catch (RuntimeException cameraLost) { closeCamera(); showMessage("相机连接中断，可返回重试或粘贴连接链接。"); }
+                catch (RuntimeException cameraLost) { closeCamera(); showMessage(getString(R.string.qr_camera_interrupted)); }
             }, 120);
         });
     }

@@ -69,7 +69,7 @@ final class H264Decoder {
                     guard let refcon, let frameRef else { return }
                     let decoder = Unmanaged<H264Decoder>.fromOpaque(refcon).takeUnretainedValue()
                     guard let context = decoder.finishFrame(UInt64(UInt(bitPattern: frameRef))) else { return }
-                    guard status == noErr else { decoder.onFailure?("硬件解码未能输出图像"); return }
+                    guard status == noErr else { decoder.onFailure?(L10n.text("decoder.outputFailed")); return }
                     guard let image else { return } // A reported dropped frame has no presentation to acknowledge.
                     let microseconds = CMTimeConvertScale(pts, timescale: 1_000_000, method: .default).value
                     decoder.onFrame?(DecodedFrame(connectionID: context.connectionID, id: context.id,

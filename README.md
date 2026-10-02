@@ -48,6 +48,14 @@ The native Android client supports Android 6.0 / API 23 and later. Actual H.264 
 
 TabLink never creates a second, third, or fourth TabLink display. Registered devices do not increase the display limit. Connecting reserves one receiver and one TabLink virtual display; stopping the session releases that display.
 
+## Interface languages
+
+TabLink provides **English** and **Simplified Chinese** interfaces across the Windows host, Android client, optional browser receiver, and the source projects for iOS / iPadOS and HarmonyOS NEXT. Each client offers **Follow system**, **简体中文**, and **English**. A new installation follows the operating-system language: `zh-*` uses Simplified Chinese, and every other language uses English.
+
+The selected mode is stored locally on that client and is independent of pairing, trusted-device records, device exclusions, display leases, update policy, and the custom author footer. Changing the language refreshes user-facing controls, connection status, update text, diagnostics guidance, and receiver messages without recreating the pairing or intentionally disconnecting an active display. Protocol names, URLs, hashes, device identifiers, and machine-readable diagnostic values remain unchanged.
+
+The public Windows and Android packages contain both languages. The browser receiver keeps its choice in browser-local storage. The Apple and HarmonyOS implementations also contain both resource sets and persistent language selection in source, but those two native projects still require their platform toolchains, signing, store publication, and real-device acceptance before they can be offered as downloads.
+
 ## Connect over Wi-Fi or USB tethering
 
 The native network route does **not** require developer mode, USB debugging, wireless debugging, or network ADB.

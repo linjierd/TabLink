@@ -41,9 +41,10 @@ internal sealed partial class MainForm
     Control BuildNetworkPanel()
     {
         var page=new Panel{Dock=DockStyle.Fill,BackColor=Color.White,Padding=new Padding(20),AutoScroll=true};
-        var layout=new TableLayoutPanel{Dock=DockStyle.Top,AutoSize=true,ColumnCount=1,RowCount=6};
+        var layout=new TableLayoutPanel{Dock=DockStyle.Top,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,ColumnCount=1,RowCount=6};
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));page.Controls.Add(layout);
-        var help=new Label{AutoSize=true,Dock=DockStyle.Top,Margin=new Padding(0,0,0,12),Text="电脑和平板接入同一局域网；使用数据线时，请在平板开启 USB 网络共享。\n打开 TabLink 客户端扫码即可连接，无需开发者模式。"};
+        for(var row=0;row<layout.RowCount;row++)layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        var help=new Label{AutoSize=true,Dock=DockStyle.Top,Margin=new Padding(0,0,0,12),Text="电脑和平板连接同一局域网；数据线连接时，请开启平板 USB 网络共享。\n打开 TabLink 客户端扫码连接，无需开发者模式。"};
         networks.Margin=new Padding(0,0,0,12);layout.Controls.Add(networks);
         var actions=Flow(refreshNetworks,startNetwork,stopNetwork,manageTrustedDevices);actions.AutoSize=true;actions.Margin=new Padding(0,0,0,12);layout.Controls.Add(actions);
         layout.Controls.Add(help);
@@ -53,7 +54,7 @@ internal sealed partial class MainForm
         instructions.Controls.Add(pairingHint);instructions.Controls.Add(copyPairing);pairing.Controls.Add(instructions);layout.Controls.Add(pairing);
         var openApk=new Button{Text="打开 APK 所在文件夹"};
         var tools=Flow(openApk);tools.AutoSize=true;tools.Margin=new Padding(0,14,0,10);layout.Controls.Add(tools);
-        var notes=new Label{AutoSize=true,Dock=DockStyle.Top,ForeColor=muted,Text="USB 网络共享可能同时改变电脑的上网线路；TabLink 不修改默认路由或 DNS。\n平板完成认证并上报屏幕参数后，电脑才按需安装唯一虚拟屏；停止连接会卸载该设备并清理监听与防火墙规则。\n实际帧率受无线信号和设备性能影响；APK 继续按屏幕原生尺寸与支持的刷新率请求显示。"};layout.Controls.Add(notes);
+        var notes=new Label{AutoSize=true,Dock=DockStyle.Top,ForeColor=muted,Text="USB 网络共享可能改变上网线路；TabLink 不修改路由或 DNS。\n认证后才安装唯一虚拟屏；断开时卸载并清理规则。\n帧率取决于信号和性能；客户端请求原生分辨率与刷新率。"};layout.Controls.Add(notes);
         help.MaximumSize=notes.MaximumSize=new Size(870,0);
         page.SizeChanged+=(_,_)=>{var width=Math.Max(300,page.ClientSize.Width-page.Padding.Horizontal-30);help.MaximumSize=notes.MaximumSize=new Size(width,0);};
         refreshNetworks.Click+=async(_,_)=>await GuardAsync(RefreshNetworksAsync);
@@ -83,11 +84,13 @@ internal sealed partial class MainForm
         if(browserNetworks.SelectedIndex<0&&browserNetworks.Items.Count>0)browserNetworks.SelectedIndex=0;
         if(networks.Items.Count==0)
         {
-            const string unavailable="尚无可用线路：请连接 Wi-Fi 或开启平板 USB 网络共享";
+            var unavailable=Ui("尚无可用线路：请连接 Wi-Fi 或开启平板 USB 网络共享",
+                "No route is available. Connect to Wi-Fi or enable USB tethering on the tablet.");
             networks.Items.Add(unavailable);networks.SelectedIndex=0;browserNetworks.Items.Add(unavailable);browserNetworks.SelectedIndex=0;
         }
-        if(!HasAnySessions&&connectionMode.SelectedIndex==0){status.Text="选择 Wi-Fi 或 USB 网络共享线路，开始配对";metrics.Text="本地加密连接 · 无需 USB 调试";}
-        Log($"网络线路刷新完成：{available.Count} 条；被排除的 USB 设备与虚拟网卡不会参与配对。");
+        if(!HasAnySessions&&connectionMode.SelectedIndex==0){ShowStatus("选择 Wi-Fi 或 USB 网络共享线路，开始配对","Select a Wi-Fi or USB-tethering route to begin pairing");SetMetrics("本地加密连接 · 无需 USB 调试","Encrypted local connection · no USB debugging");}
+        Log(Ui($"网络线路刷新完成：{available.Count} 条；被排除的 USB 设备与虚拟网卡不会参与配对。",
+            $"Network routes refreshed: {available.Count}. Excluded USB devices and virtual adapters are not used for pairing."));
         UpdateButtons();
     }
 
@@ -100,7 +103,7 @@ internal sealed partial class MainForm
                 throw new InvalidOperationException("设备正在认证、重连或传输，暂时不能生成新的配对二维码。");
             PublishNetworkPairing(listening,refresh:true);
             networkRegistrationRequested=true;
-            SetStatus("新的配对二维码将在 5 分钟后失效；已登记设备仍可自动重连");
+            SetStatus("新的配对二维码将在 5 分钟后失效；已登记设备仍可自动重连","The new pairing QR code expires in five minutes; registered devices can still reconnect automatically");
             return Task.CompletedTask;
         }
         pendingTrustedRecoveryStart=null;
@@ -133,8 +136,8 @@ internal sealed partial class MainForm
             {
                 if(trustedAutoStartSuppressed)return;
                 if(ReferenceEquals(pendingTrustedRecoveryStart,pending))
-                    Log("已确认网络线路尚未恢复，将只重试该线路："+SafeError(ex));
-                else Log("网络线路恢复已停止，需要时请重新点击“开始配对”："+SafeError(ex));
+                    Log(Ui("已确认网络线路尚未恢复，将只重试该线路：","The confirmed network route has not recovered; only that route will be retried: ")+SafeError(ex));
+                else Log(Ui("网络线路恢复已停止，需要时请重新点击“开始配对”：","Network-route recovery stopped. Choose Start pairing when needed: ")+SafeError(ex));
             }
             return;
         }
@@ -145,7 +148,7 @@ internal sealed partial class MainForm
             if(networks.SelectedItem is NetworkInterfaceChoice selected)
                 await StartNetworkRouteAsync(selected,autoTrusted:true);
         }
-        catch(Exception ex){Log("可信设备自动监听尚未就绪："+SafeError(ex));}
+        catch(Exception ex){Log(Ui("可信设备自动监听尚未就绪：","Trusted-device automatic listening is not ready: ")+SafeError(ex));}
     }
 
     Task StartNetworkRouteAsync(NetworkInterfaceChoice requestedRoute,bool autoTrusted)
@@ -219,7 +222,7 @@ internal sealed partial class MainForm
         try
         {
             BeginConnectionHealth(ConnectionHealthPath.NativeNetwork,$"选择线路 {choice.InterfaceAlias} · {choice.LocalAddress}");
-            SetStatus("正在为选中的线路准备加密配对…");
+            SetStatus("正在为选中的线路准备加密配对…","Preparing encrypted pairing on the selected route…");
             networkChoice=choice;
             networkFirewall=await NetworkFirewall.OpenAsync(choice,lifetime.Token);
             EnsureNetworkStartAuthorized(requested,startLease);
@@ -287,15 +290,18 @@ internal sealed partial class MainForm
                 networkRegistrationRequested=false;
                 networkRegistrationDeadlineUtc=default;
                 ClearPairing();
-                pairingHint.Text="正在等待已登记设备完成签名重连。\n\n如需登记另一台设备，请点击“生成新配对二维码”；二维码仅在生成后的 5 分钟内有效。";
+                SetPairingHint("正在等待已登记设备完成签名重连。\n\n如需登记另一台设备，请点击“生成新配对二维码”；二维码仅在生成后的 5 分钟内有效。","Waiting for a registered device to complete signed reconnection.\n\nTo register another device, choose Generate a new pairing QR code. The code is valid for five minutes.");
             }
             else
             {
                 PublishNetworkPairing(created,refresh:false,requested.RegistrationWindow?.DeadlineUtc);
                 networkRegistrationRequested=true;
             }
-            SetStatus(publishRegistration?"等待平板扫码或已信任设备自动重连，尚未启用副屏":"正在等待已信任平板自动重连，尚未启用副屏");
-            metrics.Text=$"{choice.InterfaceAlias} · {choice.LocalAddress} · 持久主机身份 + TLS · 无需 USB 调试";
+            if(publishRegistration)SetStatus("等待平板扫码或已信任设备自动重连，尚未启用副屏","Waiting for a tablet to scan or a trusted device to reconnect; the display is not enabled yet");
+            else SetStatus("正在等待已信任平板自动重连，尚未启用副屏","Waiting for a trusted tablet to reconnect; the display is not enabled yet");
+            SetMetrics(
+                $"{choice.InterfaceAlias} · {choice.LocalAddress} · 持久主机身份 + TLS · 无需 USB 调试",
+                $"{choice.InterfaceAlias} · {choice.LocalAddress} · persistent host identity + TLS · no USB debugging");
         }
         catch(OperationCanceledException){await StopAsync();throw;}
         catch(Exception ex){MarkConnectionHealthAttention(SafeError(ex));await StopAsync();throw;}
@@ -344,7 +350,8 @@ internal sealed partial class MainForm
                 await ReleasePrimaryDisplayAsync();
                 activePower?.Dispose();activePower=null;
                 tabletProfile=profile;
-                Log($"加密连接已认证，平板报告：{profile.Width} × {profile.Height}，当前 {profile.RefreshRate:F1} Hz，目标 {profile.RequestedRefreshRate} Hz。");
+            Log(Ui($"加密连接已认证，平板报告：{profile.Width} × {profile.Height}，当前 {profile.RefreshRate:F1} Hz，目标 {profile.RequestedRefreshRate} Hz。",
+                $"Encrypted connection authenticated. Tablet report: {profile.Width} × {profile.Height}, current {profile.RefreshRate:F1} Hz, target {profile.RequestedRefreshRate} Hz."));
                 networkDisplay=await PrepareDisplayAsync(profile,ct);
                 ct.ThrowIfCancellationRequested();
                 if(!ReferenceEquals(source,server))throw new OperationCanceledException();
@@ -366,12 +373,14 @@ internal sealed partial class MainForm
             sessionStartedUtc=DateTime.UtcNow;presentationDeadline.Reset(sessionStartedUtc);
             previousPresented=0;previousSampleUtc=sessionStartedUtc;
             Diagnostics.Save("tablet-display-profile.json",()=>profile,Log);
-            pairingHint.Text=$"已通过 {networkChoice?.InterfaceAlias} 认证。\n\n副屏：{profile.Width} × {profile.Height}\n请求刷新率：{profile.RequestedRefreshRate} Hz\n\n× 隐藏到托盘后继续传输。\n停止连接会收回副屏；已登记设备可在下次启动后自动重连。";
-            SetStatus("平板已配对，等待首帧显示确认…");
+            SetPairingHint($"已通过 {networkChoice?.InterfaceAlias} 认证。\n\n副屏：{profile.Width} × {profile.Height}\n请求刷新率：{profile.RequestedRefreshRate} Hz\n\n× 隐藏到托盘后继续传输。\n停止连接会收回副屏；已登记设备可在下次启动后自动重连。",$"Authenticated over {networkChoice?.InterfaceAlias}.\n\nDisplay: {profile.Width} × {profile.Height}\nRequested refresh rate: {profile.RequestedRefreshRate} Hz\n\nClosing the window keeps streaming in the tray.\nStopping reclaims the display; registered devices can reconnect after the next launch.");
+            SetStatus("平板已配对，等待首帧显示确认…","Tablet paired; waiting for first-frame presentation confirmation…");
         }
         catch(Exception ex)
         {
-            if(ex is not OperationCanceledException){var summary=SafeError(ex);MarkConnectionHealthAttention(summary);Log("网络副屏准备失败："+summary);pairingHint.Text="副屏准备失败："+summary+"\n\n修正后请在平板重新连接。";}
+            if(ex is not OperationCanceledException){var summary=SafeError(ex);MarkConnectionHealthAttention(summary);Log(Ui("网络副屏准备失败：","Network-display preparation failed: ")+summary);SetPairingHint(
+                "副屏准备失败："+SafeErrorForLanguage(ex,ProductLanguage.SimplifiedChinese)+"\n\n修正后请在平板重新连接。",
+                "Display preparation failed: "+SafeErrorForLanguage(ex,ProductLanguage.English)+"\n\nAfter correcting the issue, reconnect from the tablet.");}
             capture?.Dispose();capture=null;
             await ReleasePrimaryDisplayAsync();
             activePower?.Dispose();activePower=null;
@@ -417,7 +426,7 @@ internal sealed partial class MainForm
                 trustedNetworkRouteGeneration==generation)lastNetworkCheckUtc=DateTime.UtcNow;
             var result=trustedNetworkRoutes.CompleteUnavailableProbe(probe.Value);
             if(result.State!=TrustedNetworkRouteProbeState.Stale)
-                Log("网络线路清单暂时不可用，保留当前连接并稍后重试："+SafeError(ex));
+            Log(Ui("网络线路清单暂时不可用，保留当前连接并稍后重试：","The network-route list is temporarily unavailable. The current connection is retained and will be checked again: ")+SafeError(ex));
             return result;
         }
     }
@@ -435,7 +444,7 @@ internal sealed partial class MainForm
     {
         if(diagnosticPairing)try{File.Delete(DiagnosticPairingPath);}catch(IOException){}catch(UnauthorizedAccessException){}
         pairingUri=null;var old=pairingQr.Image;pairingQr.Image=null;pairingQr.Visible=false;old?.Dispose();
-        pairingHint.Text="选择线路后点击“开始配对”。首次扫码登记可信设备；以后可自动发现并重连。";
+        SetPairingHint("选择线路后点击“开始配对”。首次扫码登记可信设备；以后可自动发现并重连。","Select a route and choose Start pairing. The first scan registers a trusted device; later connections can be discovered and restored automatically.");
     }
 
     void PublishNetworkPairing(FrameServer source,bool refresh,DateTime? absoluteDeadlineUtc=null)
@@ -456,7 +465,7 @@ internal sealed partial class MainForm
         using var stream=new MemoryStream(code.GetGraphic(8));
         using var decoded=Image.FromStream(stream);
         pairingQr.Image?.Dispose();pairingQr.Image=new Bitmap(decoded);pairingQr.Visible=true;
-        pairingHint.Text=$"在平板 TabLink 中点击“扫码连接”。\n\n线路：{networkChoice?.InterfaceAlias}\n地址：{networkChoice?.LocalAddress}:27184\n\n首次扫码会把这台平板登记为可信设备；以后可自动发现并完成签名重连。二维码只能使用一次，并会在 5 分钟后失效。\n\n无法扫码时，可复制连接链接到平板粘贴。";
+        SetPairingHint($"在平板 TabLink 中点击“扫码连接”。\n\n线路：{networkChoice?.InterfaceAlias}\n地址：{networkChoice?.LocalAddress}:27184\n\n首次扫码会把这台平板登记为可信设备；以后可自动发现并完成签名重连。二维码只能使用一次，并会在 5 分钟后失效。\n\n无法扫码时，可复制连接链接到平板粘贴。",$"Choose Scan to connect in TabLink on the tablet.\n\nRoute: {networkChoice?.InterfaceAlias}\nAddress: {networkChoice?.LocalAddress}:27184\n\nThe first scan registers this tablet as trusted; later it can be discovered and reconnect with a signature. The QR code is single-use and expires after five minutes.\n\nIf scanning is unavailable, copy and paste the connection link on the tablet.");
     }
 
     void ExpireNetworkPairingUi()
@@ -464,7 +473,7 @@ internal sealed partial class MainForm
         networkRegistrationRequested=false;
         networkRegistrationDeadlineUtc=default;
         ClearPairing();
-        pairingHint.Text="配对二维码已使用或已超过 5 分钟。已登记设备仍可自动重连；如需添加设备，请点击“生成新配对二维码”。";
+        SetPairingHint("配对二维码已使用或已超过 5 分钟。已登记设备仍可自动重连；如需添加设备，请点击“生成新配对二维码”。","The pairing QR code was used or has expired. Registered devices can still reconnect automatically; choose Generate a new pairing QR code to add a device.");
         UpdateButtons();
     }
     void UpdateNetworkButtons(bool idle)
@@ -473,11 +482,11 @@ internal sealed partial class MainForm
         var canRefreshRegistration=!busy&&!stopping&&!closing&&!exitStarting&&!updateExitStarted&&!connectionStarts.IsStarting&&capture is null&&server is {} listening&&
             listening.CanRefreshRegistration&&networkChoice is not null;
         startNetwork.Enabled=idle&&networks.SelectedItem is NetworkInterfaceChoice||canRefreshRegistration;
-        startNetwork.Text=canRefreshRegistration?(pairingUri is null?"生成新配对二维码":"更换配对二维码"):"开始配对";
+        startNetwork.Text=canRefreshRegistration?(pairingUri is null?Ui("生成新配对二维码","Generate a new pairing QR code"):Ui("更换配对二维码","Replace pairing QR code")):Ui("开始配对","Start pairing");
         stopNetwork.Enabled=!busy&&!stopping&&!closing&&!exitStarting&&!updateExitStarted&&(server is not null||HasPendingNetworkStart);
         copyPairing.Enabled=pairingUri is not null&&!stopping&&!closing&&!exitStarting&&!updateExitStarted;
         manageTrustedDevices.Enabled=!busy&&!stopping&&!closing&&!exitStarting&&!updateExitStarted&&!connectionStarts.IsStarting&&nativeTrust is not null;
-        manageTrustedDevices.Text=$"可信设备（{nativeTrust?.Count??0}）";
+        manageTrustedDevices.Text=$"{Ui("可信设备","Trusted devices")} ({nativeTrust?.Count??0})";
     }
 
     void ShowTrustedDevices()
@@ -486,18 +495,18 @@ internal sealed partial class MainForm
         if(trust is null){ShowError(new IOException("长期可信配对存储不可用："+(nativeTrustError??"请检查受保护存储。")));return;}
         using var dialog=new Form
         {
-            Text="TabLink · 可信设备",StartPosition=FormStartPosition.CenterParent,Size=new Size(680,430),
+            Text=Ui("TabLink · 可信设备","TabLink · Trusted devices"),StartPosition=FormStartPosition.CenterParent,Size=new Size(680,430),
             MinimumSize=new Size(560,340),Font=Font,BackColor=Color.White,ShowInTaskbar=false
         };
         var root=new TableLayoutPanel{Dock=DockStyle.Fill,Padding=new Padding(14),ColumnCount=1,RowCount=3};
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));root.RowStyles.Add(new RowStyle(SizeType.Percent,100));root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.Controls.Add(new Label{AutoSize=true,MaximumSize=new Size(620,0),ForeColor=muted,
-            Text="首次扫码后保存设备公钥。自动发现只提供地址提示；每次连接仍要通过持久电脑证书和新的签名挑战。移除后，该设备必须重新扫码。"},0,0);
+            Text=Ui("首次扫码后保存设备公钥。自动发现只提供地址提示；每次连接仍要通过持久电脑证书和新的签名挑战。移除后，该设备必须重新扫码。","The device public key is saved after the first scan. Discovery supplies only an address hint; every connection still requires the persistent computer certificate and a fresh signed challenge. Removed devices must scan again.")},0,0);
         var list=new ListView{Dock=DockStyle.Fill,View=View.Details,FullRowSelect=true,GridLines=true,HideSelection=false};
-        list.Columns.Add("设备名称",220);list.Columns.Add("最近使用",180);list.Columns.Add("设备身份",210);
+        list.Columns.Add(Ui("设备名称","Device name"),220);list.Columns.Add(Ui("最近使用","Last used"),180);list.Columns.Add(Ui("设备身份","Device identity"),210);
         root.Controls.Add(list,0,1);
-        var remove=new Button{Text="移除选中设备",AutoSize=true};
-        var close=new Button{Text="关闭",AutoSize=true,DialogResult=DialogResult.OK};
+        var remove=new Button{Text=Ui("移除选中设备","Remove selected device"),AutoSize=true};
+        var close=new Button{Text=Ui("关闭","Close"),AutoSize=true,DialogResult=DialogResult.OK};
         root.Controls.Add(Flow(remove,close),0,2);dialog.Controls.Add(root);dialog.AcceptButton=close;
         void Reload()
         {
@@ -522,7 +531,7 @@ internal sealed partial class MainForm
                 if(!revoked)return;
                 if(string.Equals(server?.AuthenticatedDeviceId,selected.DeviceId,StringComparison.Ordinal))
                     await StopAsync();
-                Log("已撤销一台可信设备；未记录或显示完整设备身份。");
+                Log(Ui("已撤销一台可信设备；未记录或显示完整设备身份。","A trusted device was revoked; its complete identity was neither logged nor displayed."));
             }
             catch(Exception ex)
             {

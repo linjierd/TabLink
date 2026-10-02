@@ -20,6 +20,33 @@ jobs:
       - name: Verify GitHub language contract
         shell: pwsh
         run: .\tools\Test-GitHubLanguageContract.ps1
+      - name: Verify product localisation contract
+        shell: pwsh
+        run: .\tools\Test-LocalizationContract.ps1
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Verify Apple localisation resources and project references
+        shell: pwsh
+        run: |
+          python .\native\apple\tools\generate_project.py
+          if ($LASTEXITCODE -ne 0) { throw 'Apple Xcode project generation failed.' }
+          git diff --exit-code -- .\native\apple\TabLink.xcodeproj
+          if ($LASTEXITCODE -ne 0) { throw 'The checked-in Apple Xcode project is stale. Regenerate and commit it.' }
+          python .\native\apple\tools\verify_source.py
+          if ($LASTEXITCODE -ne 0) { throw 'Apple source verification failed.' }
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Verify HarmonyOS localisation resources and project references
+        shell: pwsh
+        run: |
+          node .\native\harmony\tests\protocol.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'HarmonyOS protocol verification failed.' }
+          node .\native\harmony\tests\update-policy.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'HarmonyOS update verification failed.' }
+          node .\native\harmony\tests\project-check.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'HarmonyOS source verification failed.' }
       - name: Verify Android presentation measurement contract
         shell: pwsh
         run: .\tools\Test-AndroidPresentationMeasurement.ps1
@@ -57,6 +84,9 @@ jobs:
       - name: Verify GitHub language contract
         shell: pwsh
         run: .\tools\Test-GitHubLanguageContract.ps1
+      - name: Verify product localisation contract
+        shell: pwsh
+        run: .\tools\Test-LocalizationContract.ps1
       - name: Set up JDK 17
         uses: actions/setup-java@v6
         with:

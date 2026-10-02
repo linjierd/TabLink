@@ -42,18 +42,44 @@ def rejects(function, value):
         return True
     return False
 
+def localized_strings(path):
+    text = path.read_text(encoding="utf-8")
+    pairs = re.findall(r'^\s*"((?:[^"\\]|\\.)+)"\s*=\s*"((?:[^"\\]|\\.)*)"\s*;\s*$', text, re.MULTILINE)
+    keys = [key for key, _ in pairs]
+    check(len(keys) == len(set(keys)), f"duplicate localization key in {path.name}")
+    check(len(pairs) > 0 and not re.sub(r'^\s*"(?:[^"\\]|\\.)+"\s*=\s*"(?:[^"\\]|\\.)*"\s*;\s*$', '', text,
+                                        flags=re.MULTILINE).strip(), f"invalid strings syntax in {path.name}")
+    return dict(pairs)
+
 def main():
     fixture = json.loads((ROOT / "Tests/Protocol/Fixtures/protocol.json").read_text(encoding="utf-8"))
     info = plistlib.loads((ROOT / "Info.plist").read_bytes())
     check(info["CFBundleURLTypes"][0]["CFBundleURLSchemes"] == ["tablink"], "URL scheme")
     check(bool(info["NSLocalNetworkUsageDescription"]) and bool(info["NSCameraUsageDescription"]), "permission descriptions")
     check(info["UIApplicationSceneManifest"]["UIApplicationSupportsMultipleScenes"] is False, "one active scene")
+    check(info["CFBundleDevelopmentRegion"] == "en", "unsupported Apple languages fall back to English")
+    en_strings = localized_strings(ROOT / "Resources/en.lproj/Localizable.strings")
+    zh_strings = localized_strings(ROOT / "Resources/zh-Hans.lproj/Localizable.strings")
+    en_info = localized_strings(ROOT / "Resources/en.lproj/InfoPlist.strings")
+    zh_info = localized_strings(ROOT / "Resources/zh-Hans.lproj/InfoPlist.strings")
+    check(en_strings.keys() == zh_strings.keys(), "English and Simplified Chinese UI resource keys match")
+    check(en_info.keys() == zh_info.keys(), "English and Simplified Chinese InfoPlist resource keys match")
+    check(all(en_strings[key] and zh_strings[key] for key in en_strings), "localized UI values are nonempty")
+    check(all(en_info[key] and zh_info[key] for key in en_info), "localized InfoPlist values are nonempty")
+    placeholders = lambda value: re.findall(r"%(?:[0-9]+\$)?[@df]", value.replace("%%", ""))
+    check(all(placeholders(en_strings[key]) == placeholders(zh_strings[key]) for key in en_strings),
+          "English and Simplified Chinese format placeholders match")
     project_path = ROOT / "TabLink.xcodeproj/project.pbxproj"
     before = project_path.read_bytes()
     subprocess.run([sys.executable, str(ROOT / "tools/generate_project.py")], check=True, capture_output=True)
     check(project_path.read_bytes() == before, "deterministic up-to-date project")
     project = before.decode("utf-8")
     check("MARKETING_VERSION = 0.8.0" in project and "CURRENT_PROJECT_VERSION = 2" in project, "Apple version metadata 0.8.0 build 2")
+    check("developmentRegion = en" in project and 'knownRegions = (en, "zh-Hans", Base,)' in project,
+          "Xcode project declares English and Simplified Chinese regions")
+    for resource in ("Localizable.strings", "InfoPlist.strings"):
+        check(f"name = {resource};" in project and f"Resources/en.lproj/{resource}" in project and
+              f"Resources/zh-Hans.lproj/{resource}" in project, f"localized {resource} is bundled")
     source_paths = sorted(str(p.relative_to(ROOT)).replace("\\", "/") for p in (ROOT / "Sources").rglob("*") if p.suffix in (".swift", ".metal"))
     for source in source_paths:
         check(f'path = "{source}";' in project, f"project missing {source}")
@@ -111,8 +137,8 @@ def main():
     check("UIApplication.shared.open" in manager and "URLSession.shared.bytes" in manager, "bounded background check and App Store handoff")
     check("StableUpdateManager.shared.start()" in delegate and "sceneDidBecomeActive" in delegate and "scheduledTimer" in manager, "launch foreground periodic checks")
     check("updateStatus" in main and "updateButton" in main and "UIAlert" not in manager + main, "nonblocking connection-panel update state")
-    check(all(name in stable for name in ("自动更新", "自动下载后手动安装", "从不更新")) and
-          "decodePersisted" in stable and "return .never" in stable, "three persisted update modes and fail-closed decoding")
+    check(all(key in en_strings for key in ("update.mode.automatic", "update.mode.downloadThenAsk", "update.mode.never")) and
+          "decodePersisted" in stable and "return .never" in stable, "three localized persisted update modes and fail-closed decoding")
     check("guard updateMode != .never" in manager and "cancelActiveCheck()" in manager and
           "timer?.invalidate()" in manager, "never mode cancels work and gates update network checks")
     check("selectNewest(manifests" in manager and "decisionFingerprint" in stable and
@@ -134,8 +160,30 @@ def main():
     check(all(name in protocol_tests for name in ("reorderedURLOnlyMirrors", "installerConflict", "rolloutConflict",
           "conflictFloor", "stable-after-conflict")),
           "semantic mirror equivalence and conflict XCTest fixtures exist")
-    check("showsMenuAsPrimaryAction" in main and "立即检查正式版更新" in main and
-          "StableUpdateMode.allCases" in main, "in-app update-mode settings and explicit check action")
+    localization = (ROOT / "Sources/App/AppLocalization.swift").read_text(encoding="utf-8")
+    native_session = (ROOT / "Sources/App/NativeSession.swift").read_text(encoding="utf-8")
+    check("showsMenuAsPrimaryAction" in main and 'L10n.text("action.checkUpdate")' in main and
+          "StableUpdateMode.allCases" in main, "localized in-app update-mode settings and explicit check action")
+    check("AppLanguage: String, CaseIterable" in localization and "case system" in localization and
+          'case simplifiedChinese = "zh-Hans"' in localization and 'case english = "en"' in localization and
+          'preferenceKey = "appLanguageV1"' in localization and "Locale.preferredLanguages.first" in localization and
+          'hasPrefix("zh") ? "zh-Hans" : "en"' in localization,
+          "persisted system, Simplified Chinese and English language choices")
+    check("enum HostStatusText" in localization and "knownMessages" in localization and
+          "containsHan == L10n.isSimplifiedChinese" in localization and
+          'L10n.text(capturePaused ? "session.capturePausedGeneric" : "session.hostStatusGeneric")' in localization and
+          "HostStatusText.localize(status.message" in native_session and "refreshLocalizedHostStatus" in native_session and
+          "session?.refreshLocalizedHostStatus()" in main,
+          "host status uses known local mappings and hides language-mismatched free text without reconnecting")
+    used_localization_keys = set(re.findall(r'L10n\.text\("([^"]+)"', '\n'.join(
+        p.read_text(encoding="utf-8") for p in (ROOT / "Sources/App").glob("*.swift"))))
+    check(used_localization_keys <= set(en_strings), "every Apple L10n key exists in both language resources")
+    check({"language.system", "language.zhHans", "language.english", "settings.title",
+           "action.scan", "action.paste", "scanner.unavailable", "status.invalidPairing",
+           "session.connectingEndpoint", "session.hostRejected", "transport.pinRejected",
+           "transport.networkFailed", "update.mode.automatic", "update.mode.downloadThenAsk",
+           "update.mode.never", "update.available", "update.unavailable"} <= used_localization_keys,
+          "language, settings, scan/link, certificate trust, connection errors and update states are localized")
     check(not re.search(r"replaceItem|moveItem|removeItem|\.ipa\b", manager, re.IGNORECASE), "no in-app package replacement")
     apple_update_fixture = json.loads((ROOT / "Tests/Protocol/Fixtures/stable-manifest-valid.json").read_text(encoding="utf-8"))
     shared_update_fixture = json.loads((ROOT.parents[1] / "android/tests/fixtures/stable-manifest-valid.json").read_text(encoding="utf-8"))

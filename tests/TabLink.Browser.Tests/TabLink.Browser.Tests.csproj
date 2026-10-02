@@ -10,6 +10,7 @@
     <Compile Include="../../src/TabLink.Windows/InputDesktopAvailability.cs" Link="InputDesktopAvailability.cs" />
     <Compile Include="../../src/TabLink.Windows/SessionPresentationDeadline.cs" Link="SessionPresentationDeadline.cs" />
     <Compile Include="../../src/TabLink.Windows/AnnexBParser.cs" Link="AnnexBParser.cs" />
+    <Compile Include="../../src/TabLink.Windows/WindowsUiText.cs" Link="WindowsUiText.cs" />
     <ProjectReference Include="../../src/TabLink.Core/TabLink.Core.csproj" />
     <PackageReference Include="SIPSorcery" Version="10.0.16" />
     <FrameworkReference Include="Microsoft.AspNetCore.App" />

@@ -79,7 +79,7 @@ foreach ($trustedHash in @(
     '120BEF587119C6CB926B86B9BE90FDFBCE38937588EAE28CD91A94CE63C7B965',
     '6CA69A2CA0E31309C087D288F058977D421AD03500E4C3E1DBD981241A069C60'
 )) {
-    Assert-Contract ($core.Contains($trustedHash, [StringComparison]::Ordinal)) "trusted ADB runtime hash missing: $trustedHash"
+    Assert-Contract ($core.IndexOf($trustedHash, [StringComparison]::Ordinal) -ge 0) "trusted ADB runtime hash missing: $trustedHash"
 }
 foreach ($unqualifiedAdbPath in @(
     'adb.exe',

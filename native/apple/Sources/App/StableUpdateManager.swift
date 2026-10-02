@@ -14,15 +14,15 @@ enum StableUpdateState: Equatable {
 
     var text: String {
         switch self {
-        case .disabled: return "正式版更新：已选择从不更新，不会联网检查"
-        case .checking: return "正式版更新：正在安全检查…"
-        case .current(let version): return "正式版更新：当前 \(version) 已是最新"
-        case .paused: return "正式版更新：发布方已暂停本次更新"
-        case .cohortDeferred: return "正式版更新：分批发布尚未覆盖此设备"
-        case .unsupportedProtocol(let required): return "正式版更新：需要客户端支持更新协议 \(required)，当前版本无法安全处理"
-        case .notPublished: return "正式版更新：iOS / iPadOS 版本尚未发布"
-        case .available(let version, _): return "正式版更新：App Store 已有 \(version)"
-        case .unavailable: return "正式版更新：暂时无法完成安全检查"
+        case .disabled: return L10n.text("update.disabled")
+        case .checking: return L10n.text("update.checking")
+        case .current(let version): return L10n.text("update.current", version)
+        case .paused: return L10n.text("update.paused")
+        case .cohortDeferred: return L10n.text("update.cohortDeferred")
+        case .unsupportedProtocol(let required): return L10n.text("update.unsupportedProtocol", required)
+        case .notPublished: return L10n.text("update.notPublished")
+        case .available(let version, _): return L10n.text("update.available", version)
+        case .unavailable: return L10n.text("update.unavailable")
         }
     }
     var installerURL: URL? { if case .available(_, let url) = self { return url }; return nil }

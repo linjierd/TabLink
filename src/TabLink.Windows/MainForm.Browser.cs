@@ -33,8 +33,8 @@ internal sealed partial class MainForm
         var layout=new TableLayoutPanel{Dock=DockStyle.Top,AutoSize=true,ColumnCount=1,RowCount=6};
         for(var i=0;i<layout.RowCount;i++)layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         var help=new Label{AutoSize=true,MaximumSize=new Size(820,0),ForeColor=muted,Text=BrowserRtcSession.IsSupported
-            ?"本地离线 HTTPS + WebRTC。首次使用需信任本机证书；当前只允许一台设备作为副屏。"
-            :"此公开发行包未包含浏览器 WebRTC 接收组件。Android 手机和平板请使用原生 APK，通过 Wi-Fi、USB 网络共享或 ADB 兼容模式连接。"};
+            ?Ui("本地离线 HTTPS + WebRTC。首次使用需信任本机证书；当前只允许一台设备作为副屏。","Offline local HTTPS + WebRTC. Trust this computer's certificate on first use. Only one device can be the second screen.")
+            :Ui("此公开发行包未包含浏览器 WebRTC 接收组件。Android 手机和平板请使用原生 APK，通过 Wi-Fi、USB 网络共享或 ADB 兼容模式连接。","This public build does not include the browser WebRTC receiver. On Android, use the native APK over Wi-Fi, USB tethering or ADB compatibility mode.")};
         var route=new TableLayoutPanel{Dock=DockStyle.Top,AutoSize=true,ColumnCount=3,RowCount=1,Margin=new Padding(0,10,0,10)};
         route.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,90));route.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));route.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         route.Controls.Add(new Label{Text="网络线路",AutoSize=true,Margin=new Padding(0,7,8,0)},0,0);route.Controls.Add(browserNetworks,1,0);route.Controls.Add(refreshBrowserNetworks,2,0);layout.Controls.Add(route,0,0);
@@ -57,8 +57,8 @@ internal sealed partial class MainForm
         exportCa.Click+=(_,_)=>
         {
             if(browserHost is not {} host)return;
-            using var save=new SaveFileDialog{FileName="TabLink-本机证书.cer",Filter="公开 CA 证书|*.cer",OverwritePrompt=true};
-            if(save.ShowDialog(this)==DialogResult.OK)try{File.Copy(host.CaCertificatePath,save.FileName,true);Log("已导出本机公开证书。请传到接收设备安装，并核对指纹。");}catch(Exception ex){ShowError(ex);}
+            using var save=new SaveFileDialog{FileName=Ui("TabLink-本机证书.cer","TabLink-computer-certificate.cer"),Filter=Ui("公开 CA 证书|*.cer","Public CA certificate|*.cer"),OverwritePrompt=true};
+            if(save.ShowDialog(this)==DialogResult.OK)try{File.Copy(host.CaCertificatePath,save.FileName,true);Log(Ui("已导出本机公开证书。请传到接收设备安装，并核对指纹。","The computer's public certificate was exported. Install it on the receiving device and verify the fingerprint."));}catch(Exception ex){ShowError(ex);}
         };
         return page;
     }
@@ -95,7 +95,7 @@ internal sealed partial class MainForm
             lifetime.Token.ThrowIfCancellationRequested();
             startLease.ThrowIfNotCurrent();
             browserHost=new BrowserHost(choice.LocalAddress,(id,p,ct)=>PrepareBrowserAsync(id,p,allowTouch,ct),1);
-            browserHost.Diagnostic+=(id,message)=>Log($"浏览器 {id.ToString()[..8]}：{message}");
+            browserHost.Diagnostic+=(id,message)=>Log(Ui($"浏览器 {id.ToString()[..8]}：{message}",$"Browser {id.ToString()[..8]}: {RuntimeUi(message)}"));
             browserHost.SessionChanged+=state=>
             {
                 if(state.State=="closed")
@@ -114,7 +114,9 @@ internal sealed partial class MainForm
             startLease.ThrowIfNotCurrent();
             MarkHealthRouteReady($"{choice.InterfaceAlias} · {choice.LocalAddress}:27185 · 本地 HTTPS/WebRTC 已启动");
             MarkHealthAuthenticationStarted("等待浏览器使用当前单次二维码完成认证与屏幕参数上报");
-            CreateBrowserPairing();SetStatus("浏览器接入已开启，等待设备扫码");metrics.Text=$"{choice.InterfaceAlias} · 本地 HTTPS + WebRTC · 单设备";
+            CreateBrowserPairing();SetStatus("浏览器接入已开启，等待设备扫码","Browser connection is ready; waiting for a device to scan");SetMetrics(
+                $"{choice.InterfaceAlias} · 本地 HTTPS + WebRTC · 单设备",
+                $"{choice.InterfaceAlias} · local HTTPS + WebRTC · one device");
         }
         catch(Exception ex){MarkConnectionHealthAttention(SafeError(ex));await StopBrowserAsync();throw;}
     }
@@ -146,7 +148,7 @@ internal sealed partial class MainForm
                     browserDisplays.TryRemove(id,out _);
                     try
                     {
-                        try{owned.Input.Dispose();}catch(Exception inputError){Log("浏览器画面输入清理需要检查："+SafeError(inputError));}
+                        try{owned.Input.Dispose();}catch(Exception inputError){Log(Ui("浏览器画面输入清理需要检查：","Browser video-input cleanup needs attention: ")+SafeError(inputError));}
                         await owned.Reservation.DisposeAsync();
                         browserCleanupReservations.TryRemove(id,out _);
                     }
@@ -156,7 +158,7 @@ internal sealed partial class MainForm
                         var detail=OwnedDisplayCleanupFailureDetail(ex);MarkOwnedDisplayCleanupAttention(detail);Log(detail);
                         throw;
                     }
-                    finally{try{owned.Power.Dispose();}catch(Exception powerError){Log("浏览器电源请求清理需要检查："+SafeError(powerError));}}
+                    finally{try{owned.Power.Dispose();}catch(Exception powerError){Log(Ui("浏览器电源请求清理需要检查：","Browser power-request cleanup needs attention: ")+SafeError(powerError));}}
                 });
         }
         catch(Exception ex)
@@ -164,10 +166,10 @@ internal sealed partial class MainForm
             if(browserEncoderGenerations.TryRemove(id,out var currentGeneration))InvalidateEncoderSelection(currentGeneration);
             else InvalidateEncoderSelection(encoderGeneration);
             MarkConnectionHealthAttention(SafeError(ex));
-            Log("浏览器独立副屏准备失败："+SafeError(ex));
+            Log(Ui("浏览器独立副屏准备失败：","Browser independent-display preparation failed: ")+SafeError(ex));
             browserDisplays.TryRemove(id,out _);
-            try{captureInput?.Dispose();}catch(Exception inputError){Log("浏览器准备失败后的画面输入清理需要检查："+SafeError(inputError));}
-            try{powerRequest?.Dispose();}catch(Exception powerError){Log("浏览器准备失败后的电源请求清理需要检查："+SafeError(powerError));}
+            try{captureInput?.Dispose();}catch(Exception inputError){Log(Ui("浏览器准备失败后的画面输入清理需要检查：","Video-input cleanup after browser preparation failure needs attention: ")+SafeError(inputError));}
+            try{powerRequest?.Dispose();}catch(Exception powerError){Log(Ui("浏览器准备失败后的电源请求清理需要检查：","Power-request cleanup after browser preparation failure needs attention: ")+SafeError(powerError));}
             if(reservation is not null)
             {
                 try{await reservation.DisposeAsync();browserCleanupReservations.TryRemove(id,out _);}
@@ -235,7 +237,7 @@ internal sealed partial class MainForm
         }
         var offer=host.CreatePairing();browserUri=offer.Uri;
         browserQr.Image?.Dispose();browserQr.Image=MakeQr(offer.Uri);browserQr.Visible=true;
-        browserHint.Text=$"1. 首次使用：导出并在设备信任本机证书。\n2. 扫码，在页面点击开始连接。\n\n二维码单次使用，到期 {offer.ExpiresUtc.LocalDateTime:HH:mm:ss}。\n需要重新配对时，请生成新的二维码。\n\n证书 SHA-256 指纹：\n{host.CaFingerprint}";
+        SetBrowserHint($"1. 首次使用：导出并在设备信任本机证书。\n2. 扫码，在页面点击开始连接。\n\n二维码单次使用，到期 {offer.ExpiresUtc.LocalDateTime:HH:mm:ss}。\n需要重新配对时，请生成新的二维码。\n\n证书 SHA-256 指纹：\n{host.CaFingerprint}",$"1. First use: export and trust this computer's certificate on the device.\n2. Scan the QR code and select Connect display on the page.\n\nThe QR code is single-use and expires at {offer.ExpiresUtc.LocalDateTime:HH:mm:ss}.\nGenerate a new code to pair again.\n\nCertificate SHA-256 fingerprint:\n{host.CaFingerprint}");
         UpdateBrowserButtons(!busy&&!closing&&!exitStarting&&!updateExitStarted&&!connectionStarts.IsStarting);
     }
 
@@ -249,7 +251,7 @@ internal sealed partial class MainForm
         }
         if(browserUri is null&&!browserQr.Visible)return;
         browserUri=null;var image=browserQr.Image;browserQr.Image=null;browserQr.Visible=false;image?.Dispose();
-        browserHint.Text="本次二维码已使用。设备断开后，请点击“重新生成配对二维码”获取新的单次链接。";
+        SetBrowserHint("本次二维码已使用。设备断开后，请点击“重新生成配对二维码”获取新的单次链接。","This QR code has been used. After the device disconnects, choose Generate a new pairing QR code for another single-use link.");
         UpdateBrowserButtons(!busy&&!closing&&!exitStarting&&!updateExitStarted&&!stopping&&!connectionStarts.IsStarting);
     }
 
@@ -257,7 +259,7 @@ internal sealed partial class MainForm
     {
         var host=browserHost;if(host is null)return;
         if(choices is not null&&browserChoice is {} selected&&!choices.Any(x=>SameNetworkBinding(x,selected)))
-        {Log("浏览器线路已断开或被排除，回收浏览器副屏。");await StopBrowserAsync();return;}
+        {Log(Ui("浏览器线路已断开或被排除，回收浏览器副屏。","The browser route disconnected or was excluded; reclaiming the browser display."));await StopBrowserAsync();return;}
         foreach(var item in browserDisplays.ToArray())
         {
             var current=item.Value;
@@ -275,18 +277,18 @@ internal sealed partial class MainForm
                 // Cross-process renewal can block; enforce against a fresh
                 // post-renew clock just like the USB and native paths.
                 now=DateTime.UtcNow;
-                if(now>evaluation.DeadlineUtc){Log("浏览器超过首帧或后续呈现期限，停止该设备。");await host.StopSessionAsync(item.Key);}
+                if(now>evaluation.DeadlineUtc){Log(Ui("浏览器超过首帧或后续呈现期限，停止该设备。","The browser exceeded its first-frame or presentation deadline; stopping that device."));await host.StopSessionAsync(item.Key);}
             }
             catch(ObjectDisposedException){}
             catch(Exception ex)
             {
-                Log("此浏览器副屏检查失败："+SafeError(ex));
-                try{await host.StopSessionAsync(item.Key);}catch(Exception cleanup){Log("该浏览器回收需要检查："+SafeError(cleanup));}
+                Log(Ui("此浏览器副屏检查失败：","This browser-display check failed: ")+SafeError(ex));
+                try{await host.StopSessionAsync(item.Key);}catch(Exception cleanup){Log(Ui("该浏览器回收需要检查：","This browser-display reclamation needs attention: ")+SafeError(cleanup));}
             }
         }
         var previous=(browserSessions.SelectedItem as BrowserSessionRow)?.Status.Id;
         browserSessions.BeginUpdate();browserSessions.Items.Clear();
-        foreach(var state in browserStates.Values.OrderBy(x=>x.Id))browserSessions.Items.Add(new BrowserSessionRow(state));
+        foreach(var state in browserStates.Values.OrderBy(x=>x.Id))browserSessions.Items.Add(new BrowserSessionRow(state,uiLanguage));
         foreach(var row in browserSessions.Items.OfType<BrowserSessionRow>())if(row.Status.Id==previous){browserSessions.SelectedItem=row;break;}
         if(browserSessions.SelectedIndex<0&&browserSessions.Items.Count>0)browserSessions.SelectedIndex=0;
         browserSessions.EndUpdate();
@@ -300,11 +302,12 @@ internal sealed partial class MainForm
         try{if(host is not null)await host.DisposeAsync();}
         finally
         {
-            foreach(var rule in browserRules.ToArray())try{await rule.DisposeAsync();browserRules.Remove(rule);}catch(Exception ex){Log("浏览器防火墙规则清理失败："+SafeError(ex));}
+            foreach(var rule in browserRules.ToArray())try{await rule.DisposeAsync();browserRules.Remove(rule);}catch(Exception ex){Log(Ui("浏览器防火墙规则清理失败：","Browser firewall-rule cleanup failed: ")+SafeError(ex));}
             browserChoice=null;browserUri=null;browserStates.Clear();browserSessions.Items.Clear();browserQr.Image?.Dispose();browserQr.Image=null;browserQr.Visible=false;
-            browserHint.Text=browserCleanupReservations.IsEmpty?"浏览器接入已关闭，副屏已回收。":"浏览器接入已关闭，副屏精确回收待重试。";
+            if(browserCleanupReservations.IsEmpty)SetBrowserHint("浏览器接入已关闭，副屏已回收。","Browser connection is disabled and its display was reclaimed.");
+            else SetBrowserHint("浏览器接入已关闭，副屏精确回收待重试。","Browser connection is disabled; exact display reclamation will be retried.");
             if(!connectionHealth.Snapshot().Steps.Any(step=>step.State==ConnectionHealthState.Attention))StopConnectionHealth("浏览器接入已关闭并回收本次副屏");
-            if(!HasAnySessions){ClearEncoderSelectionIfIdle();if(connectionMode.SelectedIndex==1){status.Text="浏览器接入尚未开启";metrics.Text="本地 HTTPS + WebRTC · 单设备";}}
+            if(!HasAnySessions){ClearEncoderSelectionIfIdle();if(connectionMode.SelectedIndex==1){ShowStatus("浏览器接入尚未开启","Browser connection is not enabled");SetMetrics("本地 HTTPS + WebRTC · 单设备","Local HTTPS + WebRTC · one device");}}
             UpdateBrowserButtons(!busy&&!closing&&!exitStarting&&!updateExitStarted&&!connectionStarts.IsStarting);
             UpdateButtons();
         }
@@ -331,6 +334,24 @@ internal sealed partial class MainForm
         internal SessionPresentationDeadline Deadline {get;}=CreateDeadline();
         static SessionPresentationDeadline CreateDeadline(){var value=new SessionPresentationDeadline();value.Reset(DateTime.UtcNow);return value;}
     }
-    sealed record BrowserSessionRow(BrowserSessionStatus Status)
-    {public override string ToString()=>$"浏览器 {Status.Id.ToString()[..8]} · {Status.Message} · 已显示 {Status.PresentedFrames} 帧";}
+    sealed record BrowserSessionRow(BrowserSessionStatus Status,ProductLanguage Language)
+    {public override string ToString()=>Language==ProductLanguage.SimplifiedChinese
+        ?$"浏览器 {Status.Id.ToString()[..8]} · {Status.Message} · 已显示 {Status.PresentedFrames} 帧"
+        :$"Browser {Status.Id.ToString()[..8]} · {BrowserStatusText(Status,Language)} · presented {Status.PresentedFrames} frames";}
+
+    internal static string BrowserStatusText(BrowserSessionStatus status,ProductLanguage language)
+    {
+        if(language==ProductLanguage.SimplifiedChinese)return status.Message;
+        if(status.CapturePaused)return "Video paused; the connection is retained";
+        return status.State switch
+        {
+            "connecting"=>"Establishing the encrypted connection",
+            "preparing"=>"Preparing the independent display",
+            "streaming" when status.PresentedFrames>0=>"Presenting the independent display",
+            "streaming"=>"Connected; waiting for presentation confirmation",
+            "paused"=>"Video paused; the connection is retained",
+            "closed"=>"Disconnected",
+            _=>"Connection state updated"
+        };
+    }
 }

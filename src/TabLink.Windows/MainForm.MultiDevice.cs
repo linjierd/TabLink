@@ -78,7 +78,8 @@ internal sealed partial class MainForm
         try
         {
             BeginConnectionHealth(ConnectionHealthPath.NativeNetwork,$"选择原生客户端线路 {choice.InterfaceAlias} · {choice.LocalAddress}:{port}");
-            session=new NativeNetworkSession(choice,port,touch.Checked,OnUiAsync,Log,
+            session=new NativeNetworkSession(choice,port,touch.Checked,OnUiAsync,
+                message=>Log(WindowsUiText.TranslateNativeSessionLog(message,uiLanguage)),
                 CurrentEncoderOptions(),snapshot=>ReportEncoderSelection(encoderGeneration,snapshot));
             session.Stopped+=()=>InvalidateEncoderSelection(encoderGeneration);
             session.DisplayPreparationStarted+=profile=>
@@ -116,13 +117,14 @@ internal sealed partial class MainForm
             if(cleanupFailure is not null)
             {
                 var combined=new AggregateException("原生连接启动失败，并且本次资源尚未完全回收。",ex,cleanupFailure);
-                Log("原生连接资源清理需要重试："+SafeError(cleanupFailure));
+                Log(Ui("原生连接资源清理需要重试：","Native-connection resource cleanup must be retried: ")+SafeError(cleanupFailure));
                 throw combined;
             }
             throw;
         }
         RefreshSessionList(session.Id);
-        Log($"已创建独立设备配对：{choice.InterfaceAlias}，端口 {port}。尚未收到设备前不启用副屏。");
+        Log(Ui($"已创建独立设备配对：{choice.InterfaceAlias}，端口 {port}。尚未收到设备前不启用副屏。",
+            $"Independent-device pairing created on {choice.InterfaceAlias}, port {port}. The display remains disabled until a device connects."));
     }
 
     Task OnUiAsync(Func<Task> action)
@@ -146,8 +148,8 @@ internal sealed partial class MainForm
     {
         var selected=select??(sessionList.SelectedItem as NativeSessionRow)?.Session.Id;
         sessionList.BeginUpdate();sessionList.Items.Clear();
-        if(server is not null)sessionList.Items.Add("主连接：请在 Wi-Fi / USB 或 USB 调试页管理");
-        foreach(var session in additionalSessions.Where(x=>!x.IsStopped||x.HasPendingCleanup))sessionList.Items.Add(new NativeSessionRow(session));
+        if(server is not null)sessionList.Items.Add(Ui("主连接：请在 Wi-Fi / USB 或 USB 调试页管理","Primary connection: manage it on the Wi-Fi / USB or USB debugging page"));
+        foreach(var session in additionalSessions.Where(x=>!x.IsStopped||x.HasPendingCleanup))sessionList.Items.Add(new NativeSessionRow(session,uiLanguage));
         foreach(var row in sessionList.Items.OfType<NativeSessionRow>())if(row.Session.Id==selected){sessionList.SelectedItem=row;break;}
         if(sessionList.SelectedIndex<0&&sessionList.Items.Count>0)sessionList.SelectedIndex=0;
         sessionList.EndUpdate();ShowSessionPairing();
@@ -158,7 +160,7 @@ internal sealed partial class MainForm
         var session=(sessionList.SelectedItem as NativeSessionRow)?.Session;
         var uri=session?.PairingUri;
         if(deviceQrUri!=uri){deviceQr.Image?.Dispose();deviceQr.Image=uri is null?null:MakeQr(uri);deviceQrUri=uri;}
-        deviceHint.Text=session is null?"选择设备查看专属二维码。\n浏览器连接在“浏览器”页管理。":$"{session.Network.InterfaceAlias} · {session.Network.LocalAddress}:{session.Port}\n\n{session.State}\n\n在另一台设备的 TabLink 原生客户端扫码。每个二维码只用于一台设备。\n停止当前设备后才能连接另一台设备。";
+        deviceHint.Text=session is null?Ui("选择设备查看专属二维码。\n浏览器连接在“浏览器”页管理。","Select a device to view its QR code.\nBrowser connections are managed on the Browser page."):Ui($"{session.Network.InterfaceAlias} · {session.Network.LocalAddress}:{session.Port}\n\n{session.State}\n\n在另一台设备的 TabLink 原生客户端扫码。每个二维码只用于一台设备。\n停止当前设备后才能连接另一台设备。",$"{session.Network.InterfaceAlias} · {session.Network.LocalAddress}:{session.Port}\n\n{WindowsUiText.TranslateNativeSessionState(session.State,uiLanguage)}\n\nScan with the TabLink native client on the other device. Each QR code is for one device.\nStop the current device before connecting another.");
         stopSession.Enabled=retrySession.Enabled=session is not null&&!busy&&!closing&&!exitStarting&&!updateExitStarted&&!stopping&&!connectionStarts.IsStarting;
     }
     static Bitmap MakeQr(string value)
@@ -189,9 +191,9 @@ internal sealed partial class MainForm
                 }
                 catch(Exception ex)
                 {
-                    Log("独立设备检查失败："+SafeError(ex));
+                    Log(Ui("独立设备检查失败：","Independent-device check failed: ")+SafeError(ex));
                     MarkConnectionHealthAttention(SafeError(ex));
-                    try{await session.DisposeAsync();}catch(Exception cleanup){Log("该设备回收需要检查："+SafeError(cleanup));}
+                    try{await session.DisposeAsync();}catch(Exception cleanup){Log(Ui("该设备回收需要检查：","This device's resource reclamation needs attention: ")+SafeError(cleanup));}
                     if(session.HasPendingDisplayCleanup)MarkOwnedDisplayCleanupAttention(OwnedDisplayCleanupFailureDetail(ex));
                 }
             await MonitorBrowserAsync(choices,desktop);
@@ -199,7 +201,7 @@ internal sealed partial class MainForm
             UpdateAdditionalButtons();
         }
         catch(OperationCanceledException)when(lifetime.IsCancellationRequested){}
-        catch(Exception ex){Log("原生客户端监测："+SafeError(ex));}
+        catch(Exception ex){Log(Ui("原生客户端监测：","Native-client monitoring: ")+SafeError(ex));}
         finally{monitoringAdditional=false;}
     }
 
@@ -216,12 +218,12 @@ internal sealed partial class MainForm
             {
                 var detail=OwnedDisplayCleanupFailureDetail(ex);MarkOwnedDisplayCleanupAttention(detail);Log(detail);
             }
-            else {MarkConnectionHealthAttention(SafeError(ex));Log("原生连接清理需要检查："+SafeError(ex));}
+            else {MarkConnectionHealthAttention(SafeError(ex));Log(Ui("原生连接清理需要检查：","Native-connection cleanup needs attention: ")+SafeError(ex));}
         }
         try{await StopBrowserAsync();}catch(Exception ex)
         {
             if(!browserCleanupReservations.IsEmpty)MarkOwnedDisplayCleanupAttention(OwnedDisplayCleanupFailureDetail(ex));
-            Log("浏览器连接清理需要检查："+SafeError(ex));
+            Log(Ui("浏览器连接清理需要检查：","Browser-connection cleanup needs attention: ")+SafeError(ex));
         }
         if(!HasAnySessions)ClearEncoderSelectionIfIdle();
         if(!connectionHealth.Snapshot().Steps.Any(step=>step.State==ConnectionHealthState.Attention))StopConnectionHealth("所有连接已停止并回收本次副屏");
@@ -245,20 +247,27 @@ internal sealed partial class MainForm
         if(server is null&&browserHost is not null)
         {
             var active=browserDisplays.Count;
-            status.Text=active>0?"浏览器副屏正在传输":"浏览器接入已开启，等待设备扫码";
-            var encoding=encoderRuntime is null?"":$" · 编码 {EncoderRuntimeName(encoderRuntime)} / {encoderRuntime.EffectiveFps} fps";
-            metrics.Text=active>0?$"浏览器活动副屏 {active} · 全局最多一块虚拟屏{encoding}":"本地 HTTPS + WebRTC · 尚未分配虚拟副屏";
+            if(active>0)ShowStatus("浏览器副屏正在传输","Browser display is streaming");
+            else ShowStatus("浏览器接入已开启，等待设备扫码","Browser connection is ready; waiting for a device to scan");
+            var encodingZh=encoderRuntime is null?"":$" · 编码 {EncoderRuntimeName(encoderRuntime,ProductLanguage.SimplifiedChinese)} / {encoderRuntime.EffectiveFps} fps";
+            var encodingEn=encoderRuntime is null?"":$" · Encoder {EncoderRuntimeName(encoderRuntime,ProductLanguage.English)} / {encoderRuntime.EffectiveFps} fps";
+            if(active>0)SetMetrics($"浏览器活动副屏 {active} · 全局最多一块虚拟屏{encodingZh}",$"Active browser display {active} · at most one virtual display{encodingEn}");
+            else SetMetrics("本地 HTTPS + WebRTC · 尚未分配虚拟副屏","Local HTTPS + WebRTC · no virtual display allocated yet");
         }
         else if(server is null&&additionalSessions.Any(x=>!x.IsStopped))
         {
-            status.Text="副屏服务运行中";
-            var encoding=encoderRuntime is null?"":$" · 编码 {EncoderRuntimeName(encoderRuntime)} / {encoderRuntime.EffectiveFps} fps";
-            metrics.Text=$"原生连接 {additionalSessions.Count(x=>!x.IsStopped)} · 全局最多一块虚拟屏{encoding}";
+            ShowStatus("副屏服务运行中","Second-screen service is running");
+            var encodingZh=encoderRuntime is null?"":$" · 编码 {EncoderRuntimeName(encoderRuntime,ProductLanguage.SimplifiedChinese)} / {encoderRuntime.EffectiveFps} fps";
+            var encodingEn=encoderRuntime is null?"":$" · Encoder {EncoderRuntimeName(encoderRuntime,ProductLanguage.English)} / {encoderRuntime.EffectiveFps} fps";
+            var active=additionalSessions.Count(x=>!x.IsStopped);
+            SetMetrics($"原生连接 {active} · 全局最多一块虚拟屏{encodingZh}",$"Native connections {active} · at most one virtual display{encodingEn}");
         }
         UpdateBrowserButtons(ready);
         UpdateAutomaticPackageDownloadPolicy();
         EvaluateAutomaticUpdateApplication();
     }
-    sealed record NativeSessionRow(NativeNetworkSession Session)
-    {public override string ToString()=>$"原生设备 · {Session.Network.InterfaceAlias}:{Session.Port} · {Session.State}";}
+    sealed record NativeSessionRow(NativeNetworkSession Session,ProductLanguage Language)
+    {public override string ToString()=>Language==ProductLanguage.SimplifiedChinese
+        ?$"原生设备 · {Session.Network.InterfaceAlias}:{Session.Port} · {Session.State}"
+        :$"Native device · {Session.Network.InterfaceAlias}:{Session.Port} · {WindowsUiText.TranslateNativeSessionState(Session.State,Language)}";}
 }

@@ -77,7 +77,7 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
             .bgra8Unorm, frame.width, frame.height, 0, &cvTexture)
         guard result == kCVReturnSuccess, let cvTexture, let texture = CVMetalTextureGetTexture(cvTexture),
               let encoder = command.makeRenderCommandEncoder(descriptor: descriptor) else {
-            onFailure?("无法将视频图像提交到 Metal"); return
+            onFailure?(L10n.text("presenter.submitFailed")); return
         }
         let viewWidth = max(1, view.drawableSize.width), viewHeight = max(1, view.drawableSize.height)
         let scale = min(viewWidth / CGFloat(frame.width), viewHeight / CGFloat(frame.height))

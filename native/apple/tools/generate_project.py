@@ -9,6 +9,8 @@ def ident(value):
 
 def generate():
     sources = sorted(p.relative_to(ROOT).as_posix() for p in (ROOT / "Sources").rglob("*") if p.suffix in (".swift", ".metal"))
+    localizations = ["en", "zh-Hans"]
+    localized_resources = ["Localizable.strings", "InfoPlist.strings"]
     frameworks = "UIKit Foundation Network Security CryptoKit VideoToolbox CoreMedia CoreVideo Metal MetalKit AVFoundation ImageIO CoreGraphics UniformTypeIdentifiers".split()
     objects = []
     def obj(key, body):
@@ -19,6 +21,15 @@ def generate():
         kind = "sourcecode.swift" if source.endswith(".swift") else "sourcecode.metal"
         obj(source, f'isa = PBXFileReference; lastKnownFileType = {kind}; path = "{source}"; sourceTree = "<group>";')
         obj("build:" + source, f"isa = PBXBuildFile; fileRef = {ref(source)};")
+    for resource in localized_resources:
+        children = []
+        for language in localizations:
+            key = f"resource:{language}:{resource}"
+            path = f"Resources/{language}.lproj/{resource}"
+            obj(key, f'isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = {language}; path = "{path}"; sourceTree = "<group>";')
+            children.append(key)
+        obj("variant:" + resource, f'isa = PBXVariantGroup; children = {refs(children)}; name = {resource}; sourceTree = "<group>";')
+        obj("build:variant:" + resource, f'isa = PBXBuildFile; fileRef = {ref("variant:" + resource)};')
     for name in frameworks:
         obj("framework:" + name, f'isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = {name}.framework; path = System/Library/Frameworks/{name}.framework; sourceTree = SDKROOT;')
         obj("frameworkbuild:" + name, f'isa = PBXBuildFile; fileRef = {ref("framework:" + name)};')
@@ -26,10 +37,10 @@ def generate():
     obj("app", 'isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TabLink.app; sourceTree = BUILT_PRODUCTS_DIR;')
     obj("products", f'isa = PBXGroup; children = {refs(["app"])}; name = Products; sourceTree = "<group>";')
     obj("frameworks", f'isa = PBXGroup; children = {refs(["framework:" + n for n in frameworks])}; name = Frameworks; sourceTree = "<group>";')
-    obj("main", f'isa = PBXGroup; children = {refs(sources + ["Info.plist", "frameworks", "products"])}; sourceTree = "<group>";')
+    obj("main", f'isa = PBXGroup; children = {refs(sources + ["variant:" + r for r in localized_resources] + ["Info.plist", "frameworks", "products"])}; sourceTree = "<group>";')
     obj("sources", f'isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = {refs(["build:" + s for s in sources])}; runOnlyForDeploymentPostprocessing = 0;')
     obj("link", f'isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = {refs(["frameworkbuild:" + n for n in frameworks])}; runOnlyForDeploymentPostprocessing = 0;')
-    obj("resources", 'isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0;')
+    obj("resources", f'isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = {refs(["build:variant:" + r for r in localized_resources])}; runOnlyForDeploymentPostprocessing = 0;')
     for config in ("Debug", "Release"):
         project_settings = 'CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; SDKROOT = iphoneos; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SWIFT_VERSION = 5.0; GCC_C_LANGUAGE_STANDARD = gnu17; CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";'
         project_settings += ' DEBUG_INFORMATION_FORMAT = dwarf; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; ENABLE_TESTABILITY = YES;' if config == "Debug" else ' DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym"; SWIFT_COMPILATION_MODE = wholemodule; SWIFT_OPTIMIZATION_LEVEL = "-O";'
@@ -39,7 +50,7 @@ def generate():
     for name in ("project", "target"):
         obj(name + ":configs", f'isa = XCConfigurationList; buildConfigurations = {refs([name + ":Debug", name + ":Release"])}; defaultConfigurationIsVisible = 0; defaultConfigurationName = Release;')
     obj("target", f'isa = PBXNativeTarget; buildConfigurationList = {ref("target:configs")}; buildPhases = {refs(["sources", "link", "resources"])}; buildRules = (); dependencies = (); name = TabLink; productName = TabLink; productReference = {ref("app")}; productType = "com.apple.product-type.application";')
-    obj("project", f'isa = PBXProject; attributes = {{ LastUpgradeCheck = 1500; }}; buildConfigurationList = {ref("project:configs")}; compatibilityVersion = "Xcode 14.0"; developmentRegion = zh_CN; hasScannedForEncodings = 0; knownRegions = (en, zh_CN, Base,); mainGroup = {ref("main")}; productRefGroup = {ref("products")}; projectDirPath = ""; projectRoot = ""; targets = {refs(["target"])};')
+    obj("project", f'isa = PBXProject; attributes = {{ LastUpgradeCheck = 1500; }}; buildConfigurationList = {ref("project:configs")}; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, "zh-Hans", Base,); mainGroup = {ref("main")}; productRefGroup = {ref("products")}; projectDirPath = ""; projectRoot = ""; targets = {refs(["target"])};')
     project = ROOT / "TabLink.xcodeproj"
     project.mkdir(exist_ok=True)
     (project / "project.pbxproj").write_text('// !$*UTF8*$!\n{\n\tarchiveVersion = 1;\n\tclasses = {};\n\tobjectVersion = 56;\n\tobjects = {\n' + "\n".join(objects) + f'\n\t}};\n\trootObject = {ref("project")};\n}}\n', encoding="utf-8")

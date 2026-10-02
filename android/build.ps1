@@ -123,6 +123,8 @@ try {
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\UpdateDecisionPolicy.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\ArtifactIntegrity.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\UpdateModePreference.java'),
+        (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\LanguagePreference.java'),
+        (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\LanguageSwitchPolicy.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\UpdateInstallAttempt.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\UpdateInstallerUiGate.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\UpdateStateMachine.java'),
@@ -139,6 +141,8 @@ try {
         (Join-Path $projectDirectory 'tests\PairingSecurityTest.java'),
         (Join-Path $projectDirectory 'tests\StableUpdateSecurityTest.java'),
         (Join-Path $projectDirectory 'tests\UpdateInstallAttemptTest.java'),
+        (Join-Path $projectDirectory 'tests\LanguagePreferenceTest.java'),
+        (Join-Path $projectDirectory 'tests\LanguageSwitchPolicyTest.java'),
         (Join-Path $projectDirectory 'tests\TrustedDeviceProtocolTest.java'),
         (Join-Path $projectDirectory 'tests\TrustedComputerTest.java'),
         (Join-Path $projectDirectory 'tests\PairingIntentPolicyTest.java'),
@@ -220,6 +224,10 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Stable update security or state test failed.' }
     & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.UpdateInstallAttemptTest
     if ($LASTEXITCODE -ne 0) { throw 'Installer attempt state test failed.' }
+    & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.LanguagePreferenceTest
+    if ($LASTEXITCODE -ne 0) { throw 'Language preference test failed.' }
+    & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.LanguageSwitchPolicyTest
+    if ($LASTEXITCODE -ne 0) { throw 'Language switch policy test failed.' }
     & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.TrustedDeviceProtocolTest
     if ($LASTEXITCODE -ne 0) { throw 'Trusted device protocol test failed.' }
     & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.TrustedComputerTest
@@ -232,6 +240,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Trusted computer removal transaction test failed.' }
     & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.DiscoveryCandidateSetTest
     if ($LASTEXITCODE -ne 0) { throw 'Trusted discovery candidate test failed.' }
+    & (Join-Path $projectDirectory 'tests\Test-LocalizationResources.ps1') -ProjectDirectory $projectDirectory
     $gradleTasks = if ($ReleasePreview) { @('assembleRelease','lintRelease') } else { @('assembleDebug','lintDebug') }
     $gradleArguments = @('--project-dir', $projectDirectory, '--console=plain', '--no-daemon') + $gradleTasks
     if ($ReleasePreview) { $gradleArguments += '-PtablinkPreviewSigning=true' }

@@ -25,6 +25,8 @@ internal sealed partial class MainForm
     long healthSentFrames,healthSubmittedFrames,healthPresentedFrames;
     bool healthCapturePaused,healthSubmissionFresh,healthPresentationFresh;
     bool diagnosing,exportingSupportBundle;
+    ProductLanguage? diagnosticReportLanguage;
+    bool diagnosticReportNeedsRerun;
 
     Control BuildDiagnosticsPanel()
     {
@@ -38,10 +40,11 @@ internal sealed partial class MainForm
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));layout.RowStyles.Add(new RowStyle(SizeType.Absolute,180));
         var healthIntro=new Label{Dock=DockStyle.Top,AutoSize=true,ForeColor=muted,Text="按真实事件检查线路、认证、副屏、发送、客户端解码提交和呈现回调；呈现回调仍不等于物理面板测量。"};
         layout.Controls.Add(healthIntro,0,0);layout.Controls.Add(healthSummary,0,1);
-        layout.Controls.Add(Flow(repairSuggested,diagnose,repairConnection,openDiagnosticFolder,exportSupportBundle),0,2);
+        var diagnosticTools=Flow(repairSuggested,diagnose,repairConnection,openDiagnosticFolder,exportSupportBundle);
+        layout.Controls.Add(diagnosticTools,0,2);
         layout.Controls.Add(healthStages,0,3);layout.Controls.Add(healthDetail,0,4);
         var modeTools=Flow(refreshModes,requestedModes,repairMode,modeHint);layout.Controls.Add(modeTools,0,5);
-        layout.Controls.Add(Flow(repairAdb),0,6);layout.Controls.Add(diagnosticReport,0,7);page.Controls.Add(layout);
+        var adbTools=Flow(repairAdb);layout.Controls.Add(adbTools,0,6);layout.Controls.Add(diagnosticReport,0,7);page.Controls.Add(layout);
         diagnose.Click+=async(_,_)=>await DiagnoseAsync();
         repairAdb.Click+=async(_,_)=>await GuardAsync(RepairAdbAsync,adbOperation:true);
         repairConnection.Click+=async(_,_)=>await GuardAsync(RepairConnectionAsync);
@@ -52,13 +55,23 @@ internal sealed partial class MainForm
         openDiagnosticFolder.Click+=(_,_)=>OpenDiagnosticFolder();
         exportSupportBundle.Click+=async(_,_)=>await ExportSupportBundleFromUiAsync();
         healthStages.SelectedIndexChanged+=(_,_)=>{UpdateHealthRepairButton();UpdateHealthDetail();};
-        healthStages.SizeChanged+=(_,_)=>healthStages.Columns[2].Width=Math.Max(220,healthStages.ClientSize.Width-healthStages.Columns[0].Width-healthStages.Columns[1].Width-8);
-        page.SizeChanged+=(_,_)=>(healthIntro.MaximumSize,healthSummary.MaximumSize,modeHint.MaximumSize)=(
-            new Size(Math.Max(260,page.ClientSize.Width-page.Padding.Horizontal-SystemInformation.VerticalScrollBarWidth-8),0),
-            new Size(Math.Max(260,page.ClientSize.Width-page.Padding.Horizontal-SystemInformation.VerticalScrollBarWidth-8),0),
-            new Size(Math.Max(220,page.ClientSize.Width-page.Padding.Horizontal-SystemInformation.VerticalScrollBarWidth-8),0));
+        healthStages.SizeChanged+=(_,_)=>ResizeHealthColumns();
+        page.SizeChanged+=(_,_)=>
+        {
+            var contentWidth=Math.Max(260,page.ClientSize.Width-page.Padding.Horizontal-SystemInformation.VerticalScrollBarWidth-8);
+            healthIntro.MaximumSize=healthSummary.MaximumSize=new Size(contentWidth,0);
+            modeHint.MaximumSize=new Size(Math.Max(220,contentWidth),0);
+            diagnosticTools.MaximumSize=modeTools.MaximumSize=adbTools.MaximumSize=new Size(contentWidth,0);
+        };
         RefreshConnectionHealthUi();
         return page;
+    }
+
+    void ResizeHealthColumns()
+    {
+        if(healthStages.IsDisposed||healthStages.Disposing||healthStages.Columns.Count<3)return;
+        healthStages.Columns[2].Width=Math.Max(220,
+            healthStages.ClientSize.Width-healthStages.Columns[0].Width-healthStages.Columns[1].Width-8);
     }
 
     void BeginConnectionHealth(ConnectionHealthPath path,string detail)
@@ -244,8 +257,8 @@ internal sealed partial class MainForm
             healthStages.Items.Clear();
             foreach(var step in snapshot.Steps)
             {
-                var detail=step.Detail??HealthReasonText(step.Reason);
-                if(step.State==ConnectionHealthState.Attention&&step.Recovery!=ConnectionHealthRecovery.None)detail+=" · 建议："+HealthRecoveryText(step.Recovery);
+                var detail=step.Detail is null?HealthReasonText(step.Reason):WindowsUiText.TranslateHealthDetail(step.Detail,uiLanguage);
+                if(step.State==ConnectionHealthState.Attention&&step.Recovery!=ConnectionHealthRecovery.None)detail+=Ui(" · 建议："," · Suggested action: ")+HealthRecoveryText(step.Recovery);
                 var item=new ListViewItem(HealthStageText(step.Stage)){Tag=step,ToolTipText=detail};
                 item.SubItems.Add(HealthStateText(step.State));item.SubItems.Add(detail);
                 item.ForeColor=step.State switch
@@ -264,8 +277,8 @@ internal sealed partial class MainForm
         finally{healthStages.EndUpdate();}
         if(restoredTop is not null)healthStages.TopItem=restoredTop;
         healthSummary.Text=snapshot.IsActive
-            ?$"当前路径：{HealthPathText(snapshot.Path)} · 解码提交 {snapshot.SubmittedFrames:N0} · 呈现回调 {snapshot.PresentedFrames:N0}"
-            :"当前没有活动连接；开始连接后将显示六阶段进度。";
+            ?Ui($"当前路径：{HealthPathText(snapshot.Path)} · 解码提交 {snapshot.SubmittedFrames:N0} · 呈现回调 {snapshot.PresentedFrames:N0}",$"Current path: {HealthPathText(snapshot.Path)} · decode submissions {snapshot.SubmittedFrames:N0} · presentation callbacks {snapshot.PresentedFrames:N0}")
+            :Ui("当前没有活动连接；开始连接后将显示六阶段进度。","There is no active connection. Six-stage progress appears after a connection starts.");
         UpdateHealthRepairButton();
         UpdateHealthDetail();
     }
@@ -275,17 +288,17 @@ internal sealed partial class MainForm
         var step=healthStages.SelectedItems.Count==1?healthStages.SelectedItems[0].Tag as ConnectionHealthStep:null;
         var canRepair=step is {State:ConnectionHealthState.Attention,Recovery:not ConnectionHealthRecovery.None};
         repairSuggested.Enabled=!busy&&!stopping&&!closing&&!exitStarting&&!updateExitStarted&&canRepair;
-        repairSuggested.Text=canRepair?"修复："+HealthRecoveryText(step!.Recovery):"修复所选问题";
+        repairSuggested.Text=canRepair?Ui("修复：","Repair: ")+HealthRecoveryText(step!.Recovery):Ui("修复所选问题","Repair selected issue");
         repairMode.Enabled=!busy&&!stopping&&!closing&&!exitStarting&&!updateExitStarted&&requestedModes.SelectedItem is RequestedMode;
-        repairMode.Text=HasAnySessions?"停止当前连接并配置模式":"配置选中显示模式";
+        repairMode.Text=HasAnySessions?Ui("停止当前连接并配置模式","Stop current connection and configure mode"):Ui("配置选中显示模式","Configure selected display mode");
     }
 
     void UpdateHealthDetail()
     {
         var step=healthStages.SelectedItems.Count==1?healthStages.SelectedItems[0].Tag as ConnectionHealthStep:null;
-        healthDetail.Text=step is null?"选择一个连接阶段可查看完整证据与修复建议。":
-            $"{HealthStageText(step.Stage)} · {HealthStateText(step.State)}\r\n{step.Detail??HealthReasonText(step.Reason)}"+
-            (step.State==ConnectionHealthState.Attention&&step.Recovery!=ConnectionHealthRecovery.None?"\r\n建议操作："+HealthRecoveryText(step.Recovery):"");
+        healthDetail.Text=step is null?Ui("选择一个连接阶段可查看完整证据与修复建议。","Select a connection stage to view its evidence and suggested repair."):
+            $"{HealthStageText(step.Stage)} · {HealthStateText(step.State)}\r\n{(step.Detail is null?HealthReasonText(step.Reason):WindowsUiText.TranslateHealthDetail(step.Detail,uiLanguage))}"+
+            (step.State==ConnectionHealthState.Attention&&step.Recovery!=ConnectionHealthRecovery.None?Ui("\r\n建议操作：","\r\nSuggested action: ")+HealthRecoveryText(step.Recovery):"");
     }
 
     async Task RepairSelectedHealthStageAsync()
@@ -311,7 +324,8 @@ internal sealed partial class MainForm
     {
         if(HasAnySessions)
         {
-            Log("显示模式修复将停止当前连接，只配置设备上报的模式；完成后需要重新连接。");
+        Log(Ui("显示模式修复将停止当前连接，只配置设备上报的模式；完成后需要重新连接。",
+            "Display-mode repair will stop the current connection and configure only a device-reported mode. Reconnect when it finishes."));
             await StopAllAsync();
         }
         if(HasPendingOwnedDisplayCleanup||connectionHealth.Snapshot().Steps.Any(step=>step.Recovery==ConnectionHealthRecovery.ReclaimOwnedDisplay))
@@ -320,24 +334,24 @@ internal sealed partial class MainForm
         await RepairDisplayModeAsync();
     }
 
-    static string HealthStageText(ConnectionHealthStage value)=>value switch
+    string HealthStageText(ConnectionHealthStage value)=>value switch
     {
-        ConnectionHealthStage.RouteAndListener=>"1. 线路与监听",
-        ConnectionHealthStage.AuthenticationAndDisplayProfile=>"2. 认证与屏幕参数",
-        ConnectionHealthStage.SingleVirtualDisplay=>"3. 唯一虚拟副屏",
-        ConnectionHealthStage.CaptureEncodeSend=>"4. 捕获、编码与发送",
-        ConnectionHealthStage.AndroidDecodeSubmission=>"5. 客户端解码提交",
-        ConnectionHealthStage.PhysicalPresentation=>"6. 客户端呈现回调",
+        ConnectionHealthStage.RouteAndListener=>Ui("1. 线路与监听","1. Route and listener"),
+        ConnectionHealthStage.AuthenticationAndDisplayProfile=>Ui("2. 认证与屏幕参数","2. Authentication and display profile"),
+        ConnectionHealthStage.SingleVirtualDisplay=>Ui("3. 唯一虚拟副屏","3. Single virtual display"),
+        ConnectionHealthStage.CaptureEncodeSend=>Ui("4. 捕获、编码与发送","4. Capture, encode and send"),
+        ConnectionHealthStage.AndroidDecodeSubmission=>Ui("5. 客户端解码提交","5. Client decode submission"),
+        ConnectionHealthStage.PhysicalPresentation=>Ui("6. 客户端呈现回调","6. Client presentation callback"),
         _=>value.ToString()
     };
-    static string HealthStateText(ConnectionHealthState value)=>value switch
-    {ConnectionHealthState.Waiting=>"等待",ConnectionHealthState.Working=>"进行中",ConnectionHealthState.Healthy=>"正常",ConnectionHealthState.Paused=>"已暂停",ConnectionHealthState.Attention=>"需处理",_=>value.ToString()};
-    static string HealthPathText(ConnectionHealthPath value)=>value switch
-    {ConnectionHealthPath.NativeNetwork=>"Wi-Fi / USB 网络",ConnectionHealthPath.AdbCompatibility=>"USB 调试兼容",ConnectionHealthPath.Browser=>"浏览器",_=>"未选择"};
-    static string HealthReasonText(ConnectionHealthReason value)=>value switch
-    {ConnectionHealthReason.Idle=>"等待上一步",ConnectionHealthReason.Starting=>"正在启动",ConnectionHealthReason.Ready=>"已就绪",ConnectionHealthReason.Authenticating=>"等待客户端认证",ConnectionHealthReason.DisplayProfileReceived=>"已收到屏幕参数",ConnectionHealthReason.DisplayPreparing=>"正在准备副屏",ConnectionHealthReason.DisplayReady=>"副屏已就绪",ConnectionHealthReason.PipelineStarting=>"正在启动视频流水线",ConnectionHealthReason.FrameSent=>"电脑已发送画面",ConnectionHealthReason.CapturePaused=>"画面采集暂停",ConnectionHealthReason.DecodeSubmitted=>"已提交当前解码器",ConnectionHealthReason.FramePresented=>"收到 Surface 呈现回调",ConnectionHealthReason.Reconnecting=>"正在重连",ConnectionHealthReason.NeedsAttention=>"需要处理",ConnectionHealthReason.Stopped=>"连接已停止",_=>value.ToString()};
-    static string HealthRecoveryText(ConnectionHealthRecovery value)=>value switch
-    {ConnectionHealthRecovery.RefreshRoute=>"刷新线路",ConnectionHealthRecovery.RecreatePairing=>"重建当前连接",ConnectionHealthRecovery.ConfigureDisplayMode=>"配置设备请求模式",ConnectionHealthRecovery.ReclaimOwnedDisplay=>"回收本次拥有的副屏",ConnectionHealthRecovery.RestartVideo=>"重启视频连接",ConnectionHealthRecovery.OpenLogs=>"打开日志",_=>"无需操作"};
+    string HealthStateText(ConnectionHealthState value)=>value switch
+    {ConnectionHealthState.Waiting=>Ui("等待","Waiting"),ConnectionHealthState.Working=>Ui("进行中","Working"),ConnectionHealthState.Healthy=>Ui("正常","Healthy"),ConnectionHealthState.Paused=>Ui("已暂停","Paused"),ConnectionHealthState.Attention=>Ui("需处理","Needs attention"),_=>value.ToString()};
+    string HealthPathText(ConnectionHealthPath value)=>value switch
+    {ConnectionHealthPath.NativeNetwork=>Ui("Wi-Fi / USB 网络","Wi-Fi / USB network"),ConnectionHealthPath.AdbCompatibility=>Ui("USB 调试兼容","USB debugging compatibility"),ConnectionHealthPath.Browser=>Ui("浏览器","Browser"),_=>Ui("未选择","Not selected")};
+    string HealthReasonText(ConnectionHealthReason value)=>value switch
+    {ConnectionHealthReason.Idle=>Ui("等待上一步","Waiting for previous stage"),ConnectionHealthReason.Starting=>Ui("正在启动","Starting"),ConnectionHealthReason.Ready=>Ui("已就绪","Ready"),ConnectionHealthReason.Authenticating=>Ui("等待客户端认证","Waiting for client authentication"),ConnectionHealthReason.DisplayProfileReceived=>Ui("已收到屏幕参数","Display profile received"),ConnectionHealthReason.DisplayPreparing=>Ui("正在准备副屏","Preparing display"),ConnectionHealthReason.DisplayReady=>Ui("副屏已就绪","Display ready"),ConnectionHealthReason.PipelineStarting=>Ui("正在启动视频流水线","Starting video pipeline"),ConnectionHealthReason.FrameSent=>Ui("电脑已发送画面","Computer sent video"),ConnectionHealthReason.CapturePaused=>Ui("画面采集暂停","Capture paused"),ConnectionHealthReason.DecodeSubmitted=>Ui("已提交当前解码器","Submitted to decoder"),ConnectionHealthReason.FramePresented=>Ui("收到 Surface 呈现回调","Presentation callback received"),ConnectionHealthReason.Reconnecting=>Ui("正在重连","Reconnecting"),ConnectionHealthReason.NeedsAttention=>Ui("需要处理","Needs attention"),ConnectionHealthReason.Stopped=>Ui("连接已停止","Connection stopped"),_=>value.ToString()};
+    string HealthRecoveryText(ConnectionHealthRecovery value)=>value switch
+    {ConnectionHealthRecovery.RefreshRoute=>Ui("刷新线路","Refresh route"),ConnectionHealthRecovery.RecreatePairing=>Ui("重建当前连接","Rebuild current connection"),ConnectionHealthRecovery.ConfigureDisplayMode=>Ui("配置设备请求模式","Configure device-requested mode"),ConnectionHealthRecovery.ReclaimOwnedDisplay=>Ui("回收本次拥有的副屏","Reclaim this session's display"),ConnectionHealthRecovery.RestartVideo=>Ui("重启视频连接","Restart video connection"),ConnectionHealthRecovery.OpenLogs=>Ui("打开日志","Open logs"),_=>Ui("无需操作","No action")};
 
     static void OpenDiagnosticFolder()
     {
@@ -353,8 +367,8 @@ internal sealed partial class MainForm
         catch(Exception error)
         {
             var summary=SupportBundleExporter.FailureSummary(error);
-            Log("脱敏支持包导出失败。"+summary);
-            if(!IsDisposed&&!Disposing&&!closing)MessageBox.Show(this,"脱敏支持包导出失败：\r\n"+summary,"TabLink",MessageBoxButtons.OK,MessageBoxIcon.Information);
+            Log(Ui("脱敏支持包导出失败。","Redacted support-bundle export failed. ")+summary);
+            if(!IsDisposed&&!Disposing&&!closing)MessageBox.Show(this,Ui("脱敏支持包导出失败：\r\n","Redacted support-bundle export failed:\r\n")+summary,"TabLink",MessageBoxButtons.OK,MessageBoxIcon.Information);
         }
         finally
         {
@@ -369,8 +383,8 @@ internal sealed partial class MainForm
         if(ShowSupportBundlePreview(prepared.PreviewText)!=DialogResult.OK)return;
         using var dialog=new SaveFileDialog
         {
-            Title="保存 TabLink 脱敏支持包",
-            Filter="ZIP 支持包 (*.zip)|*.zip",
+            Title=Ui("保存 TabLink 脱敏支持包","Save TabLink redacted support bundle"),
+            Filter=Ui("ZIP 支持包 (*.zip)|*.zip","ZIP support bundle (*.zip)|*.zip"),
             DefaultExt="zip",
             AddExtension=true,
             OverwritePrompt=true,
@@ -378,9 +392,10 @@ internal sealed partial class MainForm
         };
         if(dialog.ShowDialog(this)!=DialogResult.OK)return;
         await Task.Run(()=>SupportBundleExporter.WriteAtomic(dialog.FileName,prepared));
-        Log("已导出脱敏支持包。没有复制原始日志、身份、路径、地址、配对材料或桌面内容。");
+            Log(Ui("已导出脱敏支持包。没有复制原始日志、身份、路径、地址、配对材料或桌面内容。",
+                "The redacted support bundle was exported without raw logs, identities, paths, addresses, pairing material or desktop content."));
         if(!IsDisposed&&!Disposing&&!closing)
-            MessageBox.Show(this,"脱敏支持包已保存到：\r\n"+dialog.FileName+"\r\n\r\n上传到公开 Issue 前仍建议再打开检查一次。",
+            MessageBox.Show(this,Ui("脱敏支持包已保存到：\r\n","Redacted support bundle saved to:\r\n")+dialog.FileName+Ui("\r\n\r\n上传到公开 Issue 前仍建议再打开检查一次。","\r\n\r\nReview it once more before attaching it to a public issue."),
                 "TabLink",MessageBoxButtons.OK,MessageBoxIcon.Information);
     }
 
@@ -435,7 +450,7 @@ internal sealed partial class MainForm
         using var previewFont=new Font(FontFamily.GenericMonospace,9);
         using var window=new Form
         {
-            Text="TabLink · 脱敏支持包预览",StartPosition=FormStartPosition.CenterParent,
+            Text=Ui("TabLink · 脱敏支持包预览","TabLink · Redacted support-bundle preview"),StartPosition=FormStartPosition.CenterParent,
             Size=new Size(820,640),MinimumSize=new Size(620,460),ShowInTaskbar=false,
             Font=Font,BackColor=Color.White,ForeColor=ink
         };
@@ -445,15 +460,15 @@ internal sealed partial class MainForm
         var explanation=new Label
         {
             AutoSize=true,Dock=DockStyle.Fill,MaximumSize=new Size(760,0),Margin=new Padding(0,0,0,10),
-            Text="下面是 ZIP 中将保存的全部文本内容。程序不会上传文件，也不会读取原始日志、配置、信任库、设备身份或桌面画面。请检查后再保存。"
+            Text=Ui("下面是 ZIP 中将保存的全部文本内容。程序不会上传文件，也不会读取原始日志、配置、信任库、设备身份或桌面画面。请检查后再保存。","Below is all text that will be saved in the ZIP. TabLink does not upload files or read raw logs, settings, trust stores, device identity or desktop video. Review it before saving.")
         };
         var content=new TextBox
         {
             Multiline=true,ReadOnly=true,WordWrap=false,ScrollBars=ScrollBars.Both,Dock=DockStyle.Fill,
             Text=preview,Font=previewFont,BackColor=Color.White
         };
-        var save=new Button{Text="保存本地 ZIP",AutoSize=true,DialogResult=DialogResult.OK};
-        var cancel=new Button{Text="取消",AutoSize=true,DialogResult=DialogResult.Cancel};
+        var save=new Button{Text=Ui("保存本地 ZIP","Save local ZIP"),AutoSize=true,DialogResult=DialogResult.OK};
+        var cancel=new Button{Text=Ui("取消","Cancel"),AutoSize=true,DialogResult=DialogResult.Cancel};
         var actions=new FlowLayoutPanel{Dock=DockStyle.Fill,AutoSize=true,FlowDirection=FlowDirection.RightToLeft,WrapContents=false,Margin=new Padding(0,10,0,0)};
         actions.Controls.Add(save);actions.Controls.Add(cancel);
         layout.Controls.Add(explanation,0,0);layout.Controls.Add(content,0,1);layout.Controls.Add(actions,0,2);
@@ -538,14 +553,26 @@ internal sealed partial class MainForm
         _=>throw new ArgumentOutOfRangeException(nameof(value))
     };
 
-    void RefreshRequestedModes()
+    void RefreshRequestedModes(bool reportEmpty=true)
     {
+        var selected=(requestedModes.SelectedItem as RequestedMode)?.Profile;
         requestedModes.Items.Clear();
         var profiles=additionalSessions.Select(x=>x.RequestedProfile).Append(lastRequestedProfile).Where(x=>x is not null).Cast<TabletDisplayProfile>()
-            .DistinctBy(p=>(p.Width,p.Height,p.RequestedRefreshRate));
-        foreach(var profile in profiles)requestedModes.Items.Add(new RequestedMode(profile));
-        if(requestedModes.Items.Count>0){requestedModes.SelectedIndex=0;modeHint.Text="已读取设备上报的请求模式；只会配置选中模式。";}
-        else {modeHint.Text="尚未收到设备屏幕参数；请先完成一次认证或连接。";Log(modeHint.Text);}
+            .DistinctBy(p=>(p.Width,p.Height,p.RequestedRefreshRate)).ToArray();
+        foreach(var profile in profiles)requestedModes.Items.Add(new RequestedMode(profile,uiLanguage));
+        if(requestedModes.Items.Count>0)
+        {
+            requestedModes.SelectedItem=requestedModes.Items.OfType<RequestedMode>().FirstOrDefault(item=>selected is not null&&
+                item.Profile.Width==selected.Width&&item.Profile.Height==selected.Height&&
+                item.Profile.RequestedRefreshRate==selected.RequestedRefreshRate);
+            if(requestedModes.SelectedIndex<0)requestedModes.SelectedIndex=0;
+            modeHint.Text=Ui("已读取设备上报的请求模式；只会配置选中模式。","Device-requested modes loaded. Only the selected mode will be configured.");
+        }
+        else
+        {
+            modeHint.Text=Ui("尚未收到设备屏幕参数；请先完成一次认证或连接。","No display profile has been received. Authenticate or connect a device first.");
+            if(reportEmpty)Log(modeHint.Text);
+        }
         UpdateHealthRepairButton();
     }
     async Task RepairDisplayModeAsync()
@@ -557,7 +584,7 @@ internal sealed partial class MainForm
         foreach(var arg in new[]{"--configure-display",profile.Width.ToString(),profile.Height.ToString(),profile.RequestedRefreshRate.ToString(),"--quiet"})start.ArgumentList.Add(arg);
         using var process=Process.Start(start)??throw new IOException("无法启动显示模式配置组件。");await process.WaitForExitAsync(lifetime.Token);
         if(process.ExitCode!=0)throw new IOException("显示模式配置失败，请查看 %LOCALAPPDATA%\\TabLink\\display-configure-result.json。");
-        primaryTargetKey=null;Log("已添加设备所需显示模式，请重新扫码连接。");await RefreshAsync();
+        primaryTargetKey=null;Log(Ui("已添加设备所需显示模式，请重新扫码连接。","The device-requested display mode was added. Scan again to reconnect."));await RefreshAsync();
     }
 
     async Task DiagnoseAsync()
@@ -565,19 +592,26 @@ internal sealed partial class MainForm
         if(diagnosing||closing)return;diagnosing=true;diagnose.Enabled=false;
         using var deadline=CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);deadline.CancelAfter(TimeSpan.FromSeconds(22));
         var results=new List<ConnectionFinding>();
+        var diagnosisLanguage=uiLanguage;
+        string D(string simplifiedChinese,string english)=>
+            diagnosisLanguage==ProductLanguage.SimplifiedChinese?simplifiedChinese:english;
         try
         {
             if(!settingsValid)
             {
-                results.Add(new("配置","需要处理","配置文件读取失败；必须先恢复原文件，检测和 ADB 路径修复不会覆盖排除规则："+store.Path));
+                results.Add(new(D("配置","Configuration"),D("需要处理","Needs attention"),
+                    D("配置文件读取失败；必须先恢复原文件，检测和 ADB 路径修复不会覆盖排除规则：",
+                        "The settings file could not be read. Restore it first; diagnostics and ADB repair will not overwrite exclusion rules: ")+store.Path));
                 return;
             }
             var snapshot=new DevicePolicySettings{SchemaVersion=settings.SchemaVersion,AdbPath=settings.AdbPath,ExcludedDevices=[..settings.ExcludedDevices]};
             results=await Task.Run(async()=>
             {
                 var found=results;
-                try{DevicePolicy.ValidateSettings(snapshot);found.Add(new("配置","通过",$"已加载 {snapshot.ExcludedDevices.Count} 条排除规则。"));}
-                catch(Exception ex){found.Add(new("配置","需要处理",SafeError(ex)+"；请修正配置文件，检测不会覆盖损坏的配置。"));return found;}
+                try{DevicePolicy.ValidateSettings(snapshot);found.Add(new(D("配置","Configuration"),D("通过","Passed"),
+                    D($"已加载 {snapshot.ExcludedDevices.Count} 条排除规则。",$"Loaded {snapshot.ExcludedDevices.Count} exclusion rules.")));}
+                catch(Exception ex){found.Add(new(D("配置","Configuration"),D("需要处理","Needs attention"),
+                    SafeErrorForLanguage(ex,diagnosisLanguage)+D("；请修正配置文件，检测不会覆盖损坏的配置。"," Correct the settings file; diagnostics will not overwrite damaged settings.")));return found;}
                 var bundled=Path.Combine(AppContext.BaseDirectory,"tools","platform-tools","adb.exe");
                 var bundleDirectory=Path.GetDirectoryName(bundled)!;
                 var bundleProvided=Directory.Exists(bundleDirectory);
@@ -586,79 +620,133 @@ internal sealed partial class MainForm
                     try
                     {
                         _=TrustedBundledAdb.StageAndGetVerifiedPath(bundled);
-                        found.Add(new("内置 ADB","通过","三件套哈希与固定 Google r37 版本一致，并已复制到受保护目录。"));
+                        found.Add(new(D("内置 ADB","Bundled ADB"),D("通过","Passed"),
+                            D("三件套哈希与固定 Google r37 版本一致，并已复制到受保护目录。",
+                                "All three files match the pinned Google r37 hashes and were copied to protected storage.")));
                     }
                     catch(Exception ex) when(IsTrustedAdbFailure(ex))
-                    {found.Add(new("内置 ADB","需要处理","随包三件套不完整或固定 SHA-256 不匹配；未执行这些文件。"));}
+                    {found.Add(new(D("内置 ADB","Bundled ADB"),D("需要处理","Needs attention"),
+                        D("随包三件套不完整或固定 SHA-256 不匹配；未执行这些文件。",
+                            "The bundled file set is incomplete or its pinned SHA-256 does not match. These files were not run.")));}
                 }
-                else found.Add(new("ADB 组件","信息","公开发行包不分发 Google Platform-Tools。免调试网络连接不需要 ADB；兼容模式可选择你从 Android 官方安装的 r37 platform-tools/adb.exe。"));
+                else found.Add(new(D("ADB 组件","ADB component"),D("信息","Information"),
+                    D("公开发行包不分发 Google Platform-Tools。免调试网络连接不需要 ADB；兼容模式可选择你从 Android 官方安装的 r37 platform-tools/adb.exe。",
+                        "Public releases do not redistribute Google Platform-Tools. Network connections do not need ADB; for compatibility mode, select r37 platform-tools/adb.exe installed from Android's official site.")));
                 string? adbLocation=null;
                 try{adbLocation=TrustedBundledAdb.LocateStageAndGetVerifiedPath(snapshot.AdbPath);}
                 catch(Exception ex) when(IsTrustedAdbFailure(ex))
-                {found.Add(new("ADB 选择","需要处理","找到的 Android Platform-Tools 未通过固定 SHA-256 校验或无法写入受保护目录；未执行源文件。"));}
-                if(adbLocation is null)found.Add(new("ADB 选择","需要处理",bundleProvided
-                    ?"当前没有可执行的受保护 ADB 副本。内置组件完整时，可点击“修复：使用内置 ADB”。"
-                    :"没有可信 ADB 副本。ADB 兼容模式请从 Android 官方页面安装 r37 后选择 adb.exe；Wi-Fi / USB 网络共享模式不需要 ADB。"));
+                {found.Add(new(D("ADB 选择","ADB selection"),D("需要处理","Needs attention"),
+                    D("找到的 Android Platform-Tools 未通过固定 SHA-256 校验或无法写入受保护目录；未执行源文件。",
+                        "The discovered Android Platform-Tools failed pinned SHA-256 verification or could not be written to protected storage. The source files were not run.")));}
+                if(adbLocation is null)found.Add(new(D("ADB 选择","ADB selection"),D("需要处理","Needs attention"),bundleProvided
+                    ?D("当前没有可执行的受保护 ADB 副本。内置组件完整时，可点击“修复：使用内置 ADB”。",
+                        "No executable protected ADB copy is available. If the bundled component is complete, choose Repair: use bundled ADB.")
+                    :D("没有可信 ADB 副本。ADB 兼容模式请从 Android 官方页面安装 r37 后选择 adb.exe；Wi-Fi / USB 网络共享模式不需要 ADB。",
+                        "No trusted ADB copy is available. For ADB compatibility mode, install r37 from Android's official site and select adb.exe; Wi-Fi and USB tethering modes do not need ADB.")));
                 else
                 {
                     var version=await new AdbProcessRunner().RunAsync(adbLocation,["version"],TimeSpan.FromSeconds(4),deadline.Token);
-                    found.Add(new("ADB 执行",version.ExitCode==0?"通过":"需要处理",version.ExitCode==0
-                        ?SafeAdbVersionSummary(version.StandardOutput)
-                        :SafeErrorSummary.ForUser(new AdbCommandException(version.ExitCode,version.StandardError,version.StandardOutput))));
+                    found.Add(new(D("ADB 执行","ADB execution"),version.ExitCode==0?D("通过","Passed"):D("需要处理","Needs attention"),version.ExitCode==0
+                        ?SafeAdbVersionSummary(version.StandardOutput,diagnosisLanguage)
+                        :SafeErrorForLanguage(new AdbCommandException(version.ExitCode,version.StandardError,version.StandardOutput),diagnosisLanguage,adbOperation:true)));
                 }
                 var usb=await UsbInventory.ReadAsync(deadline.Token);
-                found.Add(new("Windows USB","信息",$"当前存在 {usb.Count} 个具有序列号的 USB 身份。"));
+                found.Add(new("Windows USB",D("信息","Information"),
+                    D($"当前存在 {usb.Count} 个具有序列号的 USB 身份。",$"Found {usb.Count} USB identities with serial numbers.")));
                 if(adbLocation is not null)
                 {
                     var diagnosticPolicy=new DevicePolicy(snapshot);
                     var client=new AdbClient(adbLocation,diagnosticPolicy,UsbInventory.ReadAsync);
                     var devices=await client.ListDevicesAsync(deadline.Token);
-                    if(devices.Count==0)found.Add(new("安卓调试设备","信息","未发现 ADB 设备。免调试网络模式无需 ADB；调试模式需在安卓开启 USB 调试并允许此电脑。"));
+                    if(devices.Count==0)found.Add(new(D("安卓调试设备","Android debugging devices"),D("信息","Information"),
+                        D("未发现 ADB 设备。免调试网络模式无需 ADB；调试模式需在安卓开启 USB 调试并允许此电脑。",
+                            "No ADB device was found. Network mode does not require ADB; debugging mode requires USB debugging and approval for this computer.")));
                     for(var index=0;index<devices.Count;index++)
                     {
                         var device=devices[index];
                         var verdict=diagnosticPolicy.Evaluate(device,usb);
-                        var detail=device.State switch{"unauthorized"=>"请在此设备解锁后允许电脑的 USB 调试授权。","offline"=>"设备 ADB 离线，请重插该设备数据线并重新授权。",_=>verdict.Allowed?"可在 USB 调试页选择并连接。":verdict.Reason};
-                        found.Add(new($"安卓设备 {index+1}",verdict.Allowed?"通过":"需要处理",detail));
+                        var detail=device.State switch
+                        {
+                            "unauthorized"=>D("请在此设备解锁后允许电脑的 USB 调试授权。","Unlock this device and approve USB debugging for this computer."),
+                            "offline"=>D("设备 ADB 离线，请重插该设备数据线并重新授权。","The device is offline in ADB. Reconnect its cable and approve it again."),
+                            _=>verdict.Allowed?D("可在 USB 调试页选择并连接。","The device can be selected and connected on the USB debugging page."):
+                                (diagnosisLanguage==ProductLanguage.English?D("设备被保护规则排除。","The device is excluded by a protection rule."):verdict.Reason)
+                        };
+                        found.Add(new(D($"安卓设备 {index+1}",$"Android device {index+1}"),
+                            verdict.Allowed?D("通过","Passed"):D("需要处理","Needs attention"),detail));
                     }
                 }
                 var networks=NetworkInterfaceCatalog.GetChoices(snapshot);
-                found.Add(new("网络线路",networks.Count>0?"通过":"需要处理",networks.Count>0?string.Join("\r\n",networks.Select(x=>$"{x.InterfaceAlias} · {x.LocalAddress} · {x.Kind}")):"没有可用线路。请连接同一 Wi-Fi，或在设备开启 USB 网络共享；检查设备是否被排除。"));
+                found.Add(new(D("网络线路","Network routes"),networks.Count>0?D("通过","Passed"):D("需要处理","Needs attention"),
+                    networks.Count>0?string.Join("\r\n",networks.Select(x=>$"{x.InterfaceAlias} · {x.LocalAddress} · {x.Kind}")):
+                    D("没有可用线路。请连接同一 Wi-Fi，或在设备开启 USB 网络共享；检查设备是否被排除。",
+                        "No route is available. Join the same Wi-Fi network or enable USB tethering on the device, and check whether the device is excluded.")));
                 var targets=VirtualDisplayManager.GetTargets();
-                found.Add(new("虚拟副屏",targets.Count<=1?"通过":"需要处理",targets.Count switch
+                found.Add(new(D("虚拟副屏","Virtual display"),targets.Count<=1?D("通过","Passed"):D("需要处理","Needs attention"),targets.Count switch
                 {
-                    0 => "当前没有虚拟显示设备，这是断开状态的预期结果；设备认证后会按需安装。",
-                    1 => $"检测到唯一虚拟显示目标，活动={targets[0].IsActive}。停止连接后应自动卸载。",
-                    _ => $"检测到 {targets.Count} 个 TabLink 兼容目标；单屏策略要求最多一个，请停止连接并运行清理。"
+                    0 => D("当前没有虚拟显示设备，这是断开状态的预期结果；设备认证后会按需安装。",
+                        "No virtual display device is present. This is expected while disconnected; one is installed on demand after authentication."),
+                    1 => D($"检测到唯一虚拟显示目标，活动={targets[0].IsActive}。停止连接后应自动卸载。",
+                        $"One virtual display target was found; active={targets[0].IsActive}. It should be removed automatically after disconnection."),
+                    _ => D($"检测到 {targets.Count} 个 TabLink 兼容目标；单屏策略要求最多一个，请停止连接并运行清理。",
+                        $"Found {targets.Count} TabLink-compatible targets. The single-display policy allows at most one; stop the connection and run cleanup.")
                 }));
-                try{found.Add(new("H.264 编码器","通过",VideoPipeline.FindFfmpeg()));}catch(Exception ex){found.Add(new("H.264 编码器","需要处理",SafeError(ex)+"；请使用完整交付目录。"));}
+                try{found.Add(new(D("H.264 编码器","H.264 encoder"),D("通过","Passed"),VideoPipeline.FindFfmpeg()));}
+                catch(Exception ex){found.Add(new(D("H.264 编码器","H.264 encoder"),D("需要处理","Needs attention"),
+                    SafeErrorForLanguage(ex,diagnosisLanguage)+D("；请使用完整交付目录。"," Use the complete distribution directory.")));}
                 var apk=Path.Combine(AppContext.BaseDirectory,"android","TabLink.apk");
-                found.Add(new("安卓客户端",File.Exists(apk)?"通过":"需要处理",File.Exists(apk)?"客户端随包提供；在 USB 调试页可安装到明确选中的安卓设备。":"缺少 android/TabLink.apk，请恢复完整交付目录。"));
+                found.Add(new(D("安卓客户端","Android client"),File.Exists(apk)?D("通过","Passed"):D("需要处理","Needs attention"),File.Exists(apk)
+                    ?D("客户端随包提供；在 USB 调试页可安装到明确选中的安卓设备。","The client is included and can be installed to an explicitly selected Android device from the USB debugging page.")
+                    :D("缺少 android/TabLink.apk，请恢复完整交付目录。","android/TabLink.apk is missing. Restore the complete distribution directory.")));
                 var conflicts=Process.GetProcessesByName("ExtensoDeskServer");
-                found.Add(new("USB 冲突",conflicts.Length==0?"通过":"需要处理",conflicts.Length==0?"未发现 ExtensoDeskServer 进程。":"ExtensoDeskServer 正在运行，可能接管 USB 设备。请先退出它的服务再连接。"));foreach(var p in conflicts)p.Dispose();
+                found.Add(new(D("USB 冲突","USB conflict"),conflicts.Length==0?D("通过","Passed"):D("需要处理","Needs attention"),conflicts.Length==0
+                    ?D("未发现 ExtensoDeskServer 进程。","The ExtensoDeskServer process was not found.")
+                    :D("ExtensoDeskServer 正在运行，可能接管 USB 设备。请先退出它的服务再连接。",
+                        "ExtensoDeskServer is running and may claim USB devices. Stop its service before connecting.")));foreach(var p in conflicts)p.Dispose();
                 return found;
             },deadline.Token);
-            if(server is {} primary)results.Add(new("主连接","信息",$"客户端连接={primary.ClientConnected}，电脑发送={primary.FramesSent} 帧，解码提交={primary.SubmittedFrames} 帧 / {primary.ClientSubmittedFps:F1} fps，呈现回调={primary.PresentedFrames} 帧 / {primary.ClientPresentedFps:F1} fps，采集暂停={primary.CapturePaused}。"));
-            foreach(var s in additionalSessions.Where(x=>!x.IsStopped))results.Add(new("独立设备 "+s.Port,"信息",s.State));
-            foreach(var s in browserStates.Values)results.Add(new("浏览器 "+s.Id.ToString()[..8],"信息",s.Message));
+            if(server is {} primary)results.Add(new(D("主连接","Primary connection"),D("信息","Information"),
+                D($"客户端连接={primary.ClientConnected}，电脑发送={primary.FramesSent} 帧，解码提交={primary.SubmittedFrames} 帧 / {primary.ClientSubmittedFps:F1} fps，呈现回调={primary.PresentedFrames} 帧 / {primary.ClientPresentedFps:F1} fps，采集暂停={primary.CapturePaused}。",
+                    $"Client connected={primary.ClientConnected}; host sent={primary.FramesSent} frames; decode submitted={primary.SubmittedFrames} frames / {primary.ClientSubmittedFps:F1} fps; presentation callbacks={primary.PresentedFrames} frames / {primary.ClientPresentedFps:F1} fps; capture paused={primary.CapturePaused}.")));
+            foreach(var s in additionalSessions.Where(x=>!x.IsStopped))results.Add(new(D("独立设备 ","Independent device ")+s.Port,D("信息","Information"),WindowsUiText.TranslateNativeSessionState(s.State,diagnosisLanguage)));
+            foreach(var s in browserStates.Values)results.Add(new(D("浏览器 ","Browser ")+s.Id.ToString()[..8],D("信息","Information"),BrowserStatusText(s,diagnosisLanguage)));
             Diagnostics.Save("connection-diagnosis.json",()=>new{timestamp=DateTimeOffset.Now,findings=results},Log);
         }
-        catch(OperationCanceledException){results.Add(new("检测","未完成","检测已超时或取消。已有连接继续运行，可重试检测。"));}
-        catch(Exception ex){results.Add(new("检测","需要处理",SafeError(ex)));}
+        catch(OperationCanceledException){results.Add(new(D("检测","Diagnostics"),D("未完成","Incomplete"),
+            D("检测已超时或取消。已有连接继续运行，可重试检测。","Diagnostics timed out or were cancelled. Existing connections remain active; you can run diagnostics again.")));}
+        catch(Exception ex){results.Add(new(D("检测","Diagnostics"),D("需要处理","Needs attention"),SafeErrorForLanguage(ex,diagnosisLanguage)));}
         finally
         {
-            diagnosticReport.Text=DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")+"\r\n\r\n"+string.Join("\r\n\r\n",results.Select(x=>$"[{x.State}] {x.Check}\r\n{x.Detail}"));
+            diagnosticReport.Text=DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")+"\r\n\r\n"+string.Join("\r\n\r\n",results.Select(x=>$"[{WindowsUiText.TranslateRuntime(x.State,diagnosisLanguage)}] {WindowsUiText.TranslateRuntime(x.Check,diagnosisLanguage)}\r\n{WindowsUiText.TranslateHealthDetail(x.Detail,diagnosisLanguage)}"));
+            diagnosticReportLanguage=diagnosisLanguage;diagnosticReportNeedsRerun=false;
+            if(diagnosisLanguage!=uiLanguage)RefreshDiagnosticReportLanguage();
             diagnosing=false;diagnose.Enabled=!closing;
         }
     }
 
+    void RefreshDiagnosticReportLanguage()
+    {
+        if(diagnosticReport.TextLength==0)return;
+        if(diagnosticReportNeedsRerun||diagnosticReportLanguage!=uiLanguage)
+        {
+            diagnosticReportNeedsRerun=true;diagnosticReportLanguage=uiLanguage;
+            diagnosticReport.Text=Ui(
+                "界面语言已切换。请重新运行检测，以简体中文生成当前检测报告。",
+                "The interface language changed. Run diagnostics again to generate a current report in English.");
+        }
+    }
+
     static bool IsTrustedAdbFailure(Exception ex)=>TrustedBundledAdb.IsTrustStorageFailure(ex);
-    static string SafeAdbVersionSummary(string output)
+    static string SafeAdbVersionSummary(string output,ProductLanguage language)
     {
         var lines=output.Split(['\r','\n'],StringSplitOptions.RemoveEmptyEntries|StringSplitOptions.TrimEntries)
             .Where(line=>line.StartsWith("Android Debug Bridge version ",StringComparison.Ordinal)||
                 line.StartsWith("Version ",StringComparison.Ordinal)).Take(2).ToArray();
-        return lines.Length==0?"受保护 ADB 的 version 命令执行成功；诊断未记录原始路径。":string.Join("\r\n",lines);
+        return lines.Length==0
+            ?language==ProductLanguage.SimplifiedChinese
+                ?"受保护 ADB 的 version 命令执行成功；诊断未记录原始路径。"
+                :"The protected ADB version command succeeded; diagnostics did not record the original path."
+            :string.Join("\r\n",lines);
     }
     async Task RepairAdbAsync()
     {
@@ -671,18 +759,18 @@ internal sealed partial class MainForm
         if(approved is not null)await StopAsync();
         var next=new DevicePolicySettings{SchemaVersion=settings.SchemaVersion,AdbPath=bundled,ExcludedDevices=[..settings.ExcludedDevices]};
         store.Save(next);settings.AdbPath=bundled;LocateAdb();
-        Log("已修复 ADB 路径，使用校验通过的内置组件；未重启共享 ADB 服务。");await RefreshAsync();
+        Log(Ui("已修复 ADB 路径，使用校验通过的内置组件；未重启共享 ADB 服务。","The ADB path was repaired with the verified bundled component; the shared ADB service was not restarted."));await RefreshAsync();
     }
     async Task RepairConnectionAsync()
     {
         if(sessionList.SelectedItem is NativeSessionRow row&&!row.Session.IsStopped)
-        {row.Session.Reconnect();Log("正在重建选中设备的视频连接，其他设备继续运行。");return;}
+        {row.Session.Reconnect();Log(Ui("正在重建选中设备的视频连接，其他设备继续运行。","Rebuilding the selected device's video connection; other devices continue running."));return;}
         if(browserHost is {} host)
         {
             if(browserSessions.SelectedItem is BrowserSessionRow browser)await host.StopSessionAsync(browser.Status.Id);
-            CreateBrowserPairing();Log("已为浏览器接入生成新的单次配对二维码。");return;
+            CreateBrowserPairing();Log(Ui("已为浏览器接入生成新的单次配对二维码。","A new single-use browser pairing QR code was generated."));return;
         }
-        if(networkChoice is not null&&server is {} running){running.RequestReconnect();Log("已请求主网络会话重新协商屏幕和编码器。");return;}
+        if(networkChoice is not null&&server is {} running){running.RequestReconnect();Log(Ui("已请求主网络会话重新协商屏幕和编码器。","The primary network session was asked to renegotiate its display and encoder."));return;}
         if(approved is {} target)
         {
             var serial=target.Serial;await StopAsync();await RefreshAsync();
@@ -690,9 +778,11 @@ internal sealed partial class MainForm
             await ConnectAsync();return;
         }
         await RefreshNetworksAsync();await RefreshAsync();
-        Log("已刷新设备与线路。请回到连接页选择连接方式和目标设备；浏览器接入可重新生成配对二维码。");
+        Log(Ui("已刷新设备与线路。请回到连接页选择连接方式和目标设备；浏览器接入可重新生成配对二维码。",
+            "Devices and routes were refreshed. Return to Connect display to select a method and target; browser access can generate a new pairing QR code."));
     }
     sealed record ConnectionFinding(string Check,string State,string Detail);
-    sealed record RequestedMode(TabletDisplayProfile Profile)
-    {public override string ToString()=>$"{Profile.Width} × {Profile.Height} · {Profile.RequestedRefreshRate} Hz（设备报告）";}
+    sealed record RequestedMode(TabletDisplayProfile Profile,ProductLanguage Language)
+    {public override string ToString()=>$"{Profile.Width} × {Profile.Height} · {Profile.RequestedRefreshRate} Hz"+
+        (Language==ProductLanguage.SimplifiedChinese?"（设备报告）":" (reported by device)");}
 }

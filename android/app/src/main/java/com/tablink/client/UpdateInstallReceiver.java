@@ -21,6 +21,7 @@ public final class UpdateInstallReceiver extends BroadcastReceiver {
                 intent.getStringExtra(EXTRA_ATTEMPT_TOKEN),
                 intent.getIntExtra(PackageInstaller.EXTRA_SESSION_ID, -1));
         if (callback == null) return;
+        Context localized = AppLanguage.wrap(context);
 
         SharedPreferences preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         UpdateInstallAttemptStore.Recovery recovery = UpdateInstallAttemptStore.recover(
@@ -47,31 +48,37 @@ public final class UpdateInstallReceiver extends BroadcastReceiver {
                 try {
                     UpdateInstallerUiGate.LaunchResult launch =
                             UpdateInstallAttemptStore.launchConfirmation(preferences, callback, status,
-                                    "Android 正在等待安装确认", () -> context.startActivity(confirmation));
+                                    localized.getString(R.string.update_install_waiting_confirmation),
+                                    () -> context.startActivity(confirmation));
                     if (launch == UpdateInstallerUiGate.LaunchResult.LAUNCHED
                             || launch == UpdateInstallerUiGate.LaunchResult.ALREADY_LAUNCHING
                             || launch == UpdateInstallerUiGate.LaunchResult.STALE_ATTEMPT) return;
                     abandon(context, callback.sessionId);
                     UpdateInstallAttemptStore.finish(preferences, callback,
                             PackageInstaller.STATUS_FAILURE_ABORTED,
-                            "副屏正在使用；断开后将重新确认并安装更新");
+                            localized.getString(R.string.update_install_deferred_for_display));
                     return;
                 } catch (RuntimeException ignored) { }
             }
             abandon(context, callback.sessionId);
             UpdateInstallAttemptStore.finish(preferences, callback, PackageInstaller.STATUS_FAILURE,
-                    "无法打开 Android 安装确认页，请在 TabLink 设置中重试");
+                    localized.getString(R.string.update_confirmation_open_failed));
             return;
         }
 
         if (status == PackageInstaller.STATUS_SUCCESS) {
-            UpdateInstallAttemptStore.finish(preferences, callback, status, "正式版更新安装完成");
+            UpdateInstallAttemptStore.finish(preferences, callback, status,
+                    localized.getString(R.string.update_install_complete));
             return;
         }
         String detail = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE);
-        if (status == PackageInstaller.STATUS_FAILURE_ABORTED) detail = "安装已取消，可在 TabLink 设置中重试";
-        else if (detail == null || detail.trim().isEmpty()) detail = "Android 安装程序未完成更新";
+        if (status == PackageInstaller.STATUS_FAILURE_ABORTED)
+            detail = localized.getString(R.string.update_install_cancelled);
+        else if (detail == null || detail.trim().isEmpty())
+            detail = localized.getString(R.string.update_installer_incomplete);
         detail = detail.replaceAll("[\\p{Cntrl}]", " ").trim();
+        if (AppLanguage.isChinese(context) != containsHan(detail))
+            detail = localized.getString(R.string.update_installer_incomplete);
         if (detail.length() > 100) detail = detail.substring(0, 100);
         UpdateInstallAttemptStore.finish(preferences, callback, status, detail);
     }
@@ -90,5 +97,16 @@ public final class UpdateInstallReceiver extends BroadcastReceiver {
         if (sessionId < 0) return;
         try { context.getPackageManager().getPackageInstaller().abandonSession(sessionId); }
         catch (RuntimeException ignored) { }
+    }
+
+    private static boolean containsHan(String value) {
+        for (int i = 0; i < value.length();) {
+            int codePoint = value.codePointAt(i);
+            if (codePoint >= 0x3400 && codePoint <= 0x4dbf || codePoint >= 0x4e00 && codePoint <= 0x9fff
+                    || codePoint >= 0xf900 && codePoint <= 0xfaff || codePoint >= 0x20000 && codePoint <= 0x323af)
+                return true;
+            i += Character.charCount(codePoint);
+        }
+        return false;
     }
 }

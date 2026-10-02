@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Security.Cryptography;
 using TabLink.Core;
 
@@ -89,12 +90,21 @@ internal sealed partial class MainForm : Form
     readonly ToolStripMenuItem trayStop=new("停止连接");
     bool trayHintShown;
 
-    public MainForm(string? requestedSerial=null,EventWaitHandle? activationRequest=null,string? requestedNetwork=null,bool diagnosticPairing=false,EventWaitHandle? exitRequest=null,bool verification=false)
+    public MainForm(string? requestedSerial=null,EventWaitHandle? activationRequest=null,string? requestedNetwork=null,bool diagnosticPairing=false,EventWaitHandle? exitRequest=null,bool verification=false,ProductLanguage? verificationLanguage=null)
     {
         this.requestedSerial=requestedSerial;
         verificationMode=verification;
         this.diagnosticPairing=diagnosticPairing;
-        Text="TabLink · 平板副屏"; AutoScaleMode=AutoScaleMode.Dpi; Size=PreferredExpandedWindowSize; MinimumSize=PreferredCompactWindowSize;
+        if(verification)
+        {
+            uiLanguage=verificationLanguage??LanguagePreferencesStore.FromCulture(startupUiCulture);
+            languageMode=uiLanguage==ProductLanguage.SimplifiedChinese?ProductLanguageMode.SimplifiedChinese:ProductLanguageMode.English;
+            languageLoadStatus=LanguagePreferencesLoadStatus.Loaded;
+            CultureInfo.CurrentUICulture=CultureInfo.GetCultureInfo(uiLanguage==ProductLanguage.SimplifiedChinese?"zh-CN":"en-SG");
+        }
+        else LoadLanguagePreference();
+        ConfigureNetworkChoiceFormatting();
+        Text=Ui("TabLink · 平板副屏","TabLink · Second screen"); AutoScaleMode=AutoScaleMode.Dpi; Size=PreferredExpandedWindowSize; MinimumSize=PreferredCompactWindowSize;
         StartPosition=FormStartPosition.CenterScreen; Font=new Font("Microsoft YaHei UI",10); BackColor=Color.FromArgb(244,247,251); ForeColor=ink;
         if(!verification)
         {
@@ -112,25 +122,26 @@ internal sealed partial class MainForm : Form
         }
         BuildUi();
         ConfigureWindowSizing();
-        var showWindow=new ToolStripMenuItem("打开主窗口");
-        var exit=new ToolStripMenuItem("退出 TabLink");
+        var showWindow=new ToolStripMenuItem(Ui("打开主窗口","Open main window"));
+        var exit=new ToolStripMenuItem(Ui("退出 TabLink","Exit TabLink"));
         showWindow.Click+=(_,_)=>RestoreFromTray();
         tray.DoubleClick+=(_,_)=>RestoreFromTray();
         trayStop.Click+=async(_,_)=>{SuppressTrustedNetworkAutoStart();await GuardAsync(StopAllAsync);};
         exit.Click+=async(_,_)=>await ExitAsync();
         trayMenu.Items.AddRange([showWindow,trayStop,new ToolStripSeparator(),exit]);
         tray.ContextMenuStrip=trayMenu;
+        ApplyUiLanguage();
         if(!verification)ConfigureAutomaticUpdates();
         activationTimer.Tick+=async(_,_)=>{if(exitRequest?.WaitOne(0)==true&&!closing){await ExitAsync();return;}if(activationRequest?.WaitOne(0)==true&&!closing)RestoreFromTray();};
         activationTimer.Start();
         if(!verification)
         {
-            try {settings=store.Load();if(!File.Exists(store.Path))store.Save(settings);} catch(Exception ex) when(ex is SettingsLoadException or IOException or UnauthorizedAccessException) {settingsValid=false; Log("配置读取失败，连接已禁用。请保留配置文件并修复："+store.Path);Log(SafeError(ex.InnerException??ex));}
+            try {settings=store.Load();if(!File.Exists(store.Path))store.Save(settings);} catch(Exception ex) when(ex is SettingsLoadException or IOException or UnauthorizedAccessException) {settingsValid=false; Log(Ui("配置读取失败，连接已禁用。请保留配置文件并修复：","Settings could not be read, so connections are disabled. Keep and repair the settings file: ")+store.Path);Log(SafeError(ex.InnerException??ex));}
             policy=new DevicePolicy(settings);LoadRules();LocateAdb();
         }
         else
         {
-            settings=new DevicePolicySettings();policy=new DevicePolicy(settings);LoadRules();adbPath.Text="界面验证模式：未读取本机 ADB 配置。";
+            settings=new DevicePolicySettings();policy=new DevicePolicy(settings);LoadRules();adbPath.Text=Ui("界面验证模式：未读取本机 ADB 配置。","UI verification mode: local ADB settings were not read.");
         }
         refresh.Click+=async(_,_)=>await GuardAsync(RefreshAsync);
         chooseAdb.Click+=(_,_)=>BrowseAdb();
@@ -148,7 +159,7 @@ internal sealed partial class MainForm : Form
             {
                 await RetryPendingUsbCleanupAsync("application-start",force:true);
             }
-            catch(Exception ex){Log("USB 待清理队列需要处理："+SafeError(ex));}
+            catch(Exception ex){Log(Ui("USB 待清理队列需要处理：","The pending USB-cleanup queue needs attention: ")+SafeError(ex));}
             await GuardAsync(RefreshNetworksAsync);monitor.Start();
             if(requestedNetwork is not null)
             {
@@ -169,7 +180,7 @@ internal sealed partial class MainForm : Form
                 connectionMode.SelectedIndex=2;
                 await GuardAsync(RefreshAsync);
                 var selected=devices.Items.OfType<DeviceChoice>().SingleOrDefault(d=>d.Device.Serial==this.requestedSerial);
-                if(selected is null){SetStatus("指定的平板尚未连接或尚未授权，请查看连接记录。");return;}
+                if(selected is null){SetStatus("指定的平板尚未连接或尚未授权，请查看连接记录。","The requested tablet is not connected or authorised. Check the connection log.");return;}
                 devices.SelectedItem=selected;await GuardAsync(ConnectAsync);
             }
         };
@@ -194,7 +205,7 @@ internal sealed partial class MainForm : Form
         if(!trayHintShown)
         {
             trayHintShown=true;
-            tray.ShowBalloonTip(3000,"TabLink 已在后台运行","副屏连接继续运行。双击托盘图标或再次打开快捷方式可回到主窗口；右键菜单可停止或退出。",ToolTipIcon.Info);
+            tray.ShowBalloonTip(3000,Ui("TabLink 已在后台运行","TabLink is running in the background"),Ui("副屏连接继续运行。双击托盘图标或再次打开快捷方式可回到主窗口；右键菜单可停止或退出。","The display connection remains active. Double-click the tray icon or open the shortcut again to return; right-click to stop or exit."),ToolTipIcon.Info);
         }
     }
     void RestoreFromTray()
@@ -213,12 +224,12 @@ internal sealed partial class MainForm : Form
         {
             var launched=false;
             try{launched=updateCoordinator is not null&&updateCoordinator.Ready is not null&&await updateCoordinator.TryLaunchReadyUpdaterAsync();}
-            catch(Exception ex){Log("自动更新启动失败："+SafeError(ex));}
+            catch(Exception ex){Log(Ui("自动更新启动失败：","Automatic-update launch failed: ")+SafeError(ex));}
             if(!launched)
             {
                 exitStarting=false;
                 updateExitStarted=false;
-                SetStatus("自动更新未能安全启动，TabLink 保持运行");
+                SetStatus("自动更新未能安全启动，TabLink 保持运行","The automatic updater could not start safely; TabLink remains running");
                 UpdateButtons();
                 return;
             }
@@ -226,9 +237,9 @@ internal sealed partial class MainForm : Form
         closing=true;exitStarting=false;monitor.Stop();activationTimer.Stop();
         connectionStarts.InvalidateActive();lifetime.Cancel();UpdateButtons();
         await connectionStarts.WaitForIdleAsync();
-        if(networkStartTask is {} opening)try{await opening;}catch(Exception ex){Log("网络启动已结束："+SafeError(ex));}
-        if(additionalStartTask is {} extraOpening)try{await extraOpening;}catch(Exception ex){Log("设备启动已结束："+SafeError(ex));}
-        if(browserStartTask is {} browserOpening)try{await browserOpening;}catch(Exception ex){Log("浏览器启动已结束："+SafeError(ex));}
+        if(networkStartTask is {} opening)try{await opening;}catch(Exception ex){Log(Ui("网络启动已结束：","Network startup ended: ")+SafeError(ex));}
+        if(additionalStartTask is {} extraOpening)try{await extraOpening;}catch(Exception ex){Log(Ui("设备启动已结束：","Device startup ended: ")+SafeError(ex));}
+        if(browserStartTask is {} browserOpening)try{await browserOpening;}catch(Exception ex){Log(Ui("浏览器启动已结束：","Browser startup ended: ")+SafeError(ex));}
         try
         {
             await StopAllAsync();
@@ -301,13 +312,14 @@ internal sealed partial class MainForm : Form
             var width=Math.Max(280,connectionPage.ClientSize.Width-connectionPage.Padding.Horizontal-28);
             modeRow.MaximumSize=encoderRow.MaximumSize=connectionModeHint.MaximumSize=help.MaximumSize=new Size(width,0);
         };
-        var settingsLayout=new TableLayoutPanel{Dock=DockStyle.Top,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,ColumnCount=1,RowCount=3,Margin=Padding.Empty};
-        settingsLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));settingsLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));settingsLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));exclusions.Controls.Add(settingsLayout);
-        settingsLayout.Controls.Add(BuildAuthorFooterSettingsPanel(),0,0);
-        settingsLayout.Controls.Add(BuildUpdateSettingsPanel(),0,1);
+        var settingsLayout=new TableLayoutPanel{Dock=DockStyle.Top,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,ColumnCount=1,RowCount=4,Margin=Padding.Empty};
+        settingsLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));settingsLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));settingsLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));settingsLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));exclusions.Controls.Add(settingsLayout);
+        settingsLayout.Controls.Add(BuildLanguageSettingsPanel(),0,0);
+        settingsLayout.Controls.Add(BuildAuthorFooterSettingsPanel(),0,1);
+        settingsLayout.Controls.Add(BuildUpdateSettingsPanel(),0,2);
         var protectionGroup=new GroupBox{Text="设备保护",Dock=DockStyle.Top,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,Padding=new Padding(12),Margin=Padding.Empty};
         var exclusionLayout=new TableLayoutPanel{Dock=DockStyle.Top,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,ColumnCount=1,RowCount=4,Margin=Padding.Empty};
-        for(var i=0;i<exclusionLayout.RowCount;i++)exclusionLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));protectionGroup.Controls.Add(exclusionLayout);settingsLayout.Controls.Add(protectionGroup,0,2);
+        for(var i=0;i<exclusionLayout.RowCount;i++)exclusionLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));protectionGroup.Controls.Add(exclusionLayout);settingsLayout.Controls.Add(protectionGroup,0,3);
         var exclusionHelp=new Label{Text="序列号或 VID/PID 任一匹配都会阻止 USB 连接与安装 APK。已默认保护你的 F50 Pro。\n新增规则命中正在使用的 USB 设备时，会先停止该连接。",AutoSize=true,MaximumSize=new Size(820,0),ForeColor=muted,Margin=new Padding(0,0,0,12)};
         exclusionLayout.Controls.Add(exclusionHelp,0,0);
         exclusionLayout.Controls.Add(rules,0,1);exclusionLayout.Controls.Add(Flow(LabeledField("设备序列号",serial),LabeledField("USB VID",vid),LabeledField("USB PID",pid)),0,2);exclusionLayout.Controls.Add(Flow(LabeledField("备注名称",label),addRule,removeRule),0,3);
@@ -333,14 +345,21 @@ internal sealed partial class MainForm : Form
         var selected=connectionMode.SelectedIndex switch{1=>browserConnectionPanel,2=>usbDebugConnectionPanel,_=>clientConnectionPanel};
         connectionModeHint.Text=connectionMode.SelectedIndex switch
         {
-            1=>"适用于 iPhone、iPad、HarmonyOS 及不安装客户端的设备；首次使用需要信任本机证书。",
-            2=>"仅用于 Android 兼容连接；需要打开 USB 调试并授权这台电脑。",
-            _=>"推荐方式：手机或平板使用 TabLink 客户端扫码，支持同一 Wi-Fi 或 USB 网络共享。"
+            1=>Ui("适用于 iPhone、iPad、HarmonyOS 及不安装客户端的设备；首次使用需要信任本机证书。","For iPhone, iPad, HarmonyOS and devices without the app. The first connection requires trusting this computer's certificate."),
+            2=>Ui("仅用于 Android 兼容连接；需要打开 USB 调试并授权这台电脑。","Android compatibility mode only. Enable USB debugging and authorise this computer."),
+            _=>Ui("推荐方式：手机或平板使用 TabLink 客户端扫码，支持同一 Wi-Fi 或 USB 网络共享。","Recommended: scan with the TabLink client on a phone or tablet over the same Wi-Fi or USB tethering connection.")
         };
         if(!HasAnySessions)
         {
-            status.Text=connectionMode.SelectedIndex switch{1=>"浏览器接入尚未开启",2=>"等待安卓 USB 调试设备",_=>"尚未连接"};
-            metrics.Text=connectionMode.SelectedIndex switch{1=>"本地 HTTPS + WebRTC · 单设备",2=>"兼容连接 · 按需启用唯一副屏",_=>"本地加密连接 · 无需 USB 调试"};
+            if(connectionMode.SelectedIndex==1)ShowStatus("浏览器接入尚未开启","Browser connection is not enabled");
+            else if(connectionMode.SelectedIndex==2)ShowStatus("等待安卓 USB 调试设备","Waiting for an Android USB debugging device");
+            else ShowStatus("尚未连接","Not connected");
+            switch(connectionMode.SelectedIndex)
+            {
+                case 1:SetMetrics("本地 HTTPS + WebRTC · 单设备","Local HTTPS + WebRTC · one device");break;
+                case 2:SetMetrics("兼容连接 · 按需启用唯一副屏","Compatibility connection · one display enabled when needed");break;
+                default:SetMetrics("本地加密连接 · 无需 USB 调试","Encrypted local connection · no USB debugging");break;
+            }
         }
         if(selected is not null){selected.Visible=true;selected.BringToFront();}
         UpdateButtons();
@@ -348,30 +367,32 @@ internal sealed partial class MainForm : Form
 
     void ChangeVideoQuality()
     {
+        if(applyingLanguage)return;
         if(qualityMode.SelectedItem is not QualityChoice choice)return;
         selectedQuality=choice.Preset;
         SaveVideoPreferences();
         if(videoQuality is null)
         {
-            Log("画质已设置为“"+VideoQualitySessionName(selectedQuality)+"”，将在下一次原生客户端连接时使用。");
+            Log(Ui("画质已设置为“","Quality was set to “")+VideoQualitySessionName(selectedQuality)+Ui("”，将在下一次原生客户端连接时使用。","” and will be used for the next native-client connection."));
             return;
         }
         var changed=videoQuality.SetPreset(selectedQuality,DateTime.UtcNow);
         var snapshot=videoQuality.Snapshot();
         if(changed)
-            SetStatus($"正在切换到{VideoQualitySessionName(selectedQuality)}：保持连接和唯一副屏，仅重建编码器");
+            SetStatus($"正在切换到{VideoQualitySessionName(selectedQuality,ProductLanguage.SimplifiedChinese)}：保持连接和唯一副屏，仅重建编码器",$"Switching to {VideoQualitySessionName(selectedQuality,ProductLanguage.English)}: keeping the connection and single display while rebuilding only the encoder");
         else if(!snapshot.RuntimeChangesEnabled)
-            SetStatus("画质偏好已保存；当前客户端不支持同连接切换，将在下次连接生效");
+            SetStatus("画质偏好已保存；当前客户端不支持同连接切换，将在下次连接生效","Quality preference saved. This client cannot switch within the current connection, so it will apply next time.");
     }
 
     void ChangeEncoderPreference()
     {
+        if(applyingLanguage)return;
         if(encoderMode.SelectedItem is not EncoderChoice choice)return;
         selectedEncoder=choice.Preference;
         if(selectedEncoder==VideoEncoderPreference.LibX264&&!softwareFallback.Checked)
         {softwareFallback.Checked=true;return;}
         SaveVideoPreferences();
-        Log("编码器已设置为“"+VideoEncoderPreferenceMetadata.DisplayName(selectedEncoder)+"”，将在下一次连接时实测并使用；当前连接保持原编码器。");
+        Log(Ui("编码器已设置为“","Encoder preference was set to “")+new EncoderChoice(selectedEncoder,uiLanguage)+Ui("”，将在下一次连接时实测并使用；当前连接保持原编码器。","”. It will be measured and selected on the next connection; the current connection keeps its encoder."));
     }
 
     void ChangeSoftwareFallback()
@@ -383,14 +404,16 @@ internal sealed partial class MainForm : Form
             encoderMode.SelectedItem=encoderMode.Items.OfType<EncoderChoice>().First(item=>item.Preference==selectedEncoder);
         }
         SaveVideoPreferences();
-        Log(allowSoftwareFallback?"已允许在硬件编码器都不可用时尝试软件 x264（最高 30 fps）。":"已关闭软件编码回退；自动模式只尝试硬件编码器。");
+        Log(allowSoftwareFallback
+            ?Ui("已允许在硬件编码器都不可用时尝试软件 x264（最高 30 fps）。","Software x264 fallback (up to 30 fps) is allowed when no hardware encoder is available.")
+            :Ui("已关闭软件编码回退；自动模式只尝试硬件编码器。","Software fallback is disabled; Automatic mode tries hardware encoders only."));
     }
 
     void SaveVideoPreferences()
     {
         try{qualityPreferences.Save(new(selectedQuality,selectedEncoder,allowSoftwareFallback));}
         catch(Exception ex) when(ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
-        {Log("视频偏好暂时无法保存："+SafeError(ex));}
+            {Log(Ui("视频偏好暂时无法保存：","Video preferences could not be saved: ")+SafeError(ex));}
     }
 
     VideoEncoderSelectionOptions CurrentEncoderOptions()=>new(selectedEncoder,allowSoftwareFallback,null);
@@ -433,23 +456,35 @@ internal sealed partial class MainForm : Form
         {
             encoderRuntime=snapshot;
             Diagnostics.Save("encoder-selection.json",()=>new{timestamp=DateTimeOffset.Now,selection=snapshot},Log);
-            var downgrade=snapshot.DowngradeReason is null?"":" · "+snapshot.DowngradeReason;
-            metrics.Text=$"编码 {EncoderRuntimeName(snapshot)} · {snapshot.Adapter??"未识别 GPU"} · {snapshot.Width} × {snapshot.Height} @ {snapshot.EffectiveFps} fps{downgrade}";
+            RefreshEncoderMetrics();
         });
     }
 
-    static string EncoderRuntimeName(VideoEncoderRuntimeSnapshot snapshot)=>
+    void RefreshEncoderMetrics()
+    {
+        if(encoderRuntime is not {} snapshot)return;
+        string Build(ProductLanguage language)
+        {
+            var downgrade=snapshot.DowngradeReason is null?"":" · "+WindowsUiText.TranslateEncoderDowngradeReason(snapshot.DowngradeReason,language);
+            var label=language==ProductLanguage.SimplifiedChinese?"编码":"Encoder";
+            var adapter=snapshot.Adapter??(language==ProductLanguage.SimplifiedChinese?"未识别 GPU":"Unidentified GPU");
+            return $"{label} {EncoderRuntimeName(snapshot,language)} · {adapter} · {snapshot.Width} × {snapshot.Height} @ {snapshot.EffectiveFps} fps{downgrade}";
+        }
+        SetMetrics(Build(ProductLanguage.SimplifiedChinese),Build(ProductLanguage.English));
+    }
+
+    static string EncoderRuntimeName(VideoEncoderRuntimeSnapshot snapshot,ProductLanguage language)=>
         Enum.TryParse<VideoEncoderBackend>(snapshot.Backend,true,out var backend)&&Enum.IsDefined(backend)
-            ?VideoEncoderBackendMetadata.DisplayName(backend)
+            ?WindowsUiText.TranslateEncoderBackendName(VideoEncoderBackendMetadata.DisplayName(backend),language)
             :snapshot.Codec;
 
-    static string VideoQualitySessionName(VideoQualityPreset value)=>VideoQualitySessionNameCore(value);
-    static string VideoQualitySessionNameCore(VideoQualityPreset value)=>value switch
+    string VideoQualitySessionName(VideoQualityPreset value)=>VideoQualitySessionName(value,uiLanguage);
+    static string VideoQualitySessionName(VideoQualityPreset value,ProductLanguage language)=>value switch
     {
-        VideoQualityPreset.Automatic=>"自动画质",
-        VideoQualityPreset.LowLatency=>"低延迟",
-        VideoQualityPreset.Balanced=>"均衡画质",
-        VideoQualityPreset.HighQuality=>"高清晰",
+        VideoQualityPreset.Automatic=>language==ProductLanguage.SimplifiedChinese?"自动画质":"Automatic quality",
+        VideoQualityPreset.LowLatency=>language==ProductLanguage.SimplifiedChinese?"低延迟":"Low latency",
+        VideoQualityPreset.Balanced=>language==ProductLanguage.SimplifiedChinese?"均衡画质":"Balanced quality",
+        VideoQualityPreset.HighQuality=>language==ProductLanguage.SimplifiedChinese?"高清晰":"High quality",
         _=>VideoQualityPreset.Automatic.ToString()
     };
     static void SyncNetworkSelection(ComboBox source,ComboBox destination)
@@ -473,10 +508,34 @@ internal sealed partial class MainForm : Form
     void Log(string message)
     {
         if(IsDisposed)return;if(InvokeRequired){BeginInvoke(()=>Log(message));return;}
+        message=RuntimeUi(message);
         var line=$"{DateTime.Now:HH:mm:ss}  {message}{Environment.NewLine}";log.AppendText(line);
         try{var folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"TabLink","logs");Directory.CreateDirectory(folder);File.AppendAllText(Path.Combine(folder,$"{DateTime.Today:yyyy-MM-dd}.log"),line);}catch(IOException){}catch(UnauthorizedAccessException){}
     }
-    void SetStatus(string message){if(IsDisposed)return;if(InvokeRequired){BeginInvoke(()=>SetStatus(message));return;}status.Text=message;Log(message);}
+    void SetStatus(string message)
+    {
+        if(IsDisposed)return;
+        if(InvokeRequired){BeginInvoke(()=>SetStatus(message));return;}
+        localizedStatusChinese=localizedStatusEnglish=null;
+        runtimeStatusSource=message;
+        var displayed=RuntimeUi(message);
+        status.Text=displayed;
+        Log(displayed);
+    }
+    void SetStatus(string simplifiedChinese,string english)
+    {
+        if(IsDisposed)return;
+        if(InvokeRequired){BeginInvoke(()=>SetStatus(simplifiedChinese,english));return;}
+        ShowStatus(simplifiedChinese,english);
+        Log(Ui(simplifiedChinese,english));
+    }
+    void ShowStatus(string simplifiedChinese,string english)
+    {
+        localizedStatusChinese=simplifiedChinese;
+        localizedStatusEnglish=english;
+        runtimeStatusSource=null;
+        status.Text=Ui(simplifiedChinese,english);
+    }
     void LocateAdb()
     {
         try
@@ -484,20 +543,20 @@ internal sealed partial class MainForm : Form
             var protectedPath=TrustedBundledAdb.LocateStageAndGetVerifiedPath(settings.AdbPath);
             adb=protectedPath is null?null:new AdbClient(protectedPath,policy,UsbInventory.ReadAsync);
             adbPath.Text=protectedPath is null
-                ?"未找到与固定 SHA-256 匹配的 Android Platform-Tools。Wi-Fi 模式仍可使用；USB 调试兼容模式可选择官方 r37 adb.exe。"
-                :"ADB 三件套已通过固定 SHA-256 校验，并从受保护的 ProgramData 副本运行。";
+                ?Ui("未找到与固定 SHA-256 匹配的 Android Platform-Tools。Wi-Fi 模式仍可使用；USB 调试兼容模式可选择官方 r37 adb.exe。","No Android Platform-Tools matching the pinned SHA-256 were found. Wi-Fi mode remains available; select an official r37 adb.exe for USB debugging compatibility.")
+                :Ui("ADB 三件套已通过固定 SHA-256 校验，并从受保护的 ProgramData 副本运行。","The three ADB files passed pinned SHA-256 verification and run from a protected ProgramData copy.");
         }
         catch(Exception ex) when(TrustedBundledAdb.IsTrustStorageFailure(ex))
         {
             adb=null;
-            adbPath.Text="找到的 ADB 未能通过固定 SHA-256 校验或无法复制到受保护目录；未执行该文件。Wi-Fi 模式仍可使用。";
+            adbPath.Text=Ui("找到的 ADB 未能通过固定 SHA-256 校验或无法复制到受保护目录；未执行该文件。Wi-Fi 模式仍可使用。","The discovered ADB failed pinned SHA-256 verification or could not be copied to protected storage. It was not executed; Wi-Fi mode remains available.");
         }
     }
     void BrowseAdb()
     {
-        using var dialog=new OpenFileDialog{Filter="Android Debug Bridge|adb.exe",Title="选择 Android 官方平台工具 adb.exe"};
+        using var dialog=new OpenFileDialog{Filter="Android Debug Bridge|adb.exe",Title=Ui("选择 Android 官方平台工具 adb.exe","Select the official Android Platform-Tools adb.exe")};
         if(dialog.ShowDialog(this)!=DialogResult.OK)return;
-        try{_=TrustedBundledAdb.StageAndGetVerifiedPath(dialog.FileName);settings.AdbPath=dialog.FileName;store.Save(settings);LocateAdb();Log("Android 平台工具已通过固定校验并复制到受保护目录。");UpdateButtons();}catch(Exception ex){ShowError(ex,adbOperation:true);}
+        try{_=TrustedBundledAdb.StageAndGetVerifiedPath(dialog.FileName);settings.AdbPath=dialog.FileName;store.Save(settings);LocateAdb();Log(Ui("Android 平台工具已通过固定校验并复制到受保护目录。","Android Platform-Tools passed pinned verification and were copied to protected storage."));UpdateButtons();}catch(Exception ex){ShowError(ex,adbOperation:true);}
     }
     async Task RefreshAsync()
     {
@@ -507,16 +566,21 @@ internal sealed partial class MainForm : Form
         if(adb is not null && settingsValid)
         {
             var inventory=await UsbInventory.ReadAsync(lifetime.Token);
-            foreach(var device in await adb.ListDevicesAsync(lifetime.Token))devices.Items.Add(new DeviceChoice(device,policy.Evaluate(device,inventory)));
+            foreach(var device in await adb.ListDevicesAsync(lifetime.Token))devices.Items.Add(new DeviceChoice(device,policy.Evaluate(device,inventory),uiLanguage));
             if(devices.Items.Count>0)devices.SelectedIndex=0;
-            Log($"刷新完成：{devices.Items.Count} 台 USB 调试候选设备（含待授权/离线），{displays.Items.Count} 块可用虚拟副屏。");
+            Log(Ui($"刷新完成：{devices.Items.Count} 台 USB 调试候选设备（含待授权/离线），{displays.Items.Count} 块可用虚拟副屏。",
+                $"Refresh complete: {devices.Items.Count} USB-debugging candidates (including unauthorised/offline) and {displays.Items.Count} available virtual displays."));
         }
-        else Log("尚未配置 Android 平台工具，请先选择 adb.exe。");
-        if(devices.Items.Count==0)devices.Items.Add("未发现 ADB 平板：请确认 USB 调试已开启并在平板允许此电脑");
-        if(displays.Items.Count==0)displays.Items.Add(File.Exists(SessionGuard.LastDisplayPath)?"当前没有虚拟副屏 · 连接时自动安装":"尚无活动虚拟副屏");
+        else Log(Ui("尚未配置 Android 平台工具，请先选择 adb.exe。","Android Platform-Tools are not configured. Select adb.exe first."));
+        if(devices.Items.Count==0)devices.Items.Add(Ui("未发现 ADB 平板：请确认 USB 调试已开启并在平板允许此电脑","No ADB tablet found: enable USB debugging and allow this computer on the tablet"));
+        if(displays.Items.Count==0)displays.Items.Add(File.Exists(SessionGuard.LastDisplayPath)?Ui("当前没有虚拟副屏 · 连接时自动安装","No virtual display is present · installed automatically when connecting"):Ui("尚无活动虚拟副屏","No active virtual display"));
         if(devices.SelectedIndex<0)devices.SelectedIndex=0;
         if(displays.SelectedIndex<0)displays.SelectedIndex=0;
-        if(server is null)status.Text=devices.Items.OfType<DeviceChoice>().Any(d=>d.Decision.Allowed)?"平板已识别，请连接副屏":"等待平板 USB 调试连接";
+        if(server is null)
+        {
+            if(devices.Items.OfType<DeviceChoice>().Any(d=>d.Decision.Allowed))ShowStatus("平板已识别，请连接副屏","Tablet recognised; connect the display");
+            else ShowStatus("等待平板 USB 调试连接","Waiting for tablet USB debugging");
+        }
     }
     DeviceChoice SelectedDevice()=>devices.SelectedItem as DeviceChoice??throw new InvalidOperationException("请先接入平板，开启 USB 调试并授权，然后刷新设备。");
     async Task InstallApkAsync()
@@ -525,8 +589,8 @@ internal sealed partial class MainForm : Form
         var target=await adb.ApproveAsync(choice.Device,lifetime.Token);
         var apk=Path.Combine(AppContext.BaseDirectory,"android","TabLink.apk");
         if(!File.Exists(apk))throw new FileNotFoundException("交付目录中缺少 android/TabLink.apk。请运行完整构建脚本。",apk);
-        SetStatus("正在将 TabLink 客户端安装到选中的平板…");
-        await adb.InstallApkAsync(target,apk,lifetime.Token);SetStatus("安卓客户端已安装，可以连接副屏。");
+        SetStatus("正在将 TabLink 客户端安装到选中的平板…","Installing the TabLink client on the selected tablet…");
+        await adb.InstallApkAsync(target,apk,lifetime.Token);SetStatus("安卓客户端已安装，可以连接副屏。","The Android client is installed; the display can now be connected.");
     }
     Task ConnectAsync()
     {
@@ -565,12 +629,13 @@ internal sealed partial class MainForm : Form
             reverseAttached=false;
             MarkHealthRouteReady("USB 身份与 ADB 授权已核验，准备本机反向通道");
             MarkHealthAuthenticationStarted("正在从明确选中的客户端读取屏幕参数");
-            SetStatus("正在从 APK 读取平板屏幕参数…");
+            SetStatus("正在从 APK 读取平板屏幕参数…","Reading the tablet display profile from the APK…");
             tabletProfile=await adb.ReadDisplayProfileAsync(sessionUser,lifetime.Token);
             startLease.ThrowIfNotCurrent();
             MarkHealthDisplayProfile(tabletProfile);
             Diagnostics.Save("tablet-display-profile.json",()=>tabletProfile,Log);
-            Log($"平板报告：{tabletProfile.Width} × {tabletProfile.Height}，当前 {tabletProfile.RefreshRate:F1} Hz，支持最高 {tabletProfile.RequestedRefreshRate} Hz，方向 {tabletProfile.Rotation}。");
+            Log(Ui($"平板报告：{tabletProfile.Width} × {tabletProfile.Height}，当前 {tabletProfile.RefreshRate:F1} Hz，支持最高 {tabletProfile.RequestedRefreshRate} Hz，方向 {tabletProfile.Rotation}。",
+                $"Tablet report: {tabletProfile.Width} × {tabletProfile.Height}, current {tabletProfile.RefreshRate:F1} Hz, maximum requested {tabletProfile.RequestedRefreshRate} Hz, rotation {tabletProfile.Rotation}."));
             _=VideoPipeline.FindFfmpeg();
             MarkHealthDisplayPreparing("正在按设备报告的模式准备唯一虚拟副屏");
             var current=await PrepareDisplayAsync(tabletProfile);
@@ -641,7 +706,7 @@ internal sealed partial class MainForm : Form
                 // was in flight. Ownership is now published, so skip a late
                 // Android launch and let Stop perform the exact cleanup.
                 if(ct.IsCancellationRequested)return;
-                SetStatus("USB 通道已建立，等待平板接收画面…");
+                SetStatus("USB 通道已建立，等待平板接收画面…","USB channel established; waiting for the tablet to receive video…");
                 await setupAdb.LaunchAsync(setupUser,setupServer.Token,endpoint,ct);
                 startLease.ThrowIfNotCurrent();
             },setupCancellation.Token);
@@ -706,12 +771,12 @@ internal sealed partial class MainForm : Form
                 BeginConnectionHealth(ConnectionHealthPath.Browser,$"选择浏览器线路 {choice.InterfaceAlias} · {choice.LocalAddress}");
                 MarkHealthRouteReady($"{choice.InterfaceAlias} · {choice.LocalAddress}:27185 · 本地 HTTPS/WebRTC 已启动");
                 MarkHealthAuthenticationStarted("本次副屏已精确回收，等待浏览器重新配对");
-                SetStatus("已精确回收本次副屏；浏览器接入仍在等待重新配对");
+                SetStatus("已精确回收本次副屏；浏览器接入仍在等待重新配对","This session's display was reclaimed; browser access is still waiting for a new pairing");
             }
             else
             {
                 StopConnectionHealth("本次拥有的虚拟副屏已精确回收");
-                SetStatus("已精确回收并卸载本次连接拥有的虚拟副屏");
+                SetStatus("已精确回收并卸载本次连接拥有的虚拟副屏","The virtual display owned by this connection was reclaimed and removed");
             }
         }
         catch(Exception ex)
@@ -726,14 +791,15 @@ internal sealed partial class MainForm : Form
     async Task EnsureOwnedDisplayCleanupBeforeNewConnectionAsync()
     {
         if(!HasPendingOwnedDisplayCleanup)return;
-        Log("新连接开始前先重试本程序保留的精确副屏租约；不会按设备名称清理其他显示设备。");
+        Log(Ui("新连接开始前先重试本程序保留的精确副屏租约；不会按设备名称清理其他显示设备。",
+            "Before starting a new connection, TabLink retries its retained exact display lease; it does not remove other displays by device name."));
         await RetryOwnedDisplayCleanupAsync();
         if(HasPendingOwnedDisplayCleanup)
             throw new IOException("上一块副屏仍在等待精确回收；未开始新连接。");
     }
 
-    static string OwnedDisplayCleanupFailureDetail(Exception ex) =>
-        "收回并卸载本次拥有的虚拟副屏失败："+SafeError(ex);
+    string OwnedDisplayCleanupFailureDetail(Exception ex) =>
+        Ui("收回并卸载本次拥有的虚拟副屏失败：","Failed to reclaim and remove the virtual display owned by this session: ")+SafeError(ex);
 
     async Task AdaptDisplayAsync(FrameServer source,TabletDisplayProfile profile)
     {
@@ -741,7 +807,8 @@ internal sealed partial class MainForm : Form
         if(profile.Width==tabletProfile.Width&&profile.Height==tabletProfile.Height&&profile.RequestedRefreshRate==tabletProfile.RequestedRefreshRate)return;
         if(networkChoice is not null)
         {
-            Log($"平板方向已变化，网络会话重新匹配 {profile.Width} × {profile.Height}。");
+            Log(Ui($"平板方向已变化，网络会话重新匹配 {profile.Width} × {profile.Height}。",
+                $"Tablet orientation changed; renegotiating the network session for {profile.Width} × {profile.Height}."));
             source.RequestReconnect();return;
         }
         adaptingDisplay=true;
@@ -749,7 +816,8 @@ internal sealed partial class MainForm : Form
         {
             await GuardAsync(async()=>
             {
-                Log($"平板方向已变化，重新匹配 {profile.Width} × {profile.Height}。");
+            Log(Ui($"平板方向已变化，重新匹配 {profile.Width} × {profile.Height}。",
+                $"Tablet orientation changed; rematching {profile.Width} × {profile.Height}."));
                 await StopAsync();await ConnectAsync();
             });
         }
@@ -769,13 +837,13 @@ internal sealed partial class MainForm : Form
         var recoveryCancellation=usbRecoveryCancellation;usbRecoveryCancellation=null;
         recoveryCancellation?.Cancel();
         try{await usbSessionSetup.DrainAsync();}
-        catch(OperationCanceledException){Log("USB 初始连接已随停止操作结束。");}
-        catch(Exception ex){Log("USB 初始连接在停止前结束："+SafeError(ex));}
+            catch(OperationCanceledException){Log(Ui("USB 初始连接已随停止操作结束。","The initial USB connection ended with the stop operation."));}
+            catch(Exception ex){Log(Ui("USB 初始连接在停止前结束：","The initial USB connection ended before stopping completed: ")+SafeError(ex));}
         var recovery=usbRecoveryTask;
         if(recovery is {IsCompleted:false})
         {
             try{await recovery;}
-            catch(Exception ex){Log("USB 自动恢复已随停止操作结束："+SafeError(ex));}
+            catch(Exception ex){Log(Ui("USB 自动恢复已随停止操作结束：","USB automatic recovery ended with the stop operation: ")+SafeError(ex));}
         }
         if(ReferenceEquals(usbRecoveryTask,recovery))usbRecoveryTask=null;
         recoveryCancellation?.Dispose();
@@ -785,7 +853,7 @@ internal sealed partial class MainForm : Form
         if(networkPreparation is {IsCompleted:false} preparing)
         {
             server?.RequestReconnect();
-            try{await preparing;}catch(Exception ex){Log("网络屏幕准备已结束："+SafeError(ex));}
+        try{await preparing;}catch(Exception ex){Log(Ui("网络屏幕准备已结束：","Network-display preparation ended: ")+SafeError(ex));}
         }
         var running=server;var ownedCapture=capture;var ownedApproval=approved;var ownedAdb=adb;var ownedReverse=reverseCreated;var ownedEndpoint=reverseEndpoint;var ownedReceipt=reverseReceipt;var ownedReceiptState=reverseReceiptState;var ownedReverseAttached=reverseAttached;var ownedGuard=displayGuard;var ownedReservation=primaryReservation;var ownedPower=activePower;var ownedFirewall=networkFirewall;var ownedDiscoveryFirewall=discoveryFirewall;var ownedDiscovery=networkDiscovery;
         var displayCollected=true;
@@ -807,11 +875,11 @@ internal sealed partial class MainForm : Form
         try
         {
             try{if(running is not null)await running.DisposeAsync();}
-            catch(Exception ex){Log("画面服务结束时报告："+SafeError(ex));}
+            catch(Exception ex){Log(Ui("画面服务结束时报告：","The video service reported while stopping: ")+SafeError(ex));}
             finally
             {
                 try { ownedCapture?.Dispose(); }
-                catch(Exception ex){Log("画面输入结束时报告："+SafeError(ex));}
+            catch(Exception ex){Log(Ui("画面输入结束时报告：","Video input reported while stopping: ")+SafeError(ex));}
             }
             var reverseCleanupComplete=false;
             if(ownedReceipt is not null&&ownedReceiptState==UsbReverseQueueState.Prepared)
@@ -825,7 +893,7 @@ internal sealed partial class MainForm : Form
                     });
                     reverseCleanupComplete=true;
                 }
-                catch(Exception ex){Log("未获得删除权限的 USB 绑定准备记录暂未封存："+SafeError(ex));}
+                    catch(Exception ex){Log(Ui("未获得删除权限的 USB 绑定准备记录暂未封存：","The USB binding-preparation record without removal authority could not be archived yet: ")+SafeError(ex));}
             }
             else if(ownedReverse&&ownedReceiptState==UsbReverseQueueState.Owned&&ownedReceipt is not null&&ownedApproval is not null&&ownedAdb is not null&&ownedEndpoint is { } endpoint&&endpoint.IsValid)
             {
@@ -841,19 +909,20 @@ internal sealed partial class MainForm : Form
                         }
                         if(mapping.Status==AdbReversePortStatus.Missing)
                         {
-                            Log("本次 USB 转发已经不存在，无需清理。");
+                        Log(Ui("本次 USB 转发已经不存在，无需清理。","This session's USB forwarding no longer exists; no cleanup is needed."));
                         }
                         else if(mapping.Status==AdbReversePortStatus.Conflicting)
-                            Log("本会话 USB 端点已经改指向其他映射；旧删除权限已永久封存，未修改当前映射。");
+                        Log(Ui("本会话 USB 端点已经改指向其他映射；旧删除权限已永久封存，未修改当前映射。",
+                            "This session's USB endpoint now points to another mapping. The old removal authority was permanently retired and the current mapping was left unchanged."));
                         else if(mapping.Status!=AdbReversePortStatus.Existing)
                             return false;
                         UsbReverseCleanupCoordinator.Shared.CompleteActiveMutation(ownedReceipt);
                         return true;
                     },timeout.Token);
                 }
-                catch(Exception ex){Log("画面服务已关闭；设备离线或策略已变化，未能清理 USB 转发。"+SafeError(ex));}
+                catch(Exception ex){Log(Ui("画面服务已关闭；设备离线或策略已变化，未能清理 USB 转发。","The video service is closed; USB forwarding could not be cleaned because the device went offline or policy changed. ")+SafeError(ex));}
             }
-            else if(ownedReverse)Log("本次 USB 转发缺少有效的会话端点记录，已保留现有映射。");
+            else if(ownedReverse)Log(Ui("本次 USB 转发缺少有效的会话端点记录，已保留现有映射。","This USB forwarding entry lacks a valid session-endpoint record, so the existing mapping was retained."));
             if(ownedReceipt is not null)
             {
                 if(reverseCleanupComplete)
@@ -861,7 +930,7 @@ internal sealed partial class MainForm : Form
                     if(ownedReverseAttached&&ownedGuard is not null)
                     {
                         try{ownedGuard.ReplaceReverse(ownedReceipt,null);}
-                        catch(Exception ex){Log("停止连接时无法清除显示引导记录中的旧 USB 收据；受保护删除权限已经封存："+SafeError(ex));}
+                    catch(Exception ex){Log(Ui("停止连接时无法清除显示引导记录中的旧 USB 收据；受保护删除权限已经封存：","The old USB receipt could not be removed from display bootstrap state while stopping; protected removal authority was retired: ")+SafeError(ex));}
                     }
                 }
                 else if(ownedReceiptState==UsbReverseQueueState.Owned)
@@ -872,7 +941,7 @@ internal sealed partial class MainForm : Form
                         UsbReverseCleanupCoordinator.Shared.MarkRetiredByThisProcess(ownedReceipt);
                         nextPendingUsbCleanupUtc=DateTime.UtcNow.AddSeconds(10);
                     }
-                    catch(Exception ex){Log("无法注销本进程的受保护 USB 删除权限；记录保持待核验状态："+SafeError(ex));}
+                    catch(Exception ex){Log(Ui("无法注销本进程的受保护 USB 删除权限；记录保持待核验状态：","This process's protected USB removal authority could not be retired; the record remains pending verification: ")+SafeError(ex));}
                 }
             }
             try{if(ownedReservation is not null)await ownedReservation.DisposeAsync();else ownedGuard?.Dispose();}
@@ -887,19 +956,21 @@ internal sealed partial class MainForm : Form
         }
         finally
         {
-            if(ownedDiscovery is not null)try{await ownedDiscovery.DisposeAsync();}catch(Exception ex){Log("停止局域网发现时报告："+SafeError(ex));}
-            if(ownedDiscoveryFirewall is not null)try{await ownedDiscoveryFirewall.DisposeAsync();}catch(Exception ex){Log("清理局域网发现防火墙规则失败："+SafeError(ex));}
-            if(ownedFirewall is not null)try{await ownedFirewall.DisposeAsync();}catch(Exception ex){Log("清理本次防火墙规则失败："+SafeError(ex));}
+        if(ownedDiscovery is not null)try{await ownedDiscovery.DisposeAsync();}catch(Exception ex){Log(Ui("停止局域网发现时报告：","Local-network discovery reported while stopping: ")+SafeError(ex));}
+        if(ownedDiscoveryFirewall is not null)try{await ownedDiscoveryFirewall.DisposeAsync();}catch(Exception ex){Log(Ui("清理局域网发现防火墙规则失败：","Local-network discovery firewall cleanup failed: ")+SafeError(ex));}
+        if(ownedFirewall is not null)try{await ownedFirewall.DisposeAsync();}catch(Exception ex){Log(Ui("清理本次防火墙规则失败：","This session's firewall-rule cleanup failed: ")+SafeError(ex));}
             ownedPower?.Dispose();
             stopping=false;
             Diagnostics.Save("session-health.json",()=>new{timestamp=DateTimeOffset.Now,pid=Environment.ProcessId,receiving=false,stopped=true,displays=VirtualDisplayManager.GetDisplays()},Log);
             if(!IsDisposed)
             {
                 if(displayCollected&&!HasAdditionalSessions&&!connectionHealth.Snapshot().Steps.Any(step=>step.State==ConnectionHealthState.Attention))StopConnectionHealth("连接已停止并回收本次副屏");
-                SetStatus(displayCollected?"已停止连接，虚拟副屏设备已卸载":"已停止传输，虚拟副屏卸载待重试；再次连接时会自动处理");metrics.Text="USB 直连 · 只接管手动选中的设备";
+                if(displayCollected)SetStatus("已停止连接，虚拟副屏设备已卸载","Connection stopped and the virtual display device was removed");
+                else SetStatus("已停止传输，虚拟副屏卸载待重试；再次连接时会自动处理","Streaming stopped; virtual-display removal will be retried automatically before the next connection");
+                SetMetrics("USB 直连 · 只接管手动选中的设备","Direct USB · only the manually selected device is controlled");
                 displays.Items.Clear();
                 foreach(var item in VirtualDisplayManager.GetDisplays().Where(d=>d.IsTabLinkCompatible))displays.Items.Add(new DisplayChoice(item));
-                if(displays.Items.Count==0)displays.Items.Add("当前没有虚拟副屏 · 连接时自动安装");displays.SelectedIndex=0;UpdateButtons();
+                if(displays.Items.Count==0)displays.Items.Add(Ui("当前没有虚拟副屏 · 连接时自动安装","No virtual display is present · installed automatically when connecting"));displays.SelectedIndex=0;UpdateButtons();
             }
         }
     }
@@ -929,7 +1000,7 @@ internal sealed partial class MainForm : Form
                 nativeTrust is {Count:0}&&pairingUri is null&&!networkRegistrationRequested&&
                 unpairedNetworkServer.CanRefreshRegistration)
             {
-                Log("配对登记窗口已经结束，且当前没有可信设备；停止未授权的网络监听。");
+                Log(Ui("配对登记窗口已经结束，且当前没有可信设备；停止未授权的网络监听。","The pairing-registration window ended with no trusted devices; stopping the unauthorised network listener."));
                 await StopAsync();
                 return;
             }
@@ -938,12 +1009,12 @@ internal sealed partial class MainForm : Form
             if(observedApproval is not null)
             {
                 if(observedAndroidUser is null||!ReferenceEquals(observedAndroidUser.Device,observedApproval))
-                {Log("USB 会话缺少已固定的 Android 用户，停止传输。");await StopAsync();return;}
+                {Log(Ui("USB 会话缺少已固定的 Android 用户，停止传输。","The USB session has no pinned Android user; stopping streaming."));await StopAsync();return;}
                 var inventory=await UsbInventory.ReadAsync(lifetime.Token);
                 if(!ReferenceEquals(server,observedServer)||!ReferenceEquals(approved,observedApproval)||
                     !ReferenceEquals(approvedAndroidUser,observedAndroidUser))return;
                 if(!inventory.Any(d=>d.Serial.Equals(observedApproval.Serial,StringComparison.OrdinalIgnoreCase)&&d.Vid.Equals(observedApproval.UsbIdentity.Vid,StringComparison.OrdinalIgnoreCase)&&d.Pid.Equals(observedApproval.UsbIdentity.Pid,StringComparison.OrdinalIgnoreCase)))
-                {Log("选中的平板已离线或 USB 身份改变，停止传输。");await StopAsync();return;}
+                {Log(Ui("选中的平板已离线或 USB 身份改变，停止传输。","The selected tablet went offline or its USB identity changed; stopping streaming."));await StopAsync();return;}
             }
             else if(networkChoice is not null)
             {
@@ -965,7 +1036,8 @@ internal sealed partial class MainForm : Form
                         AutoTrusted:!carryRegistration,IsRecovery:true,
                         RegistrationWindow:registrationWindow);
                     pendingTrustedRecoveryStart=recoveryStart;
-                    Log($"网络线路已持续变化，正在从 {recovery.Original.LocalAddress} 迁移到已确认的 {recovery.Replacement.LocalAddress}。");
+                    Log(Ui($"网络线路已持续变化，正在从 {recovery.Original.LocalAddress} 迁移到已确认的 {recovery.Replacement.LocalAddress}。",
+                        $"The network route changed persistently; migrating from {recovery.Original.LocalAddress} to confirmed route {recovery.Replacement.LocalAddress}."));
                     await StopAsync();
                     if(closing||trustedAutoStartSuppressed||HasAnySessions||
                         !ReferenceEquals(pendingTrustedRecoveryStart,recoveryStart))return;
@@ -974,14 +1046,14 @@ internal sealed partial class MainForm : Form
                     {
                         if(trustedAutoStartSuppressed||!ReferenceEquals(pendingTrustedRecoveryStart,recoveryStart))return;
                         nextTrustedAutoStartUtc=DateTime.UtcNow.AddSeconds(10);
-                        Log("可信网络线路迁移尚未完成；稍后只重试同一条已确认线路："+SafeError(ex));
+                        Log(Ui("可信网络线路迁移尚未完成；稍后只重试同一条已确认线路：","Trusted network-route migration is incomplete; only the same confirmed route will be retried later: ")+SafeError(ex));
                     }
                     return;
                 }
                 if(capture is null)
                 {
                     if(nativeTrust is not {Count:>0}&&DateTime.UtcNow-sessionStartedUtc>TimeSpan.FromMinutes(5))
-                    {Log("配对二维码已超时，请重新开始连接。");await StopAsync();}
+                    {Log(Ui("配对二维码已超时，请重新开始连接。","The pairing QR code expired. Start the connection again."));await StopAsync();}
                     return;
                 }
             }
@@ -996,11 +1068,11 @@ internal sealed partial class MainForm : Form
                 var presentation=presentationDeadline.Evaluate(now,server.LastPresentedUtc,server.CapturePaused,inputDesktop);
                 var deadline=presentation.DeadlineUtc;
                 if(now>deadline)
-                {const string message="平板超过首帧或后续客户端进度期限，自动停止副屏。";MarkConnectionHealthAttention(message);Log(message);await StopAsync();return;}
+                {var message=Ui("平板超过首帧或后续客户端进度期限，自动停止副屏。","The tablet exceeded its first-frame or client-progress deadline; stopping the display automatically.");MarkConnectionHealthAttention(message);Log(message);await StopAsync();return;}
                 displayGuard?.Renew(deadline);
                 now=DateTime.UtcNow;
                 if(now>deadline)
-                {const string message="副屏保护续约返回时画面期限已经结束，停止并回收副屏。";MarkConnectionHealthAttention(message);Log(message);await StopAsync();return;}
+                {var message=Ui("副屏保护续约返回时画面期限已经结束，停止并回收副屏。","The video deadline expired while display protection was renewing; stopping and reclaiming the display.");MarkConnectionHealthAttention(message);Log(message);await StopAsync();return;}
                 if(observedApproval is not null&&observedAndroidUser is not null&&observedServer is not null&&adb is {} observedAdb)
                 {
                     // Authentication is sticky for this FrameServer lifetime so
@@ -1021,7 +1093,7 @@ internal sealed partial class MainForm : Form
                             if(remaining<=TimeSpan.Zero)
                             {
                                 usbSessionRecovery.Complete(recovery,now,false,retryable:false);
-                                const string message="USB 通道在画面期限结束前已没有安全恢复预算，停止并回收副屏。";
+                                var message=Ui("USB 通道在画面期限结束前已没有安全恢复预算，停止并回收副屏。","No safe USB-recovery budget remains before the video deadline; stopping and reclaiming the display.");
                                 MarkConnectionHealthAttention(message);Log(message);await StopAsync();return;
                             }
                             var budget=remaining<TimeSpan.FromSeconds(4)?remaining:TimeSpan.FromSeconds(4);
@@ -1031,8 +1103,9 @@ internal sealed partial class MainForm : Form
                                 usbSessionRecovery.Complete(recovery,now,false,retryable:false);
                                 await StopAsync();return;
                             }
-                            SetStatus($"USB 通道中断，正在自动恢复（{recovery.Number}/{UsbSessionRecoveryGate.MaximumAttempts}）…");
-                            Log($"USB 自动恢复第 {recovery.Number} 次：重新唤起内置 ADB、核验同一设备并检查反向通道。");
+                            SetStatus($"USB 通道中断，正在自动恢复（{recovery.Number}/{UsbSessionRecoveryGate.MaximumAttempts}）…",$"USB channel interrupted; recovering automatically ({recovery.Number}/{UsbSessionRecoveryGate.MaximumAttempts})…");
+                            Log(Ui($"USB 自动恢复第 {recovery.Number} 次：重新唤起内置 ADB、核验同一设备并检查反向通道。",
+                                $"USB automatic recovery attempt {recovery.Number}: restarting bundled ADB, verifying the same device and checking the reverse channel."));
                             var runner=CreateUsbRecoveryRunner(observedServer,observedApproval,observedAndroidUser,observedAdb,recoveryCancellation);
                             var task=UsbReverseCleanupCoordinator.Shared.RunMutationAsync((_,_)=>
                                 runner.RunAsync(budget,()=>usbSessionRecovery.TryReserveLaunch(recovery),recoveryCancellation.Token),
@@ -1048,34 +1121,35 @@ internal sealed partial class MainForm : Form
                             var connected=observedServer.ClientConnected;
                             var retryable=result.Status==UsbRecoveryExecutionStatus.RetryableFailure;
                             usbSessionRecovery.Complete(recovery,now,connected,retryable);
-                            Log($"USB 自动恢复第 {recovery.Number} 次：{result.Detail}");
+                            Log(Ui($"USB 自动恢复第 {recovery.Number} 次：{result.Detail}",
+                                $"USB automatic recovery attempt {recovery.Number}: {UsbRecoveryDetail(result.Detail)}"));
                             if(connected||result.Status==UsbRecoveryExecutionStatus.Connected)
                             {
                                 usbSessionRecovery.ObserveConnected();
-                                SetStatus("USB 通道已恢复，平板已继续显示原副屏");
+                                SetStatus("USB 通道已恢复，平板已继续显示原副屏","USB channel restored; the tablet continues showing the same display");
                             }
                             else if(result.Status==UsbRecoveryExecutionStatus.TerminalFailure||usbSessionRecovery.RequiresSessionStop)
                             {
-                                var message="USB 自动恢复已安全停止："+result.Detail;
+                                var message=Ui("USB 自动恢复已安全停止：","USB automatic recovery stopped safely: ")+UsbRecoveryDetail(result.Detail);
                                 MarkConnectionHealthAttention(message);Log(message);await StopAsync();return;
                             }
                             inputDesktop=InputDesktopAvailability.Query();
                             presentation=presentationDeadline.Evaluate(now,server.LastPresentedUtc,server.CapturePaused,inputDesktop);
                             deadline=presentation.DeadlineUtc;
                             if(now>deadline)
-                            {const string message="USB 恢复没有在原画面期限内完成，停止并回收副屏。";MarkConnectionHealthAttention(message);Log(message);await StopAsync();return;}
+                            {var message=Ui("USB 恢复没有在原画面期限内完成，停止并回收副屏。","USB recovery did not complete within the original video deadline; stopping and reclaiming the display.");MarkConnectionHealthAttention(message);Log(message);await StopAsync();return;}
                             displayGuard?.Renew(deadline);
                             now=DateTime.UtcNow;
                             if(now>deadline)
-                            {const string message="USB 恢复后的保护续约超过原画面期限，停止并回收副屏。";MarkConnectionHealthAttention(message);Log(message);await StopAsync();return;}
+                            {var message=Ui("USB 恢复后的保护续约超过原画面期限，停止并回收副屏。","Protection renewal after USB recovery exceeded the original video deadline; stopping and reclaiming the display.");MarkConnectionHealthAttention(message);Log(message);await StopAsync();return;}
                         }
                     }
                 }
                 var capturePaused=presentation.CapturePaused;
                 var resumeDeadlineUtc=presentationDeadline.RecoveryDeadlineUtc;
                 var receiving=!capturePaused&&server.ClientConnected&&server.LastClientProgressUtc>now.AddSeconds(-5);
-                if(capturePaused)status.Text="画面采集正在恢复，连接保留";
-                else if(receiving)status.Text="平板已连接，正在传输副屏";
+                if(capturePaused)ShowStatus("画面采集正在恢复，连接保留","Video capture is recovering; the connection remains active");
+                else if(receiving)ShowStatus("平板已连接，正在传输副屏","Tablet connected; streaming the second screen");
                 if(receiving&&inputDesktop.IsAvailable&&displayGuard is not null)
                 {
                     // Store only a freshly verified position of this same output.
@@ -1091,7 +1165,6 @@ internal sealed partial class MainForm : Form
                 var sample=DateTime.UtcNow;var delta=server.PresentedFrames-previousPresented;
                 var measuredFps=delta<0?0:delta/Math.Max(0.001,(sample-previousSampleUtc).TotalSeconds);
                 previousPresented=server.PresentedFrames;previousSampleUtc=sample;
-                var progressText=capturePaused?"画面暂停 · 会话保留":server.HasRecentPresentation?"设备呈现回调正常":server.HasRecentSubmission?"解码提交正常 · 呈现待验证":server.FramesSent>0?"电脑已发送 · 等待解码":"等待画面";
                 var sendPerformance=server.SendPerformance;
                 var feedback=server.ReceiverFeedback;
                 VideoQualitySnapshot? qualitySnapshot=null;
@@ -1109,9 +1182,19 @@ internal sealed partial class MainForm : Form
                         feedback?.AwaitingKeyFrameDrops??0,feedback?.RenderDrops??0,
                         feedback?.AwaitingKeyFrame??false));
                 }
-                var qualityText=qualitySnapshot is null?"":$" · {VideoQualitySessionName(qualitySnapshot.Preset)} · 目标 {qualitySnapshot.Plan.BitrateKbps/1000d:F1} Mbps";
-                var encoderText=encoderRuntime is null?"":$" · 编码 {encoderRuntime.Backend} / {encoderRuntime.EffectiveFps} fps";
-                metrics.Text=$"{progressText} · {tabletProfile?.Width} × {tabletProfile?.Height} · 屏幕 {server.ClientDisplayProfile?.RefreshRate??tabletProfile?.RefreshRate:F0} / 目标 {tabletProfile?.RequestedRefreshRate} Hz · 提交 {server.ClientSubmittedFps:F1} / 呈现 {server.ClientPresentedFps:F1} 帧/秒{qualityText}{encoderText}";
+                string BuildMetrics(ProductLanguage language)
+                {
+                    var chinese=language==ProductLanguage.SimplifiedChinese;
+                    var progressText=capturePaused?(chinese?"画面暂停 · 会话保留":"Video paused · session retained"):
+                        server.HasRecentPresentation?(chinese?"设备呈现回调正常":"Device presentation callback healthy"):
+                        server.HasRecentSubmission?(chinese?"解码提交正常 · 呈现待验证":"Decode submission healthy · presentation awaiting verification"):
+                        server.FramesSent>0?(chinese?"电脑已发送 · 等待解码":"Computer sent video · waiting for decode"):
+                        (chinese?"等待画面":"Waiting for video");
+                    var qualityText=qualitySnapshot is null?"":$" · {VideoQualitySessionName(qualitySnapshot.Preset,language)} · {(chinese?"目标":"target")} {qualitySnapshot.Plan.BitrateKbps/1000d:F1} Mbps";
+                    var encoderText=encoderRuntime is null?"":$" · {(chinese?"编码":"encoder")} {EncoderRuntimeName(encoderRuntime,language)} / {encoderRuntime.EffectiveFps} fps";
+                    return $"{progressText} · {tabletProfile?.Width} × {tabletProfile?.Height} · {(chinese?"屏幕":"display")} {server.ClientDisplayProfile?.RefreshRate??tabletProfile?.RefreshRate:F0} / {(chinese?"目标":"target")} {tabletProfile?.RequestedRefreshRate} Hz · {(chinese?"提交":"submitted")} {server.ClientSubmittedFps:F1} / {(chinese?"呈现":"presented")} {server.ClientPresentedFps:F1} {(chinese?"帧/秒":"fps")}{qualityText}{encoderText}";
+                }
+                SetMetrics(BuildMetrics(ProductLanguage.SimplifiedChinese),BuildMetrics(ProductLanguage.English));
                 Diagnostics.Save("session-health.json",()=>new{timestamp=DateTimeOffset.Now,pid=Environment.ProcessId,transport=networkChoice is null?"ADB":"TLS",deviceSerialSha256=observedApproval is null?null:DeviceSerialBinding.ComputeSha256(observedApproval.Serial),networkInterface=networkChoice?.InterfaceAlias,receiving,capturePaused,inputDesktop,resumeDeadlineUtc,windowVisible=Visible,measuredPresentedFps=measuredFps,server.ClientSubmittedFps,server.ClientPresentedFps,server.ClientDecoder,targetProfile=tabletProfile,clientProfile=server.ClientDisplayProfile,server.FramesSent,server.PresentedFrames,server.PresentedWidth,server.PresentedHeight,server.LastPresentedUtc,server.SubmittedFrames,server.LastSubmittedUtc,server.HasRecentSubmission,server.HasRecentPresentation,server.HasRecentReceiverFeedback,receiverFeedback=feedback,videoQuality=qualitySnapshot,videoEncoder=encoderRuntime,sendPerformance,displays=VirtualDisplayManager.GetDisplays()},Log);
                 RefreshPrimaryConnectionHealth(server);
             }
@@ -1121,8 +1204,8 @@ internal sealed partial class MainForm : Form
         {
             if(observedServer is not null&&ReferenceEquals(server,observedServer)&&
                 ReferenceEquals(approved,observedApproval)&&ReferenceEquals(approvedAndroidUser,observedAndroidUser))
-            {Log("连接监测失败："+SafeError(ex));await StopAsync();}
-            else Log("后台监测暂时失败："+SafeError(ex));
+            {Log(Ui("连接监测失败：","Connection monitoring failed: ")+SafeError(ex));await StopAsync();}
+            else Log(Ui("后台监测暂时失败：","Background monitoring temporarily failed: ")+SafeError(ex));
         }
         finally{monitoring=false;}
     }
@@ -1138,13 +1221,14 @@ internal sealed partial class MainForm : Form
             pendingUsbCleanupTask=UsbReverseCleanupCoordinator.Shared.ProcessPendingAsync(reason,lifetime.Token);
             var result=await pendingUsbCleanupTask;
             nextPendingUsbCleanupUtc=DateTime.UtcNow.Add(result.Deferred>0?TimeSpan.FromSeconds(30):TimeSpan.FromMinutes(5));
-            if(result.Completed>0)Log($"已安全完成 {result.Completed} 条历史 USB 通道清理。");
+            if(result.Completed>0)Log(Ui($"已安全完成 {result.Completed} 条历史 USB 通道清理。",
+                $"Safely completed {result.Completed} historical USB-channel cleanup operations."));
         }
         catch(OperationCanceledException) when(lifetime.IsCancellationRequested){}
         catch(Exception ex)
         {
             nextPendingUsbCleanupUtc=DateTime.UtcNow.AddMinutes(1);
-            Log("USB 待清理队列重试已延期："+SafeError(ex));
+            Log(Ui("USB 待清理队列重试已延期：","Pending USB-cleanup queue retry was deferred: ")+SafeError(ex));
             if(force)throw;
         }
         finally{if(pendingUsbCleanupTask?.IsCompleted==true)pendingUsbCleanupTask=null;}
@@ -1213,20 +1297,20 @@ internal sealed partial class MainForm : Form
         return new(client,targetUser,endpoint,source.Token,IsCurrent,()=>source.ClientConnected,HasOwnedMapping,
             RetireOwnedMapping,PrepareCreatedMapping,PublishCreatedMapping,AbandonPreparedMapping);
     }
-    void LoadRules(){rules.Items.Clear();foreach(var rule in settings.ExcludedDevices)rules.Items.Add(new RuleChoice(rule));}
+    void LoadRules(){rules.Items.Clear();foreach(var rule in settings.ExcludedDevices)rules.Items.Add(new RuleChoice(rule,uiLanguage));}
     async Task AddRuleAsync()
     {
         var rule=new DeviceExclusionRule{Serial=string.IsNullOrWhiteSpace(serial.Text)?null:serial.Text.Trim(),Vid=string.IsNullOrWhiteSpace(vid.Text)?null:vid.Text.Trim().ToUpperInvariant(),Pid=string.IsNullOrWhiteSpace(pid.Text)?null:pid.Text.Trim().ToUpperInvariant(),Label=label.Text.Trim()};
         if(rule.Serial is null&&(rule.Vid is null||rule.Pid is null))throw new ArgumentException("请填写设备序列号，或同时填写四位 VID 和 PID。");
         if(settings.ExcludedDevices.Any(x=>string.Equals(x.Serial,rule.Serial,StringComparison.OrdinalIgnoreCase)&&string.Equals(x.Vid,rule.Vid,StringComparison.OrdinalIgnoreCase)&&string.Equals(x.Pid,rule.Pid,StringComparison.OrdinalIgnoreCase)))throw new ArgumentException("相同的排除规则已经存在。");
         await SaveRulesAsync([..settings.ExcludedDevices,rule]);
-        serial.Clear();vid.Clear();pid.Clear();label.Clear();Log("排除规则已添加并保存。");
+        serial.Clear();vid.Clear();pid.Clear();label.Clear();Log(Ui("排除规则已添加并保存。","The exclusion rule was added and saved."));
     }
     async Task RemoveRuleAsync()
     {
         if(rules.SelectedItem is not RuleChoice choice)return;
         await SaveRulesAsync(settings.ExcludedDevices.Where(x=>!ReferenceEquals(x,choice.Rule)).ToList());
-        Log("已删除选中的排除规则。");
+        Log(Ui("已删除选中的排除规则。","The selected exclusion rule was removed."));
     }
     async Task SaveRulesAsync(List<DeviceExclusionRule> nextRules)
     {
@@ -1240,7 +1324,7 @@ internal sealed partial class MainForm : Form
             var choices=await Task.Run(()=>NetworkInterfaceCatalog.GetChoices(next),lifetime.Token);
             stopCurrent=!choices.Any(x=>SameInterface(x,selected));
         }
-        if(stopCurrent){Log("排除策略更新：先结束受影响的 USB 会话，清理本次连接。");await StopAsync();}
+        if(stopCurrent){Log(Ui("排除策略更新：先结束受影响的 USB 会话，清理本次连接。","Exclusion policy updated: stopping the affected USB session and cleaning up this connection."));await StopAsync();}
         await ApplyAdditionalPolicyAsync(next);
         store.Save(next);
         // Publish an entire new list; never mutate a list being enumerated by
@@ -1272,15 +1356,15 @@ internal sealed partial class MainForm : Form
             if(!IsDisposed)UpdateButtons();
         }
     }
-    static string SafeError(Exception ex,bool adbOperation=false)=>SafeErrorSummary.ForUser(ex,adbOperation);
+    string SafeError(Exception ex,bool adbOperation=false)=>LocalizedSafeError(ex,adbOperation);
     void ShowError(Exception ex,bool adbOperation=false)
     {
         var summary=SafeError(ex,adbOperation);
         if(HasPendingOwnedDisplayCleanup)MarkOwnedDisplayCleanupAttention("收回并卸载本次拥有的虚拟副屏失败："+summary);
         else MarkConnectionHealthAttention(summary);
-        Log(summary);status.Text="需要处理连接条件";
+        Log(summary);ShowStatus("需要处理连接条件","Connection needs attention");
         if(Visible&&WindowState!=FormWindowState.Minimized)MessageBox.Show(this,summary,"TabLink",MessageBoxButtons.OK,MessageBoxIcon.Information);
-        else tray.ShowBalloonTip(5000,"TabLink 需要处理连接条件",summary,ToolTipIcon.Info);
+        else tray.ShowBalloonTip(5000,Ui("TabLink 需要处理连接条件","TabLink connection needs attention"),summary,ToolTipIcon.Info);
     }
     void UpdateButtons()
     {
@@ -1302,17 +1386,26 @@ internal sealed partial class MainForm : Form
         UpdateHealthRepairButton();
         RefreshUpdatePreferenceUi();
     }
-    sealed record DeviceChoice(AdbDevice Device,DevicePolicyDecision Decision){public override string ToString()=>$"{Device.Model?.Replace('_',' ')??"Android"} · {Device.Serial}  {(Decision.Allowed?"USB 已验证":"[已阻止] "+Decision.Reason)}";}
+    sealed record DeviceChoice(AdbDevice Device,DevicePolicyDecision Decision,ProductLanguage Language)
+    {public override string ToString()=>$"{Device.Model?.Replace('_',' ')??"Android"} · {Device.Serial}  {(Decision.Allowed?(Language==ProductLanguage.SimplifiedChinese?"USB 已验证":"USB verified"):(Language==ProductLanguage.SimplifiedChinese?"[已阻止] "+Decision.Reason:"[Blocked] USB device is excluded by policy"))}";}
     sealed record DisplayChoice(VirtualDisplayInfo Info){public override string ToString()=>$"{Info.FriendlyName} · {Info.Bounds.Width} × {Info.Bounds.Height} · {Info.DeviceName}";}
-    sealed record RuleChoice(DeviceExclusionRule Rule){public override string ToString()=>$"{Rule.Label??"排除设备"}     {(Rule.Serial is null?"":"序列号 "+Rule.Serial)}  {(Rule.Vid is null?"":"VID:PID "+Rule.Vid+":"+Rule.Pid)}";}
-    sealed record QualityChoice(VideoQualityPreset Preset){public override string ToString()=>VideoQualityPresetDisplay(Preset);}
-    sealed record EncoderChoice(VideoEncoderPreference Preference){public override string ToString()=>VideoEncoderPreferenceMetadata.DisplayName(Preference);}
-    static string VideoQualityPresetDisplay(VideoQualityPreset value)=>value switch
+    sealed record RuleChoice(DeviceExclusionRule Rule,ProductLanguage Language=ProductLanguage.SimplifiedChinese)
+    {public override string ToString()=>$"{Rule.Label??(Language==ProductLanguage.SimplifiedChinese?"排除设备":"Excluded device")}     {(Rule.Serial is null?"":(Language==ProductLanguage.SimplifiedChinese?"序列号 ":"Serial ")+Rule.Serial)}  {(Rule.Vid is null?"":"VID:PID "+Rule.Vid+":"+Rule.Pid)}";}
+    sealed record QualityChoice(VideoQualityPreset Preset,ProductLanguage Language=ProductLanguage.SimplifiedChinese)
+    {public override string ToString()=>VideoQualityPresetDisplay(Preset,Language);}
+    sealed record EncoderChoice(VideoEncoderPreference Preference,ProductLanguage Language=ProductLanguage.SimplifiedChinese)
+    {public override string ToString()=>Preference switch
     {
-        VideoQualityPreset.Automatic=>"自动",
-        VideoQualityPreset.LowLatency=>"低延迟",
-        VideoQualityPreset.Balanced=>"均衡",
-        VideoQualityPreset.HighQuality=>"高清晰",
+        VideoEncoderPreference.Automatic=>Language==ProductLanguage.SimplifiedChinese?"自动选择":"Automatic",
+        VideoEncoderPreference.LibX264=>Language==ProductLanguage.SimplifiedChinese?"软件 x264":"Software x264",
+        _=>VideoEncoderPreferenceMetadata.DisplayName(Preference)
+    };}
+    static string VideoQualityPresetDisplay(VideoQualityPreset value,ProductLanguage language)=>value switch
+    {
+        VideoQualityPreset.Automatic=>language==ProductLanguage.SimplifiedChinese?"自动":"Automatic",
+        VideoQualityPreset.LowLatency=>language==ProductLanguage.SimplifiedChinese?"低延迟":"Low latency",
+        VideoQualityPreset.Balanced=>language==ProductLanguage.SimplifiedChinese?"均衡":"Balanced",
+        VideoQualityPreset.HighQuality=>language==ProductLanguage.SimplifiedChinese?"高清晰":"High quality",
         _=>value.ToString()
     };
 }

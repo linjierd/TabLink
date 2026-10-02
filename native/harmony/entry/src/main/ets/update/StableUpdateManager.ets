@@ -27,11 +27,12 @@ const LEGACY_FLOOR_RELEASE_KEY: string = 'manifest-floor-release';
 const PREFERENCE_WRITES: StableUpdatePreferenceQueue = new StableUpdatePreferenceQueue();
 
 export class StableUpdateStatus {
-  text: string;
+  messageKey: string;
+  arguments_: string[];
   installerUrl: string;
   mode: StableUpdateMode;
-  constructor(text: string, installerUrl: string = '', mode: StableUpdateMode = 'never') {
-    this.text = text; this.installerUrl = installerUrl; this.mode = mode;
+  constructor(messageKey: string, arguments_: string[] = [], installerUrl: string = '', mode: StableUpdateMode = 'never') {
+    this.messageKey = messageKey; this.arguments_ = arguments_; this.installerUrl = installerUrl; this.mode = mode;
   }
 }
 
@@ -69,7 +70,7 @@ export class StableUpdateManager {
       this.initialized = true;
       this.mode = 'never';
       this.installerUrl = '';
-      this.changed(new StableUpdateStatus('正式版更新：设置读取失败，已停止联网检查', '', this.mode));
+      this.changed(new StableUpdateStatus('update_read_failed', [], '', this.mode));
     });
   }
 
@@ -123,18 +124,17 @@ export class StableUpdateManager {
       this.mode = 'never';
       this.pendingCheck = false;
       this.generation++;
-      this.changed(new StableUpdateStatus('正式版更新：设置保存失败，已停止联网检查', '', this.mode));
+      this.changed(new StableUpdateStatus('update_save_failed', [], '', this.mode));
       return this.mode;
     }
     this.mode = requested;
     if (requested === UPDATE_MODE_NEVER) {
-      this.changed(new StableUpdateStatus('正式版更新：已关闭，不会请求更新服务器', '', requested));
+      this.changed(new StableUpdateStatus('update_disabled', [], '', requested));
       return this.mode;
     }
     this.lastSuccessMs = 0;
-    const text = requested === UPDATE_MODE_AUTOMATIC ?
-      '正式版更新：正在检查应用市场版本…' : '正式版更新：正在准备手动安装信息…';
-    this.changed(new StableUpdateStatus(text, '', requested));
+    const messageKey = requested === UPDATE_MODE_AUTOMATIC ? 'update_checking_store' : 'update_preparing_manual';
+    this.changed(new StableUpdateStatus(messageKey, [], '', requested));
     this.checkIfNeeded(true);
     return this.mode;
   }
@@ -148,7 +148,7 @@ export class StableUpdateManager {
     this.runCheck(generation).catch((_error: Error) => {
       if (!this.isCurrent(generation)) return;
       this.installerUrl = '';
-      this.changed(new StableUpdateStatus('正式版更新：暂时无法完成安全检查', '', this.mode));
+      this.changed(new StableUpdateStatus('update_check_failed', [], '', this.mode));
     }).finally(() => {
       this.checking = false;
       if (this.pendingCheck && !this.stopped && this.mode !== UPDATE_MODE_NEVER) {
@@ -160,7 +160,7 @@ export class StableUpdateManager {
 
   checkNow(): void {
     if (!this.initialized || this.mode === UPDATE_MODE_NEVER) {
-      this.changed(new StableUpdateStatus('正式版更新：已关闭，不会请求更新服务器', '', this.mode));
+      this.changed(new StableUpdateStatus('update_disabled', [], '', this.mode));
       return;
     }
     this.lastSuccessMs = 0;
@@ -199,10 +199,10 @@ export class StableUpdateManager {
     this.mode = parsed;
     this.initialized = true;
     if (this.mode === UPDATE_MODE_NEVER) {
-      this.changed(new StableUpdateStatus('正式版更新：已关闭，不会请求更新服务器', '', this.mode));
+      this.changed(new StableUpdateStatus('update_disabled', [], '', this.mode));
       return;
     }
-    this.changed(new StableUpdateStatus('正式版更新：正在安全检查…', '', this.mode));
+    this.changed(new StableUpdateStatus('update_checking', [], '', this.mode));
     this.checkIfNeeded(true);
   }
 
@@ -236,9 +236,8 @@ export class StableUpdateManager {
     if (requiresNewerUpdateProtocol(manifest)) {
       this.lastSuccessMs = Date.now();
       this.installerUrl = '';
-      this.changed(new StableUpdateStatus(
-        `正式版更新：新版需要升级协议 ${manifest.minimumProtocolVersion}，当前客户端仅支持 ${UPDATE_PROTOCOL_VERSION}`,
-        '', this.mode));
+      this.changed(new StableUpdateStatus('update_protocol_required',
+        [manifest.minimumProtocolVersion.toString(), UPDATE_PROTOCOL_VERSION.toString()], '', this.mode));
       return;
     }
     const cohortId = await this.cohortId();
@@ -250,25 +249,24 @@ export class StableUpdateManager {
     const published = manifest.artifacts.find((value: StableArtifact) => value.platform === 'harmony');
     if (manifest.rolloutPercentage === 0) {
       this.installerUrl = '';
-      this.changed(new StableUpdateStatus('正式版更新：发布方已暂停本次更新', '', this.mode));
+      this.changed(new StableUpdateStatus('update_paused', [], '', this.mode));
     } else if (!published) {
       this.installerUrl = '';
-      this.changed(new StableUpdateStatus('正式版更新：HarmonyOS NEXT 版本尚未发布', '', this.mode));
+      this.changed(new StableUpdateStatus('update_not_published', [], '', this.mode));
     } else if (!included) {
       this.installerUrl = '';
-      this.changed(new StableUpdateStatus('正式版更新：分批发布尚未覆盖此设备', '', this.mode));
+      this.changed(new StableUpdateStatus('update_cohort_deferred', [], '', this.mode));
     } else if (!artifact) {
       this.installerUrl = '';
-      this.changed(new StableUpdateStatus(`正式版更新：当前 ${CURRENT_VERSION} 已是最新`, '', this.mode));
+      this.changed(new StableUpdateStatus('update_current', [CURRENT_VERSION], '', this.mode));
     } else if (!artifact.installerUrl || !isAllowedHarmonyInstallerUrl(artifact.installerUrl)) {
       this.installerUrl = '';
-      this.changed(new StableUpdateStatus('正式版更新：新版缺少可信应用市场地址', '', this.mode));
+      this.changed(new StableUpdateStatus('update_untrusted_store', [], '', this.mode));
     } else {
       this.installerUrl = artifact.installerUrl;
-      const text = this.mode === UPDATE_MODE_AUTOMATIC ?
-        `正式版更新：应用市场已有 ${artifact.version.text}；自动安装由系统设置管理` :
-        `正式版更新：已准备 ${artifact.version.text}；点按钮后打开应用市场`;
-      this.changed(new StableUpdateStatus(text, artifact.installerUrl, this.mode));
+      const messageKey = this.mode === UPDATE_MODE_AUTOMATIC ?
+        'update_available_automatic' : 'update_available_manual';
+      this.changed(new StableUpdateStatus(messageKey, [artifact.version.text], artifact.installerUrl, this.mode));
     }
   }
 

@@ -10,6 +10,25 @@ interface VideoConfig { codec: string; width: number; height: number; fps: numbe
 interface HostMessage { message: string; capturePaused?: boolean; protocol?: number; features?: string[]; }
 interface Hello { protocol: number; token: string; features: string[]; }
 interface SubmittedProgress { width: number; height: number; ptsUs: number; frames: number; fps: number; decoder: string; evidence: string; }
+interface LocalizedHostStatus { messageKey: string; arguments_: string[]; }
+
+function localizeKnownHostStatus(message: string, capturePaused: boolean): LocalizedHostStatus {
+  const safe = message.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').trim().substring(0, 180);
+  if (safe === 'Windows 桌面暂不可采集，等待返回普通桌面。' ||
+    safe === '画面采集暂时不可用，正在等待恢复。') {
+    return { messageKey: 'session_capture_unavailable', arguments_: [] };
+  }
+  if (safe === '正在恢复同一虚拟副屏画面。') {
+    return { messageKey: 'session_capture_recovering', arguments_: [] };
+  }
+  if (safe === 'USB 副屏画面已恢复。') {
+    return { messageKey: 'session_capture_resumed', arguments_: [] };
+  }
+  return {
+    messageKey: capturePaused ? 'session_capture_paused_remote' : 'session_host_status_remote',
+    arguments_: [safe]
+  };
+}
 
 export class Session {
   private tls: socket.TLSSocket | undefined = undefined;
@@ -24,7 +43,7 @@ export class Session {
   private deadline: number = -1;
   private reporting: boolean = false;
   private surfaceId: string;
-  private state: (message: string, active: boolean) => void;
+  private state: (messageKey: string, arguments_: string[], active: boolean) => void;
   private profile: DisplayProfile = new DisplayProfile();
   private frameBase: number = 0;
   private reportedFrames: number = 0;
@@ -36,26 +55,27 @@ export class Session {
   private capturePaused: boolean = false;
   private submissionAckNegotiated: boolean = false;
 
-  constructor(surfaceId: string, state: (message: string, active: boolean) => void) {
+  constructor(surfaceId: string, state: (messageKey: string, arguments_: string[], active: boolean) => void) {
     this.surfaceId = surfaceId; this.state = state;
   }
   async connect(uri: string): Promise<void> {
-    const pairing: Pairing = parsePairing(uri);
-    this.profile = readDisplayProfile();
+    let pairing: Pairing;
+    try { pairing = parsePairing(uri); this.profile = readDisplayProfile(); }
+    catch (error) { this.fail('session_invalid_data'); throw error; }
     const tls = socket.constructTLSSocketInstance();
     this.tls = tls;
-    this.deadline = setTimeout(() => this.fail('连接或视频初始化超时，请检查电脑的该设备会话'), 30000);
+    this.deadline = setTimeout(() => this.fail('session_timeout'), 30000);
     try {
       await tls.bind({ address: '0.0.0.0', port: 0, family: 1 });
       this.checkOpen();
       tls.on('message', (message: socket.SocketMessageInfo) => {
         if (!this.connected || this.stopped) return;
         try { this.reader.feed(message.message, (packet: Packet) => this.receive(packet)); }
-        catch (error) { this.fail((error as Error).message); }
+        catch (_error) { this.fail('session_invalid_data'); }
       });
-      tls.on('error', (_error: BusinessError) => this.fail('网络连接发生错误，请检查电脑会话和局域网'));
-      tls.on('close', () => this.fail('电脑已结束连接，请重新开始对应设备会话'));
-      this.state('正在连接并验证电脑证书…', true);
+      tls.on('error', (_error: BusinessError) => this.fail('session_network_error'));
+      tls.on('close', () => this.fail('session_host_ended'));
+      this.state('session_connecting', [], true);
       await tls.connect({
         address: { address: pairing.host, port: pairing.port, family: 1 },
         secureOptions: { protocols: [socket.Protocol.TLSv12, socket.Protocol.TLSv13] },
@@ -81,18 +101,18 @@ export class Session {
       this.checkOpen();
       let hex = '';
       for (const value of hash.data) hex += value.toString(16).padStart(2, '0');
-      if (!samePin(hex, pairing.cert)) throw new Error('电脑证书指纹不匹配，未发送配对令牌');
+      if (!samePin(hex, pairing.cert)) { this.fail('session_pin_mismatch'); throw new Error('certificate pin mismatch'); }
       this.connected = true;
       const hello: Hello = { protocol: 1, token: pairing.token, features: ['render-submitted-v1'] };
       await this.sendJson(0x10, JSON.stringify(hello));
       pairing.token = '';
       await this.sendJson(0x13, JSON.stringify(this.profile));
       this.checkOpen();
-      this.state('已安全连接，等待电脑准备独立副屏…', true);
-      this.timer = setInterval(() => { this.report().catch((error: Error) => this.fail(error.message)); }, 250);
-    } catch (error) { pairing.token = ''; this.fail((error as Error).message); throw error; }
+      this.state('session_secure_ready', [], true);
+      this.timer = setInterval(() => { this.report().catch((_error: Error) => this.fail('session_decoder_error')); }, 250);
+    } catch (error) { pairing.token = ''; if (!this.stopped) this.fail('session_invalid_data'); throw error; }
   }
-  stop(message: string = '已停止连接'): void {
+  stop(messageKey: string = 'status_stopped', arguments_: string[] = []): void {
     if (this.stopped) return;
     this.stopped = true; this.connected = false; this.submissionAckNegotiated = false;
     if (this.timer !== -1) clearInterval(this.timer);
@@ -100,10 +120,10 @@ export class Session {
     codec.stop(); this.configured = false; this.reader = new PacketReader();
     const tls = this.tls; this.tls = undefined;
     if (tls) { tls.close().catch((_error: BusinessError) => {}); }
-    this.state(message, false);
+    this.state(messageKey, arguments_, false);
   }
   private checkOpen(): void { if (this.stopped) throw new Error('连接已停止'); }
-  private fail(message: string): void { this.stop(message); }
+  private fail(messageKey: string, arguments_: string[] = []): void { this.stop(messageKey, arguments_); }
   private sendJson(type: number, text: string): Promise<void> {
     const bytes = encodePacket(type, this.encoder.encodeInto(text));
     this.writeChain = this.writeChain.then(async () => {
@@ -116,7 +136,7 @@ export class Session {
   private receive(packet: Packet): void {
     this.checkOpen();
     if (packet.type === 0x03) {
-      throw new Error('电脑拒绝或结束会话，请检查电脑状态并重新复制连接信息');
+      this.fail('session_host_rejected');
     } else if (packet.type === 0x02) {
       if (packet.payload.length > 16384) throw new Error('电脑状态数据过大');
       const status = JSON.parse(this.textDecoder.decodeToString(packet.payload)) as HostMessage;
@@ -128,8 +148,10 @@ export class Session {
         this.capturePaused = status.capturePaused;
         this.lastProgressTime = Date.now();
       }
-      if (this.capturePaused) this.state('电脑采集暂停，等待恢复：' + status.message.substring(0, 140), true);
-      else if (!this.configured) this.state(status.message.substring(0, 180), true);
+      if (this.capturePaused || !this.configured) {
+        const visible = localizeKnownHostStatus(status.message, this.capturePaused);
+        this.state(visible.messageKey, visible.arguments_, true);
+      }
     } else if (packet.type === 0x20) {
       if (packet.payload.length > 131072) throw new Error('视频配置过大');
       const config = JSON.parse(this.textDecoder.decodeToString(packet.payload)) as VideoConfig;
@@ -145,7 +167,7 @@ export class Session {
       codec.start(this.surfaceId, config.width, config.height, csd.buffer);
       this.configured = true; this.configWidth = config.width; this.configHeight = config.height;
       this.lastProgressTime = Date.now();
-      this.state('硬件解码已启动，等待首帧提交…', true);
+      this.state('session_decoder_started', [], true);
     } else if (packet.type === 0x21) {
       if (!this.configured) throw new Error('收到视频帧前未收到解码配置');
       const pts = validateAccessUnit(packet.payload);
@@ -159,18 +181,18 @@ export class Session {
     this.reporting = true;
     try {
       const stats: DecoderStats = codec.stats();
-      if (stats.error.length > 0) throw new Error(stats.error);
+      if (stats.error.length > 0) { this.fail('session_decoder_error'); return; }
       if (this.capturePaused) return; // No synthetic progress while the PC cannot capture.
       const total = this.frameBase + stats.submittedFrames;
       const now = Date.now();
       // A reconfiguration may add old submitted frames to frameBase while the
       // new decoder still has lastPtsUs=-1. Never report an invented new PTS.
       if (!hasFreshOutput(stats.submittedFrames, stats.lastPtsUs)) {
-        if (now - this.lastProgressTime > 15000) throw new Error('未收到有效的硬件解码输出，请重新连接');
+        if (now - this.lastProgressTime > 15000) { this.fail('session_decoder_no_output'); return; }
         return;
       }
       if (total === this.reportedFrames) {
-        if (now - this.lastProgressTime > 15000) throw new Error('硬件解码提交已停止，请重新连接');
+        if (now - this.lastProgressTime > 15000) { this.fail('session_decoder_stalled'); return; }
         return;
       }
       const fps = this.reportTime === 0 ? 0 : Math.min(240, (total - this.reportedFrames) * 1000 / Math.max(1, now - this.reportTime));
@@ -183,7 +205,7 @@ export class Session {
       this.checkOpen();
       this.reportedFrames = total; this.reportTime = now; this.lastProgressTime = now;
       if (this.deadline !== -1) { clearTimeout(this.deadline); this.deadline = -1; }
-      this.state(`解码提交 ${fps.toFixed(1)} fps · 实际呈现待验证`, true);
+      this.state('session_progress', [fps.toFixed(1)], true);
     } finally { this.reporting = false; }
   }
 }

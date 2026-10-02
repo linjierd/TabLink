@@ -160,19 +160,25 @@ internal sealed partial class MainForm
             authorFooterPreferences=saved;
             PopulateAuthorFooterEditors(saved);
             ApplyAuthorFooterPreferences(saved);
-            SetAuthorFooterPreferenceState("已保存并应用。",false);
-            Log("底部作者信息已保存并应用。");
+            SetAuthorFooterPreferenceState(Ui("已保存并应用。","Saved and applied."),false);
+            Log(Ui("底部作者信息已保存并应用。","Footer author details were saved and applied."));
         }
         catch(Exception ex) when(ex is ArgumentException or IOException or UnauthorizedAccessException or SecurityException)
         {
             SetAuthorFooterPreferenceState(AuthorFooterPreferenceError(ex),true);
-            Log("底部作者信息未保存："+SafeError(ex));
+            Log(Ui("底部作者信息未保存：","Footer author details were not saved: ")+SafeError(ex));
         }
     }
 
     void RestoreDefaultAuthorFooterPreferences()
     {
-        PopulateAuthorFooterEditors(AuthorFooterPreferences.CreateDefault());
+        var defaults=AuthorFooterPreferences.CreateDefault();
+        if(uiLanguage==ProductLanguage.English)
+        {
+            defaults.AuthorText="Author: Zhang Linjie (Jey / @linjierd)";
+            defaults.BlogLabel="Blog: linjie.space";
+        }
+        PopulateAuthorFooterEditors(defaults);
         SaveAndApplyAuthorFooterPreferences();
     }
 
@@ -209,15 +215,15 @@ internal sealed partial class MainForm
     {
         if(sender is not LinkLabel{Tag:Uri target}||TryCreateSafeAuthorUri(target.AbsoluteUri) is not {} safe)
         {
-            NotifyAuthorFooterLinkFailure("链接地址无效，请在设置中重新保存。");
-            Log("底部作者链接未打开：保存的地址未通过 HTTPS 校验。");
+            NotifyAuthorFooterLinkFailure(Ui("链接地址无效，请在设置中重新保存。","The link is invalid. Save it again in Settings."));
+            Log(Ui("底部作者链接未打开：保存的地址未通过 HTTPS 校验。","The footer link was not opened because the saved address failed HTTPS validation."));
             return;
         }
         try{Process.Start(new ProcessStartInfo(safe.AbsoluteUri){UseShellExecute=true});}
         catch(Exception ex) when(ex is InvalidOperationException or System.ComponentModel.Win32Exception or SecurityException)
         {
-            NotifyAuthorFooterLinkFailure("无法打开链接，请检查系统默认浏览器。");
-            Log("无法打开底部作者链接："+SafeError(ex));
+            NotifyAuthorFooterLinkFailure(Ui("无法打开链接，请检查系统默认浏览器。","The link could not be opened. Check the default browser."));
+            Log(Ui("无法打开底部作者链接：","The footer link could not be opened: ")+SafeError(ex));
         }
     }
 
@@ -235,19 +241,19 @@ internal sealed partial class MainForm
 
     void MarkAuthorFooterPreferencesDirty()
     {
-        authorFooterPreferenceState.Text="有尚未保存的更改。";
+        authorFooterPreferenceState.Text=Ui("有尚未保存的更改。","There are unsaved changes.");
         authorFooterPreferenceState.ForeColor=muted;
     }
 
-    static string AuthorFooterPreferenceError(Exception ex)
+    string AuthorFooterPreferenceError(Exception ex)
     {
         if(ex is ArgumentException argument)
         {
             if(argument.ParamName is nameof(AuthorFooterPreferences.GitHubUrl) or nameof(AuthorFooterPreferences.BlogUrl))
-                return "未保存：链接必须是完整的 HTTPS 地址，且不能包含账号信息。";
-            return "未保存：请检查作者文字、链接文字和地址，不能包含换行或超出长度限制。";
+                return Ui("未保存：链接必须是完整的 HTTPS 地址，且不能包含账号信息。","Not saved: links must be complete HTTPS URLs without embedded credentials.");
+            return Ui("未保存：请检查作者文字、链接文字和地址，不能包含换行或超出长度限制。","Not saved: check the author text, labels and addresses. They cannot contain line breaks or exceed their limits.");
         }
-        return "未保存：设置文件所在位置当前不可写。";
+        return Ui("未保存：设置文件所在位置当前不可写。","Not saved: the settings location is not writable.");
     }
 
     void ResizeAuthorFooterSettings(int availableWidth)

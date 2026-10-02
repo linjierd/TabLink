@@ -23,6 +23,12 @@ public sealed record NetworkInterfaceChoice(IPAddress LocalAddress, string Inter
             PrefixLength==other.PrefixLength&&
             string.Equals(UsbSerial,other.UsbSerial,StringComparison.OrdinalIgnoreCase);
     }
-    public string DisplayText => $"{Kind switch { NetworkInterfaceKind.WiFi => "Wi-Fi", NetworkInterfaceKind.Usb => "USB 网络", _ => "有线网络" }} · {InterfaceAlias} · {LocalAddress}" + (UsbSerial is null ? "" : $" · {UsbSerial}");
+    public string DisplayTextFor(bool english) => $"{Kind switch
+    {
+        NetworkInterfaceKind.WiFi => "Wi-Fi",
+        NetworkInterfaceKind.Usb => english ? "USB network" : "USB 网络",
+        _ => english ? "Ethernet" : "有线网络"
+    }} · {InterfaceAlias} · {LocalAddress}" + (UsbSerial is null ? "" : $" · {UsbSerial}");
+    public string DisplayText => DisplayTextFor(english:false);
     public override string ToString() => DisplayText;
 }

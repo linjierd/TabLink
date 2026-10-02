@@ -34,6 +34,12 @@ xcodebuild -project TabLink.xcodeproj -scheme TabLink \
 
 **USB 在这里仅指已有可达 IP 网络上的相同 TLS 连接。** 本项目不提供 Lightning / USB accessory 传输，不使用 ADB，也不声称所有 iPad 都支持 Android 式 USB 网络共享。iPad 型号、电脑驱动及网络共享方式须另行实测；Wi-Fi 是本原生协议的直接连接方式。
 
+## 界面语言
+
+连接面板的设置中提供 **跟随系统 / 简体中文 / English**。选择保存在应用自己的 `UserDefaults` 键 `appLanguageV1`，切换后立即重建页面文字和更新状态菜单；缺失或无法识别的值恢复为“跟随系统”。“跟随系统”读取系统首选语言，所有 `zh-*`（包括 zh-CN、zh-HK、zh-TW）都明确映射为简体中文，其他语言映射为英文。相机、局域网权限说明也由对应的 `InfoPlist.strings` 提供。
+
+`Resources/en.lproj` 与 `Resources/zh-Hans.lproj` 包含完全相同的 `Localizable.strings` 和 `InfoPlist.strings` 键；`tools/generate_project.py` 将两组文件作为 Xcode 本地化 variant group 加入应用资源阶段。Windows 上的 `verify_source.py` 会解析 `.strings`、拒绝重复/空值/键差异，并确认 Swift 使用的本地化键均存在。该检查不能代替 Xcode 对 strings 编码、运行时语言切换、权限弹窗或 VoiceOver 布局的验证。
+
 ## stable 正式版更新
 
 连接面板中的“更新方式”会立即保存到 `UserDefaults`，提供三个与其他平台一致的选项：
@@ -93,7 +99,7 @@ python tools/generate_project.py
 python tools/verify_source.py
 ```
 
-后者检查工程源文件引用、PBX ID 完整性、plist / scheme、生成可重复性、独立 Python 参考解析器处理的固定协议 fixtures，以及更新公钥、正式地址、版本元数据和 Apple/Android 共用 signed-envelope fixture。**这些检查不执行 Swift，不等于 XCTest 通过、CryptoKit 真机通过或 Xcode 编译通过。** Swift XCTest 除连接协议和真实呈现计数外，还覆盖固定 P-256 清单验签、payload 篡改拒绝、stable SemVer、重复 JSON 字段和 cohort 策略。
+后者检查工程源文件引用、PBX ID 完整性、plist / scheme、生成可重复性、两种语言资源键一致性与 Xcode 资源引用、独立 Python 参考解析器处理的固定协议 fixtures，以及更新公钥、正式地址、版本元数据和 Apple/Android 共用 signed-envelope fixture。**这些检查不执行 Swift，不等于 XCTest 通过、CryptoKit 真机通过或 Xcode 编译通过。** Swift XCTest 除连接协议和真实呈现计数外，还覆盖固定 P-256 清单验签、payload 篡改拒绝、stable SemVer、重复 JSON 字段和 cohort 策略。
 
 Mac 上必须首先完成上述 `swift test` 和 `xcodebuild`，再做真机联调：错误指纹拒绝、过期二维码拒绝、H.264 硬解属性确认、JPEG 测试画面、上下方向 / 色彩 / 黑边 / 触控校验、旋转重连、拔网 / 锁屏 / 进入后台、多个原生端口，以及主机的实际显示 ACK 增长。更新还必须验证固定 SPKI 和 DER ECDSA fixture、无 `ios` artifact、灰度未命中、篡改拒绝、App Store 链接打开与系统自动更新设置。长时间内存、温度、耗电、实际 FPS 与多型号兼容性均未验证。
 

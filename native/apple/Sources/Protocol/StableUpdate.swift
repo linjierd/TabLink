@@ -11,14 +11,6 @@ enum StableUpdateMode: String, CaseIterable, Equatable {
     case downloadThenAsk
     case never
 
-    var title: String {
-        switch self {
-        case .automatic: return "自动更新"
-        case .downloadThenAsk: return "自动下载后手动安装"
-        case .never: return "从不更新"
-        }
-    }
-
     // A missing preference is the first-run default. Any present value that is not
     // one of the exact known strings fails closed so it cannot silently enable traffic.
     static func decodePersisted(_ value: Any?) -> StableUpdateMode {

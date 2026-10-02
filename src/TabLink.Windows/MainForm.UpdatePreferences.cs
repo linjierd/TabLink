@@ -107,7 +107,7 @@ internal sealed partial class MainForm
         var previous=updatePreferences;
         var previousStatus=updatePreferencesLoadStatus;
         changingUpdateMode=true;
-        RefreshUpdatePreferenceUi("正在应用更新方式…");
+        RefreshUpdatePreferenceUi(Ui("正在应用更新方式…","Applying update preference…"));
         try
         {
             var next=new UpdatePreferences(mode);
@@ -116,8 +116,8 @@ internal sealed partial class MainForm
             updatePreferencesLoadStatus=UpdatePreferencesLoadStatus.Loaded;
             await ApplyUpdateModeAsync(mode);
             changingUpdateMode=false;
-            RefreshUpdatePreferenceUi("已保存并立即生效。");
-            Log("软件更新方式已设置为“"+UpdateModeDisplay(mode)+"”。");
+            RefreshUpdatePreferenceUi(Ui("已保存并立即生效。","Saved and applied immediately."));
+            Log(Ui("软件更新方式已设置为“","Update mode set to “")+UpdateModeDisplay(mode)+Ui("”。","”."));
         }
         catch(Exception ex) when(ex is IOException or UnauthorizedAccessException or
             System.Security.SecurityException or ArgumentException)
@@ -129,16 +129,16 @@ internal sealed partial class MainForm
                 PopulateUpdatePreferenceEditors(UpdateMode.Never);
                 await ApplyUpdateModeAsync(UpdateMode.Never);
                 changingUpdateMode=false;
-                RefreshUpdatePreferenceUi("“从不更新”未能写入磁盘；本次运行已安全关闭更新，重启后请再次保存。原因："+SafeError(ex));
-                Log("“从不更新”未能持久保存；本次运行已安全关闭更新："+SafeError(ex));
+                RefreshUpdatePreferenceUi(Ui("“从不更新”未能写入磁盘；本次运行已安全关闭更新，重启后请再次保存。原因：","“Never update” could not be written to disk. Updates are safely disabled for this run; save again after restarting. Reason: ")+SafeError(ex));
+                Log(Ui("“从不更新”未能持久保存；本次运行已安全关闭更新：","“Never update” could not be persisted; updates are disabled for this run: ")+SafeError(ex));
                 return;
             }
             updatePreferences=previous;
             updatePreferencesLoadStatus=previousStatus;
             PopulateUpdatePreferenceEditors(previous.Mode);
             changingUpdateMode=false;
-            RefreshUpdatePreferenceUi("更新方式未能保存："+SafeError(ex));
-            Log("软件更新方式未能保存："+SafeError(ex));
+            RefreshUpdatePreferenceUi(Ui("更新方式未能保存：","The update mode could not be saved: ")+SafeError(ex));
+            Log(Ui("软件更新方式未能保存：","The software update mode could not be saved: ")+SafeError(ex));
         }
         finally
         {
@@ -155,16 +155,16 @@ internal sealed partial class MainForm
         var ready=updateCoordinator?.Ready;
         var detail=CurrentUpdateMode switch
         {
-            UpdateMode.Never=>"更新检查已关闭。",
-            UpdateMode.DownloadThenAsk when ready is not null=>$"正式版 {ready.Version} 已安全下载，等待手动安装。",
-            UpdateMode.Automatic when ready is not null=>$"正式版 {ready.Version} 已安全下载，将在没有连接和操作时自动安装。",
-            UpdateMode.DownloadThenAsk=>"将自动检查和下载正式版；安装前会等待你的明确操作。",
-            _=>"将自动检查、下载并在空闲时安装正式版。"
+            UpdateMode.Never=>Ui("更新检查已关闭。","Update checks are disabled."),
+            UpdateMode.DownloadThenAsk when ready is not null=>Ui($"正式版 {ready.Version} 已安全下载，等待手动安装。",$"Stable release {ready.Version} was downloaded and verified; waiting for manual installation."),
+            UpdateMode.Automatic when ready is not null=>Ui($"正式版 {ready.Version} 已安全下载，将在没有连接和操作时自动安装。",$"Stable release {ready.Version} was downloaded and verified; it will install when no connection or operation is active."),
+            UpdateMode.DownloadThenAsk=>Ui("将自动检查和下载正式版；安装前会等待你的明确操作。","TabLink checks for and downloads stable releases automatically, then waits for you to install."),
+            _=>Ui("将自动检查、下载并在空闲时安装正式版。","TabLink checks for, downloads and installs stable releases while idle.")
         };
         if(CurrentUpdateMode!=UpdateMode.Never&&!CanInstallReadyUpdateFromCurrentLocation)
-            detail+=" 当前从便携目录运行；可以检查和下载，安装需从 "+ExpectedProtectedInstallDirectory+" 启动。";
+            detail+=Ui(" 当前从便携目录运行；可以检查和下载，安装需从 "," TabLink is running from a portable directory; it can check and download, but installation must be started from ")+ExpectedProtectedInstallDirectory+Ui(" 启动。",".");
         if(string.IsNullOrWhiteSpace(prefix)&&updatePreferencesLoadStatus==UpdatePreferencesLoadStatus.InvalidFailClosed)
-            prefix="更新偏好文件无效，已安全切换为“从不更新”。";
+            prefix=Ui("更新偏好文件无效，已安全切换为“从不更新”。","The update preference file is invalid; TabLink safely switched to Never update.");
         if(string.IsNullOrWhiteSpace(prefix)&&CurrentUpdateMode!=UpdateMode.Never&&!string.IsNullOrWhiteSpace(updateConfigurationError))
             prefix=updateConfigurationError;
         updatePreferenceState.Text=string.IsNullOrWhiteSpace(prefix)?detail:prefix+" "+detail;
@@ -180,11 +180,11 @@ internal sealed partial class MainForm
         updatePreferenceState.MaximumSize=new Size(width,0);
     }
 
-    static string UpdateModeDisplay(UpdateMode mode)=>mode switch
+    string UpdateModeDisplay(UpdateMode mode)=>mode switch
     {
-        UpdateMode.Automatic=>"自动更新",
-        UpdateMode.DownloadThenAsk=>"自动下载后手动安装",
-        UpdateMode.Never=>"从不更新",
+        UpdateMode.Automatic=>Ui("自动更新","Automatic updates"),
+        UpdateMode.DownloadThenAsk=>Ui("自动下载后手动安装","Download automatically, install manually"),
+        UpdateMode.Never=>Ui("从不更新","Never update"),
         _=>mode.ToString()
     };
 }

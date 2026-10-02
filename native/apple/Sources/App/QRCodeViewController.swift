@@ -11,9 +11,10 @@ final class QRCodeViewController: UIViewController, AVCaptureMetadataOutputObjec
     private var visible = true
 
     override func viewDidLoad() {
-        super.viewDidLoad(); title = "扫描电脑二维码"; view.backgroundColor = .black
-        navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .cancel, target: self, action: #selector(cancel))
-        explanation.text = "只扫描电脑端 TabLink 原生连接二维码。"; explanation.textColor = .white
+        super.viewDidLoad(); title = L10n.text("scanner.title"); view.backgroundColor = .black
+        navigationItem.leftBarButtonItem = UIBarButtonItem(title: L10n.text("action.cancel"), style: .plain,
+                                                            target: self, action: #selector(cancel))
+        explanation.text = L10n.text("scanner.explanation"); explanation.textColor = .white
         explanation.numberOfLines = 0; explanation.textAlignment = .center
         explanation.backgroundColor = UIColor(white: 0, alpha: 0.7)
         explanation.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(explanation)
@@ -29,7 +30,7 @@ final class QRCodeViewController: UIViewController, AVCaptureMetadataOutputObjec
         default: unavailable()
         }
     }
-    private func unavailable() { explanation.text = "无法使用摄像头。返回后选择“粘贴连接链接”，或在系统设置中允许相机权限。" }
+    private func unavailable() { explanation.text = L10n.text("scanner.unavailable") }
     private func configure() {
         guard visible else { return }
         let preview = AVCaptureVideoPreviewLayer(session: capture); preview.videoGravity = .resizeAspectFill
@@ -56,7 +57,7 @@ final class QRCodeViewController: UIViewController, AVCaptureMetadataOutputObjec
         guard visible, !accepted else { return }
         for object in metadataObjects {
             guard let code = object as? AVMetadataMachineReadableCodeObject, let text = code.stringValue else { continue }
-            guard (try? PairingLink(text)) != nil else { explanation.text = "这不是有效的 TabLink 原生连接码。"; continue }
+            guard (try? PairingLink(text)) != nil else { explanation.text = L10n.text("scanner.invalid"); continue }
             accepted = true; queue.async { [capture] in capture.stopRunning() }; onCode?(text); return
         }
     }

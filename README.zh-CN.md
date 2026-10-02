@@ -38,6 +38,14 @@ APK 会读取平板的原生尺寸、当前方向、支持的刷新率和活动�
 >
 > My goal is to keep building small, free, useful tools that solve real problems. If you have an idea, a feature request, or a problem you'd like software to solve, feel free to open a [GitHub Issue](https://github.com/linjierd/TabLink/issues).
 
+## 界面语言
+
+TabLink 的 Windows 电脑端、Android 客户端、可选浏览器接收端，以及 iOS / iPadOS 与 HarmonyOS NEXT 源码工程均提供**简体中文**和 **English**。每个客户端都有“**跟随系统 / 简体中文 / English**”三项。首次使用默认跟随系统：`zh-*` 系统语言使用简体中文，其他系统语言使用英文。
+
+语言偏好只保存在当前客户端，与配对信息、可信设备、设备排除规则、显示租约、更新策略和自定义作者信息相互独立。切换语言会刷新用户可见的按钮、连接状态、更新信息、诊断建议与接收端提示，不会重新生成配对，也不会主动断开正在使用的副屏。协议名称、URL、哈希、设备标识和机器可读诊断值保持原样。
+
+公开 Windows 包和 Android APK 会同时包含两种语言；浏览器接收端把选择保存在浏览器本地存储。Apple 与鸿蒙原生源码同样包含两套资源和持久化语言选择，但这两个工程仍需各自平台的工具链、签名、商店发布和真机验收，当前不能描述为可下载成品。
+
 ## 反馈与脱敏支持包
 
 缺陷、性能问题、设备兼容性和功能建议请从 [GitHub Issue Forms](https://github.com/linjierd/TabLink/issues/new/choose) 选择对应入口；安全漏洞请使用 [私密 Security Advisory](https://github.com/linjierd/TabLink/security/advisories/new)，不要发布公开 Issue。

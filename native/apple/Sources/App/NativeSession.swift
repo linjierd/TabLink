@@ -11,6 +11,7 @@ final class NativeSession {
     private var receivedFrames: UInt64 = 0
     private var presentation = PresentationMeter()
     private var retry = 0
+    private var lastHostStatus: (message: String?, capturePaused: Bool, displaying: Bool)?
     var onStatus: ((String, Bool) -> Void)?
     var onFrame: ((DecodedFrame) -> Void)?
     var onReset: (() -> Void)?
@@ -20,6 +21,15 @@ final class NativeSession {
     init(link: PairingLink, profile: Data) { self.link = link; self.profile = profile }
     func start() { queue.async { [self] in active = true; attempt() } }
     func stop() { queue.async { [self] in active = false; connectionID = UUID(); releaseConnection(); onReset?() } }
+
+    func refreshLocalizedHostStatus() {
+        queue.async { [self] in
+            guard active, let lastHostStatus else { return }
+            onStatus?(HostStatusText.localize(lastHostStatus.message,
+                                              capturePaused: lastHostStatus.capturePaused),
+                      lastHostStatus.displaying)
+        }
+    }
 
     func updateProfile(_ data: Data) {
         queue.async { [self] in
@@ -44,7 +54,8 @@ final class NativeSession {
             do { try transport?.send(.presented, payload: data) } catch { return }
             onPresentation?()
             retry = 0
-            onStatus?("\(frame.codec) · \(frame.width) × \(frame.height) · 实际呈现 \(String(format: "%.1f", report.fps)) fps", true)
+            lastHostStatus = nil
+            onStatus?(L10n.text("session.presenting", frame.codec, frame.width, frame.height, report.fps), true)
         }
     }
 
@@ -52,10 +63,14 @@ final class NativeSession {
         guard active else { return }
         connectionID = UUID(); let id = connectionID
         receivedFrames = 0; presentation = PresentationMeter()
-        onReset?(); onStatus?("正在连接 \(link.endpointDescription)…", false)
+        lastHostStatus = nil
+        onReset?(); onStatus?(L10n.text("session.connectingEndpoint", link.endpointDescription), false)
         let next = NativeTransport(link: link, queue: queue)
         transport = next
-        next.onReady = { [weak self] in self?.onStatus?("加密连接已建立，等待电脑准备画面…", false) }
+        next.onReady = { [weak self] in
+            self?.lastHostStatus = nil
+            self?.onStatus?(L10n.text("session.secureReady"), false)
+        }
         next.onPacket = { [weak self] type, payload, done in
             guard let self, self.active, self.connectionID == id else { return }
             self.consume(type, payload: payload, connectionID: id, done: done)
@@ -89,7 +104,7 @@ final class NativeSession {
                             self.queue.async {
                                 guard self.active, self.connectionID == id else { return }
                                 switch result { case .success: done()
-                                case .failure: self.failed("无法初始化 H.264 硬件解码，请降低电脑输出规格后重连。", terminal: true, id: id) }
+                                case .failure: self.failed(L10n.text("session.decoderInitFailed"), terminal: true, id: id) }
                             }
                         }
                     }
@@ -103,7 +118,7 @@ final class NativeSession {
                     self.queue.async {
                         guard self.active, self.connectionID == id else { return }
                         switch result { case .success: done()
-                        case .failure: self.failed("视频解码中断，将重新建立会话。", terminal: false, id: id) }
+                        case .failure: self.failed(L10n.text("session.decodeInterrupted"), terminal: false, id: id) }
                     }
                 }
             case .jpeg:
@@ -112,18 +127,20 @@ final class NativeSession {
             case .status:
                 guard payload.count <= 16384 else { throw TabLinkError.invalid("状态包过大") }
                 let status = try JSONDecoder().decode(ServerStatus.self, from: payload)
-                let message = String((status.message ?? "已连接").prefix(180))
-                onStatus?(status.capturePaused == true ? "采集暂停 · \(message)" : message, presentation.count > 0); done()
+                lastHostStatus = (status.message, status.capturePaused == true, presentation.count > 0)
+                onStatus?(HostStatusText.localize(status.message, capturePaused: status.capturePaused == true),
+                          presentation.count > 0); done()
             case .error:
                 // Do not echo arbitrary remote error content or credentials into logs/UI.
-                failed("电脑拒绝或结束了会话。请查看电脑端状态，重新扫描当前二维码。", terminal: true, id: id)
+                failed(L10n.text("session.hostRejected"), terminal: true, id: id)
             default: throw TabLinkError.invalid("不支持的服务端消息")
             }
-        } catch { failed("收到无效或不兼容的画面数据，请检查电脑端版本。", terminal: true, id: id) }
+        } catch { failed(L10n.text("session.invalidData"), terminal: true, id: id) }
     }
 
     private func failed(_ message: String, terminal: Bool, id: UUID) {
         guard active, connectionID == id else { return }
+        lastHostStatus = nil
         connectionID = UUID(); releaseConnection(); onReset?(); onStatus?(message, false)
         if terminal { active = false; onInactive?(); return }
         let delay = min(10, 1 << min(retry, 4)); retry = min(5, retry + 1)

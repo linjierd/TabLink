@@ -135,11 +135,11 @@ final class AndroidUpdateController implements AutoCloseable {
         } else if (!manifestConflictBlocked && recovery.retryRequired)
             machine.installResult(UpdateStateMachine.InstallResult.RETRY);
         status = manifestConflictBlocked
-                ? "更新源冲突仍被阻断；等待发布时间更新的有效签名决定"
-                : recovery.result != null ? recovery.result.message
-                : recovery.retryRequired ? "Android 安装状态记录已损坏；已清理，可重试安装"
-                : recovery.current != null ? "Android 安装仍在进行；正在等待系统结果"
-                : configured() ? "尚未检查正式版更新" : "更新服务尚未配置";
+                ? s(R.string.update_source_conflict_blocked)
+                : recovery.result != null ? installResultMessage(recovery.result)
+                : recovery.retryRequired ? s(R.string.update_install_state_damaged)
+                : recovery.current != null ? s(R.string.update_install_in_progress)
+                : configured() ? s(R.string.update_not_checked) : s(R.string.update_not_configured);
         worker.execute(this::cleanInterruptedDownloads);
     }
 
@@ -208,15 +208,43 @@ final class AndroidUpdateController implements AutoCloseable {
         }
         ui.removeCallbacks(periodic);
         if (foreground && selected != UpdateStateMachine.Mode.NEVER) ui.postDelayed(periodic, PERIOD_MS);
-        if (!saved) publish("无法保存更新设置；已安全切换为“从不更新”");
-        else if (selected == UpdateStateMachine.Mode.AUTOMATIC) publish("已选择自动更新");
-        else if (selected == UpdateStateMachine.Mode.DOWNLOAD_THEN_ASK) publish("已选择自动下载后手动安装");
-        else publish("已选择从不更新；不会检查或下载更新");
+        if (!saved) publish(s(R.string.update_save_failed_never));
+        else if (selected == UpdateStateMachine.Mode.AUTOMATIC) publish(s(R.string.update_mode_automatic_selected));
+        else if (selected == UpdateStateMachine.Mode.DOWNLOAD_THEN_ASK) publish(s(R.string.update_mode_download_selected));
+        else publish(s(R.string.update_mode_never_selected));
         if (foreground && selected != UpdateStateMachine.Mode.NEVER) queueRefresh(false);
         return selected;
     }
 
     String status() { return status; }
+
+    void onLanguageChanged() {
+        ReleaseManifest.Artifact artifact = available;
+        switch (machine.state()) {
+            case DISABLED: publish(s(R.string.update_mode_never_selected)); break;
+            case CHECKING: publish(s(R.string.update_checking)); break;
+            case UP_TO_DATE: publish(s(R.string.update_current_latest, BuildConfig.VERSION_NAME)); break;
+            case AVAILABLE:
+                publish(artifact == null ? s(R.string.update_not_checked)
+                        : s(R.string.update_found_wait_disconnect, artifact.version));
+                break;
+            case DOWNLOADING:
+                publish(artifact == null ? s(R.string.update_checking_or_downloading)
+                        : s(R.string.update_downloading, artifact.version));
+                break;
+            case READY_DEFERRED: publish(s(R.string.update_ready_wait_disconnect)); break;
+            case READY_TO_INSTALL:
+                publish(artifact == null ? s(R.string.update_not_completed_retry)
+                        : s(machine.mode() == UpdateStateMachine.Mode.AUTOMATIC
+                                ? R.string.update_downloaded_installing : R.string.update_downloaded_manual,
+                                artifact.version));
+                break;
+            case AWAITING_PERMISSION: publish(s(R.string.update_allow_unknown_apps)); break;
+            case INSTALLING: publish(s(R.string.update_install_in_progress)); break;
+            case FAILED: publish(s(R.string.update_generic_failure)); break;
+            default: publish(configured() ? s(R.string.update_not_checked) : s(R.string.update_not_configured));
+        }
+    }
 
     void onForeground() {
         foreground = true;
@@ -226,11 +254,11 @@ final class AndroidUpdateController implements AutoCloseable {
         if (machine.checksEnabled()) ui.postDelayed(periodic, PERIOD_MS);
         boolean consumedInstallResult = consumeInstallResult();
         if (!consumedInstallResult && machine.state() == UpdateStateMachine.State.AWAITING_PERMISSION)
-            publish("请允许 TabLink 安装未知应用，然后返回继续更新");
+            publish(s(R.string.update_allow_unknown_apps));
         else if (!consumedInstallResult && machine.state() == UpdateStateMachine.State.INSTALLING)
-            publish("Android 安装仍在进行；正在等待系统结果");
+            publish(s(R.string.update_install_in_progress));
         else if (!consumedInstallResult && machine.checksEnabled()) queueRefresh(false);
-        else if (!consumedInstallResult) publish("已选择从不更新；不会检查或下载更新");
+        else if (!consumedInstallResult) publish(s(R.string.update_mode_never_selected));
     }
 
     void onBackground() {
@@ -249,22 +277,22 @@ final class AndroidUpdateController implements AutoCloseable {
     void checkNow(boolean explicit) {
         if (closed) return;
         if (!machine.checksEnabled()) {
-            if (explicit) publish("更新策略是“从不更新”；请先在设置中更改");
+            if (explicit) publish(s(R.string.update_policy_never));
             return;
         }
         if (!configured()) {
-            publish("更新服务尚未配置");
+            publish(s(R.string.update_not_configured));
             return;
         }
         if (!operationRunning.compareAndSet(false, true)) {
             refreshRequested = true;
             if (explicit) refreshExplicit = true;
-            if (explicit) publish("正在检查或下载正式版更新…");
+            if (explicit) publish(s(R.string.update_checking_or_downloading));
             return;
         }
         final long generation = policyGeneration;
         machine.beginCheck();
-        publish("正在检查正式版更新…");
+        publish(s(R.string.update_checking));
         worker.execute(() -> {
             try {
                 RemoteRelease release = fetchRelease(generation);
@@ -277,7 +305,7 @@ final class AndroidUpdateController implements AutoCloseable {
                     invalidateStaged();
                     available = null;
                     machine.failed();
-                    publish("最新正式版需要更新的升级协议；请从官网手动安装新版 TabLink");
+                    publish(s(R.string.update_protocol_newer));
                     return;
                 }
                 if (artifact == null || !artifact.isNewerThan(BuildConfig.VERSION_CODE, BuildConfig.VERSION_NAME)) {
@@ -285,7 +313,7 @@ final class AndroidUpdateController implements AutoCloseable {
                     invalidateStaged();
                     available = null;
                     machine.checked(false);
-                    publish("当前已是最新正式版 " + BuildConfig.VERSION_NAME);
+                    publish(s(R.string.update_current_latest, BuildConfig.VERSION_NAME));
                     return;
                 }
                 if (!manifest.includesInstallation(installationId())) {
@@ -293,7 +321,7 @@ final class AndroidUpdateController implements AutoCloseable {
                     invalidateStaged();
                     available = null;
                     machine.checked(false);
-                    publish("正式版 " + artifact.version + " 正在分批发布，暂未轮到此设备");
+                    publish(s(R.string.update_rollout_waiting, artifact.version));
                     return;
                 }
                 invalidateIfDifferent(artifact);
@@ -302,7 +330,7 @@ final class AndroidUpdateController implements AutoCloseable {
                     UpdateStateMachine.Action action = machine.downloaded();
                     Boolean explicitInstall = takeInstallRequest();
                     if (explicitInstall != null) {
-                        publish("已重新确认正式版 " + artifact.version + "，正在准备系统安装…");
+                        publish(s(R.string.update_reconfirmed_installing, artifact.version));
                         installValidatedPending(generation, explicitInstall);
                         return;
                     }
@@ -319,17 +347,17 @@ final class AndroidUpdateController implements AutoCloseable {
                 if (explicit && action == UpdateStateMachine.Action.NONE) action = machine.requestDownload();
                 if (action == UpdateStateMachine.Action.DOWNLOAD) download(release, generation);
                 else {
-                    publish("发现正式版 " + artifact.version + "；副屏断开后自动下载");
+                    publish(s(R.string.update_found_wait_disconnect, artifact.version));
                     if (explicit && host.hasActiveDisplaySession())
                         ui.post(() -> host.offerDisconnectForDownload(artifact));
                 }
             } catch (PolicyChangedException ignored) {
-                if (!machine.checksEnabled()) publish("已选择从不更新；不会检查或下载更新");
+                if (!machine.checksEnabled()) publish(s(R.string.update_mode_never_selected));
             } catch (Exception failure) {
                 clearInstallRequest();
                 if (machine.checksEnabled()) {
                     machine.failed();
-                    publish("检查更新失败：" + visibleFailure(failure));
+                    publish(s(R.string.update_check_failed, visibleFailure(failure)));
                 }
             } finally {
                 operationRunning.set(false);
@@ -340,7 +368,7 @@ final class AndroidUpdateController implements AutoCloseable {
 
     void requestDownloadOrInstall() {
         if (!machine.checksEnabled()) {
-            publish("更新策略是“从不更新”；请先在设置中更改");
+            publish(s(R.string.update_policy_never));
             return;
         }
         queueRefresh(true);
@@ -354,15 +382,15 @@ final class AndroidUpdateController implements AutoCloseable {
     void installPending(boolean explicit) {
         if (closed || !foreground) return;
         if (!machine.checksEnabled()) {
-            publish("更新策略是“从不更新”；请先在设置中更改");
+            publish(s(R.string.update_policy_never));
             return;
         }
         if (host.hasActiveDisplaySession() && !explicit) {
-            publish("更新已就绪，副屏断开后再安装");
+            publish(s(R.string.update_ready_wait_disconnect));
             return;
         }
         requestInstall(explicit);
-        publish("正在重新确认正式版仍可安装…");
+        publish(s(R.string.update_reconfirming));
         queueRefresh(true);
     }
 
@@ -370,17 +398,17 @@ final class AndroidUpdateController implements AutoCloseable {
         ensurePolicyCurrent(generation);
         if (!explicit && host.hasActiveDisplaySession()) {
             machine.sessionChanged(true);
-            publish("更新已就绪，副屏断开后再安装");
+            publish(s(R.string.update_ready_wait_disconnect));
             return;
         }
         Verified staged = readAndValidateStaged();
         boolean permission = canInstallPackages();
         if (!machine.beginInstall(explicit, permission)) {
             if (!explicit) {
-                publish("更新已就绪，副屏断开后再安装");
+                publish(s(R.string.update_ready_wait_disconnect));
                 return;
             }
-            throw new IOException("更新当前不能安装");
+            throw new IOException("update-cannot-install");
         }
         if (!permission) {
             synchronized (policyLock) {
@@ -399,11 +427,11 @@ final class AndroidUpdateController implements AutoCloseable {
         if (consumeInstallResult()) return;
         if (machine.state() == UpdateStateMachine.State.INSTALLING) {
             if (UpdateInstallAttemptStore.current(preferences) != null) {
-                publish("Android 安装仍在进行；正在等待系统结果");
+                publish(s(R.string.update_install_in_progress));
                 return;
             }
             machine.installerReturned();
-            publish("安装未完成；可在设置中点击“检查 / 继续正式版更新”重试");
+            publish(s(R.string.update_not_completed_retry));
             return;
         }
         if (machine.state() != UpdateStateMachine.State.AWAITING_PERMISSION) return;
@@ -418,7 +446,7 @@ final class AndroidUpdateController implements AutoCloseable {
             }
             installPending(explicit);
         }
-        else publish("请允许 TabLink 安装未知应用，然后返回继续更新");
+        else publish(s(R.string.update_allow_unknown_apps));
     }
 
     private void download(RemoteRelease release, long generation) throws Exception {
@@ -426,10 +454,10 @@ final class AndroidUpdateController implements AutoCloseable {
         ReleaseManifest.Artifact artifact = release.artifact;
         if (host.hasActiveDisplaySession()) {
             machine.sessionChanged(true);
-            publish("发现正式版 " + artifact.version + "；副屏断开后自动下载");
+            publish(s(R.string.update_found_wait_disconnect, artifact.version));
             return;
         }
-        publish("正在后台下载正式版 " + artifact.version + "…");
+        publish(s(R.string.update_downloading, artifact.version));
         ensureDirectory();
         File temporary = new File(updateDirectory, ArtifactIntegrity.safeApkName(artifact.build) + ".download");
         File destination = new File(updateDirectory, ArtifactIntegrity.safeApkName(artifact.build));
@@ -451,7 +479,7 @@ final class AndroidUpdateController implements AutoCloseable {
         } catch (DeferredException deferred) {
             deleteQuietly(temporary);
             machine.downloadDeferred(true);
-            publish("副屏正在使用；已暂停更新下载，断开后会重试");
+            publish(s(R.string.update_download_paused));
             return;
         } catch (PolicyChangedException changed) {
             deleteQuietly(temporary);
@@ -460,7 +488,7 @@ final class AndroidUpdateController implements AutoCloseable {
         try {
             ensurePolicyCurrent(generation);
             if (!ArtifactIntegrity.verify(temporary, artifact.size, artifact.sha256))
-                throw new IOException("更新包 SHA-256 或大小不匹配");
+                throw new IOException("update-package-mismatch");
             verifyApk(temporary, artifact);
             ensurePolicyCurrent(generation);
             synchronized (policyLock) {
@@ -474,7 +502,7 @@ final class AndroidUpdateController implements AutoCloseable {
             ensurePolicyCurrent(generation);
             Boolean explicitInstall = takeInstallRequest();
             if (explicitInstall != null) {
-                publish("正式版 " + artifact.version + " 已下载并重新确认，正在准备系统安装…");
+                publish(s(R.string.update_downloaded_reconfirmed, artifact.version));
                 installValidatedPending(generation, explicitInstall);
                 return;
             }
@@ -489,13 +517,14 @@ final class AndroidUpdateController implements AutoCloseable {
         ReleaseManifest manifest = ReleaseManifest.verify(envelope, BuildConfig.UPDATE_PUBLIC_KEY_SPKI, System.currentTimeMillis());
         requireManifestAtFloor(manifest);
         if (manifest.minimumProtocolVersion > ReleaseManifest.UPDATE_PROTOCOL)
-            throw new IOException("暂存更新需要新版升级协议");
+            throw new IOException("staged-update-protocol-newer");
         ReleaseManifest.Artifact artifact = manifest.androidArtifact();
         if (artifact == null || !artifact.isNewerThan(BuildConfig.VERSION_CODE, BuildConfig.VERSION_NAME)
                 || !manifest.includesInstallation(installationId()))
-            throw new IOException("暂存更新已失效");
+            throw new IOException("staged-update-expired");
         File apk = new File(updateDirectory, ArtifactIntegrity.safeApkName(artifact.build));
-        if (!ArtifactIntegrity.verify(apk, artifact.size, artifact.sha256)) throw new IOException("暂存更新校验失败");
+        if (!ArtifactIntegrity.verify(apk, artifact.size, artifact.sha256))
+            throw new IOException("staged-update-verification-failed");
         verifyApk(apk, artifact);
         return new Verified(artifact, apk);
     }
@@ -516,11 +545,11 @@ final class AndroidUpdateController implements AutoCloseable {
         PackageInfo installed = packages.getPackageInfo(activity.getPackageName(), flags);
         if (candidate == null || !activity.getPackageName().equals(candidate.packageName)
                 || packageVersion(candidate) != artifact.build || !artifact.version.equals(candidate.versionName))
-            throw new IOException("APK 包名或版本与签名清单不一致");
+            throw new IOException("apk-identity-mismatch");
         Set<String> candidateSigners = signerDigests(candidate);
         Set<String> installedSigners = signerDigests(installed);
         if (candidateSigners.isEmpty() || !candidateSigners.equals(installedSigners))
-            throw new IOException("APK 安装签名与当前应用不一致");
+            throw new IOException("apk-signer-mismatch");
     }
 
     @SuppressWarnings("deprecation")
@@ -554,7 +583,7 @@ final class AndroidUpdateController implements AutoCloseable {
                     permissionInstallExplicit = null;
                     machine.installResult(UpdateStateMachine.InstallResult.RETRY);
                     machine.sessionChanged(true);
-                    publish("更新已就绪，副屏断开后再安装");
+                    publish(s(R.string.update_ready_wait_disconnect));
                     return;
                 }
                 UpdateInstallerUiGate.LaunchResult launch =
@@ -564,17 +593,17 @@ final class AndroidUpdateController implements AutoCloseable {
                     permissionInstallExplicit = null;
                     machine.installResult(UpdateStateMachine.InstallResult.RETRY);
                     machine.sessionChanged(host.hasActiveDisplaySession());
-                    publish("更新已就绪，副屏断开后再安装");
+                    publish(s(R.string.update_ready_wait_disconnect));
                     return;
                 }
                 if (launch == UpdateInstallerUiGate.LaunchResult.ALREADY_LAUNCHING) return;
             }
-            publish("请允许 TabLink 安装未知应用，然后返回继续更新");
+            publish(s(R.string.update_allow_unknown_apps));
         } catch (PolicyChangedException ignored) {
             // The selected policy no longer permits this stale permission request.
         } catch (ActivityNotFoundException | SecurityException failure) {
             machine.installerReturned();
-            publish("无法打开“安装未知应用”设置");
+            publish(s(R.string.update_unknown_apps_settings_failed));
         }
     }
 
@@ -586,7 +615,7 @@ final class AndroidUpdateController implements AutoCloseable {
             machine.installResult(UpdateStateMachine.InstallResult.RETRY);
             machine.sessionChanged(true);
         }
-        publish("更新已就绪，副屏断开后再安装");
+        publish(s(R.string.update_ready_wait_disconnect));
         return true;
     }
 
@@ -610,11 +639,11 @@ final class AndroidUpdateController implements AutoCloseable {
             while (true) {
                 ensurePolicyCurrent(generation);
                 int count = input.read(buffer); if (count < 0) break; if (count == 0) continue;
-                total += count; if (total > staged.artifact.size) throw new IOException("APK 在提交时大小发生变化");
+                total += count; if (total > staged.artifact.size) throw new IOException("apk-size-changed-during-commit");
                 ensurePolicyCurrent(generation);
                 output.write(buffer, 0, count);
             }
-            if (total != staged.artifact.size) throw new IOException("APK 在提交时大小发生变化");
+            if (total != staged.artifact.size) throw new IOException("apk-size-changed-during-commit");
             ensurePolicyCurrent(generation);
             installSession.fsync(output);
             Intent result = new Intent(activity, UpdateInstallReceiver.class)
@@ -630,36 +659,35 @@ final class AndroidUpdateController implements AutoCloseable {
                 if (host.hasActiveDisplaySession()) {
                     machine.installResult(UpdateStateMachine.InstallResult.RETRY);
                     machine.sessionChanged(true);
-                    publish("更新已就绪，副屏断开后再安装");
+                    publish(s(R.string.update_ready_wait_disconnect));
                     throw new PolicyChangedException();
                 }
                 if (!UpdateInstallAttemptStore.begin(preferences, attempt)) {
                     machine.installResult(UpdateStateMachine.InstallResult.RETRY);
                     machine.sessionChanged(host.hasActiveDisplaySession());
                     abandonSession(sessionId);
-                    publish("无法建立可跟踪的 Android 安装会话；已保留更新包，可在设置中重试");
+                    publish(s(R.string.update_session_untracked));
                     return;
                 }
                 tracked = true;
                 installSession.commit(callback.getIntentSender());
                 committed = true;
             }
-            publish("已提交正式版 " + staged.artifact.version + "；等待 Android 安装结果");
+            publish(s(R.string.update_submitted, staged.artifact.version));
         } catch (PolicyChangedException changed) {
             abandonSession(sessionId);
             if (tracked) UpdateInstallAttemptStore.discardIfCurrent(preferences, attempt, true);
             throw changed;
         } catch (Exception sessionFailure) {
             if (committed) {
-                publish("已提交正式版 " + staged.artifact.version + "；等待 Android 安装结果");
+                publish(s(R.string.update_submitted, staged.artifact.version));
                 return;
             }
             abandonSession(sessionId);
             if (tracked) UpdateInstallAttemptStore.discardIfCurrent(preferences, attempt, true);
             ensurePolicyCurrent(generation);
             machine.installResult(UpdateStateMachine.InstallResult.RETRY);
-            publish("Android 安装会话失败：" + visibleFailure(sessionFailure)
-                    + "；已保留更新包，可在设置中重试");
+            publish(s(R.string.update_session_failed, visibleFailure(sessionFailure)));
         }
     }
 
@@ -673,15 +701,14 @@ final class AndroidUpdateController implements AutoCloseable {
         }
         if (recovery.retryRequired && recovery.current == null) {
             machine.installResult(UpdateStateMachine.InstallResult.RETRY);
-            publish(recovery.storageFailure
-                    ? "无法清理损坏的 Android 安装状态；已安全停止自动安装，请重试"
-                    : "Android 安装状态记录已损坏；已清理，可在设置中重试");
+            publish(s(recovery.storageFailure ? R.string.update_cleanup_failed
+                    : R.string.update_damaged_cleared_retry));
             return true;
         }
         UpdateInstallAttempt.Result result = recovery.result;
         if (result == null) return false;
         int installerStatus = result.status;
-        String message = result.message;
+        String message = installResultMessage(result);
         if (installerStatus == PackageInstaller.STATUS_PENDING_USER_ACTION) {
             machine.installResult(UpdateStateMachine.InstallResult.PENDING_USER_ACTION);
             publish(message);
@@ -694,7 +721,7 @@ final class AndroidUpdateController implements AutoCloseable {
             return true;
         }
         machine.installResult(UpdateStateMachine.InstallResult.RETRY);
-        publish(message + "；可在设置中重试");
+        publish(s(R.string.update_retry_suffix, message));
         return true;
     }
 
@@ -766,7 +793,7 @@ final class AndroidUpdateController implements AutoCloseable {
         ArrayList<RemoteCandidate> valid = new ArrayList<>();
         ArrayList<String> failures = new ArrayList<>();
         String[] addresses = { BuildConfig.UPDATE_MANIFEST_URL, BuildConfig.UPDATE_MANIFEST_FALLBACK_URL };
-        String[] labels = { "个人博客", "GitHub" };
+        String[] labels = { s(R.string.update_source_blog), s(R.string.update_source_github) };
         for (int index = 0; index < addresses.length; index++) {
             String address = addresses[index];
             if (address == null || address.trim().isEmpty()) continue;
@@ -777,11 +804,13 @@ final class AndroidUpdateController implements AutoCloseable {
                         envelope, BuildConfig.UPDATE_PUBLIC_KEY_SPKI, System.currentTimeMillis());
                 valid.add(new RemoteCandidate(envelope, manifest, manifest.androidArtifact()));
             } catch (PolicyChangedException changed) { throw changed; }
-            catch (Exception failure) { failures.add(labels[index] + "：" + visibleFailure(failure)); }
+            catch (Exception failure) {
+                failures.add(s(R.string.update_source_failure, labels[index], visibleFailure(failure)));
+            }
         }
         ensurePolicyCurrent(generation);
         if (valid.isEmpty()) {
-            String detail = failures.isEmpty() ? "没有配置可用更新源" : String.join("；", failures);
+            String detail = failures.isEmpty() ? s(R.string.update_no_source) : String.join("; ", failures);
             throw new IOException(detail);
         }
         ArrayList<ReleaseManifest> manifests = new ArrayList<>();
@@ -859,7 +888,7 @@ final class AndroidUpdateController implements AutoCloseable {
                     ? cleanup[0] : UpdateInstallAttemptStore.clearAll(preferences);
             if (cleared.abandonSessionId >= 0) abandonSession(cleared.abandonSessionId);
             if (cleared.storageFailure) {
-                IOException clearFailure = new IOException("无法清理冲突清单对应的安装状态");
+                IOException clearFailure = new IOException("conflict-install-state-clear-failed");
                 if (storageFailure == null) storageFailure = clearFailure;
                 else storageFailure.addSuppressed(clearFailure);
             }
@@ -876,19 +905,19 @@ final class AndroidUpdateController implements AutoCloseable {
         HttpsURLConnection connection = openFollowingRedirects(url, generation);
         try {
             int code = connection.getResponseCode();
-            if (code != HttpURLConnection.HTTP_OK) throw new IOException("更新服务器返回 HTTP " + code);
+            if (code != HttpURLConnection.HTTP_OK) throw new IOException("update-server-http-" + code);
             long declared = connection.getContentLength();
-            if (declared > limit) throw new IOException("更新清单过大");
+            if (declared > limit) throw new IOException("update-manifest-too-large");
             try (InputStream input = connection.getInputStream()) {
                 ByteArrayOutputStream output = new ByteArrayOutputStream();
                 byte[] buffer = new byte[8192]; long total = 0;
                 while (true) {
                     ensurePolicyCurrent(generation);
                     int count = input.read(buffer); if (count < 0) break; if (count == 0) continue;
-                    total += count; if (total > limit) throw new IOException("下载内容超过限制");
+                    total += count; if (total > limit) throw new IOException("download-over-limit");
                     output.write(buffer, 0, count);
                 }
-                if (total == 0) throw new IOException("下载内容为空");
+                if (total == 0) throw new IOException("download-empty");
                 return output.toByteArray();
             }
         } finally { connection.disconnect(); }
@@ -899,25 +928,25 @@ final class AndroidUpdateController implements AutoCloseable {
         HttpsURLConnection connection = openFollowingRedirects(address, generation);
         try {
             int code = connection.getResponseCode();
-            if (code != HttpURLConnection.HTTP_OK) throw new IOException("下载服务器返回 HTTP " + code);
+            if (code != HttpURLConnection.HTTP_OK) throw new IOException("download-server-http-" + code);
             long declared = connection.getContentLength();
-            if (declared >= 0 && declared != artifact.size) throw new IOException("更新包大小与清单不一致");
+            if (declared >= 0 && declared != artifact.size) throw new IOException("package-size-manifest-mismatch");
             try (InputStream input = connection.getInputStream(); FileOutputStream output = new FileOutputStream(temporary)) {
                 byte[] buffer = new byte[64 * 1024]; long total = 0;
                 while (true) {
                     ensurePolicyCurrent(generation);
                     if (host.hasActiveDisplaySession()) throw new DeferredException();
                     int count = input.read(buffer); if (count < 0) break; if (count == 0) continue;
-                    total += count; if (total > artifact.size) throw new IOException("更新包超过清单大小");
+                    total += count; if (total > artifact.size) throw new IOException("package-over-manifest-size");
                     output.write(buffer, 0, count);
                 }
-                if (total != artifact.size) throw new IOException("更新包大小与清单不一致");
+                if (total != artifact.size) throw new IOException("package-size-manifest-mismatch");
                 output.getFD().sync();
             }
         } finally { connection.disconnect(); }
         if (!ArtifactIntegrity.verify(temporary, artifact.size, artifact.sha256)) {
             deleteQuietly(temporary);
-            throw new IOException("更新包 SHA-256 或大小不匹配");
+            throw new IOException("update-package-mismatch");
         }
     }
 
@@ -940,7 +969,7 @@ final class AndroidUpdateController implements AutoCloseable {
                 URL base = connection.getURL();
                 ensurePolicyCurrent(generation);
                 if (location == null || location.trim().isEmpty())
-                    throw new IOException("更新服务器重定向缺少地址");
+                    throw new IOException("update-redirect-missing");
                 URL next = new URL(base, location);
                 validateHttps(next);
                 ensurePolicyCurrent(generation);
@@ -949,7 +978,7 @@ final class AndroidUpdateController implements AutoCloseable {
                 if (!handedOff) connection.disconnect();
             }
         }
-        throw new IOException("更新地址重定向次数过多");
+        throw new IOException("update-redirect-limit");
     }
 
     private static HttpsURLConnection openHttps(String address) throws IOException {
@@ -965,17 +994,18 @@ final class AndroidUpdateController implements AutoCloseable {
     private static void validateHttps(URL url) throws IOException {
         if (!"https".equalsIgnoreCase(url.getProtocol()) || url.getHost() == null || url.getHost().isEmpty()
                 || url.getUserInfo() != null || url.getRef() != null)
-            throw new IOException("更新地址必须使用完整 HTTPS 地址");
+            throw new IOException("update-https-required");
     }
     private static byte[] readLimited(File file, long limit) throws IOException {
-        if (!file.isFile() || file.length() < 1 || file.length() > limit) throw new IOException("暂存更新清单不存在");
+        if (!file.isFile() || file.length() < 1 || file.length() > limit)
+            throw new IOException("staged-update-manifest-missing");
         try (InputStream input = new FileInputStream(file)) { return readLimited(input, limit); }
     }
     private static byte[] readLimited(InputStream input, long limit) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream(); byte[] buffer = new byte[8192]; long total = 0;
         while (true) { int count = input.read(buffer); if (count < 0) break; if (count == 0) continue;
-            total += count; if (total > limit) throw new IOException("下载内容超过限制"); output.write(buffer, 0, count); }
-        if (total == 0) throw new IOException("下载内容为空"); return output.toByteArray();
+            total += count; if (total > limit) throw new IOException("download-over-limit"); output.write(buffer, 0, count); }
+        if (total == 0) throw new IOException("download-empty"); return output.toByteArray();
     }
     private static void copy(File source, File destination) throws IOException {
         deleteQuietly(destination);
@@ -992,11 +1022,11 @@ final class AndroidUpdateController implements AutoCloseable {
         atomicReplace(temporary, destination);
     }
     private static void atomicReplace(File source, File destination) throws IOException {
-        if (destination.exists() && !destination.delete()) throw new IOException("无法替换旧更新文件");
-        if (!source.renameTo(destination)) { deleteQuietly(source); throw new IOException("无法保存更新文件"); }
+        if (destination.exists() && !destination.delete()) throw new IOException("replace-old-update-file-failed");
+        if (!source.renameTo(destination)) { deleteQuietly(source); throw new IOException("save-update-file-failed"); }
     }
     private void ensureDirectory() throws IOException {
-        if (!updateDirectory.isDirectory() && !updateDirectory.mkdirs()) throw new IOException("无法创建更新目录");
+        if (!updateDirectory.isDirectory() && !updateDirectory.mkdirs()) throw new IOException("create-update-directory-failed");
     }
     private String installationId() {
         String existing = preferences.getString(INSTALLATION, null);
@@ -1034,10 +1064,10 @@ final class AndroidUpdateController implements AutoCloseable {
     }
     private String downloadedStatus(ReleaseManifest.Artifact artifact, UpdateStateMachine.Action action) {
         if (host.hasActiveDisplaySession())
-            return "正式版 " + artifact.version + " 已下载，将在副屏断开后安装";
+            return s(R.string.update_downloaded_disconnect_install, artifact.version);
         return action == UpdateStateMachine.Action.START_INSTALL
-                ? "正式版 " + artifact.version + " 已下载，正在准备系统安装…"
-                : "正式版 " + artifact.version + " 已下载，等待手动安装";
+                ? s(R.string.update_downloaded_installing, artifact.version)
+                : s(R.string.update_downloaded_manual, artifact.version);
     }
     private void requestInstall(boolean explicit) {
         synchronized (policyLock) {
@@ -1063,11 +1093,45 @@ final class AndroidUpdateController implements AutoCloseable {
     private void publish(String value) {
         status = value; ui.post(() -> { if (!closed) host.updateStatusChanged(value); });
     }
-    private static String visibleFailure(Exception failure) {
+    private String s(int resource, Object... arguments) {
+        android.content.Context context = AppLanguage.wrap(activity);
+        return arguments.length == 0 ? context.getString(resource) : context.getString(resource, arguments);
+    }
+    private String installResultMessage(UpdateInstallAttempt.Result result) {
+        if (result.status == PackageInstaller.STATUS_PENDING_USER_ACTION)
+            return s(R.string.update_install_waiting_confirmation);
+        if (result.status == PackageInstaller.STATUS_SUCCESS) return s(R.string.update_install_complete);
+        if (result.status == PackageInstaller.STATUS_FAILURE_ABORTED) return s(R.string.update_install_cancelled);
+        String message = result.message == null ? "" : result.message.replaceAll("[\\p{Cntrl}]", " ").trim();
+        boolean messageChinese = containsHan(message);
+        if (message.isEmpty() || AppLanguage.isChinese(activity) != messageChinese)
+            return s(R.string.update_installer_incomplete);
+        return message.length() <= 100 ? message : message.substring(0, 100);
+    }
+    private String visibleFailure(Exception failure) {
         String message = failure.getMessage();
-        if (message == null || message.trim().isEmpty()) return "网络或校验失败，请稍后重试";
+        if ("update-package-mismatch".equals(message)) return s(R.string.update_package_mismatch);
+        if ("staged-update-protocol-newer".equals(message)) return s(R.string.update_staged_protocol_newer);
+        if ("staged-update-expired".equals(message)) return s(R.string.update_staged_expired);
+        if ("staged-update-verification-failed".equals(message)) return s(R.string.update_staged_verification_failed);
+        if ("apk-identity-mismatch".equals(message)) return s(R.string.update_apk_identity_mismatch);
+        if ("apk-signer-mismatch".equals(message)) return s(R.string.update_apk_signer_mismatch);
+        if ("update-cannot-install".equals(message)) return s(R.string.update_cannot_install);
+        if ("apk-size-changed-during-commit".equals(message)) return s(R.string.update_apk_changed_during_commit);
+        if (message == null || message.trim().isEmpty()) return s(R.string.update_generic_failure);
         message = message.replaceAll("[\\p{Cntrl}]", " ").trim();
+        if (AppLanguage.isChinese(activity) != containsHan(message)) return s(R.string.update_generic_failure);
         return message.length() <= 120 ? message : message.substring(0, 120);
+    }
+    private static boolean containsHan(String value) {
+        for (int i = 0; i < value.length();) {
+            int codePoint = value.codePointAt(i);
+            if (codePoint >= 0x3400 && codePoint <= 0x4dbf || codePoint >= 0x4e00 && codePoint <= 0x9fff
+                    || codePoint >= 0xf900 && codePoint <= 0xfaff || codePoint >= 0x20000 && codePoint <= 0x323af)
+                return true;
+            i += Character.charCount(codePoint);
+        }
+        return false;
     }
     private static String hex(byte[] bytes) {
         StringBuilder result = new StringBuilder(bytes.length * 2);

@@ -14,6 +14,12 @@
 - 严格限定原生端口 `27184, 27186, 27187, 27188, 27189, 27190, 27191, 27192`，拒绝浏览器端口 `27185`。增量分包器为每个载荷只分配一次缓冲，按实际 TCP 分片填充；包头、SPS/PPS、Annex-B、帧时间戳和尺寸均验证后才进入解码器。
 - 同一连接更换解码配置后，必须等新解码器确有有效输出 PTS 才继续上报；不会把先前累计的帧数与初始 `ptsUs=-1` 混在一起。电脑报告采集暂停期间不虚构提交进度，也不因普通的无新帧超时提前断开。
 
+## 界面语言
+
+连接页提供 **跟随系统 / 简体中文 / English**。应用把选择写入 ArkData Preferences 文件 `ui-language` 的 `app-language-v1` 键，并通过 Localization Kit 的 `i18n.System.setAppPreferredLanguage` 应用语言；快速连续选择按顺序串行写入，旧操作完成后不能覆盖更新选择。缺失或损坏值恢复为“跟随系统”。系统模式读取 `i18n.System.getSystemLanguage()`：所有 `zh-*`（包括 zh-CN、zh-HK、zh-TW）都显式选择与 `zh_CN` 资源匹配的 `zh-CN`，其他系统语言显式选择 `en`；回到前台会重新应用该规则。
+
+`entry/src/main/resources/base`、`en_US` 与 `zh_CN` 的字符串键完全相同，连接、常见错误、更新状态和设置都通过资源名读取。`AppScope` 的应用名称也提供三套键一致的资源。`tests/project-check.mjs` 会解析所有 JSON 资源，拒绝重复键、空值、语言键差异或源码引用缺失；这只是 Windows 上的源码检查，不能证明 API 12 设备会即时重载资源或不同厂商系统的语言匹配完全一致。
+
 ## stable 正式版更新
 
 首次运行默认选择“自动更新”。设置页提供三个会立即持久保存的选项：
@@ -61,13 +67,14 @@ node native/harmony/tests/project-check.mjs
 
 这分别检查纯 TypeScript 配对/分包/PTS 逻辑、与 Windows/Android 共用签名 fixture 的 P-256 互操作及严格更新策略、工程资源引用与关键协议约束；都不会连接电脑服务、改变显示器、打开 AppGallery 或执行 Harmony SDK 构建。
 
-2026-10-02 复核结果：**84 项实际纯 TypeScript 协议断言、64 项 stable 更新策略/签名断言、54 项工程/资源/关键源码路径静态检查通过**。更新断言用固定 P-256 SPKI 验证跨端 signed-envelope fixture，并覆盖篡改、三种更新模式及串行写入竞态、博客/GitHub 来源、最新发布时间选择、URL-only/顺序镜像等价、同时间冲突拒绝与持久 blocked floor、暂停权威、完整决定摘要防回退、未来协议状态、严格版本/构建号、0–100 灰度边界和 bucket 20 固定向量、重复平台/JSON 字段、整秒 UTC 与小数秒拒绝、带 query 的正式 HTTPS 下载 URL、userinfo/fragment 拒绝、应用市场/正式跳转严格 allowlist、时间及 cohort 策略。ArkTS SDK 类型检查、C++ 编译链接、Crypto Architecture Kit 真机验签、GitHub 重定向和 AppGallery 行为仍未验证，详见 `VERIFICATION.md`。
+2026-10-02 复核结果：**84 项实际纯 TypeScript 协议断言、64 项 stable 更新策略/签名断言、85 项工程/资源/关键源码路径静态检查通过**。静态检查额外确认英文/简中/base 与 AppScope 资源键完全一致、值非空、格式占位符一致、三种持久语言选择和页面/连接/更新状态的资源引用。更新断言用固定 P-256 SPKI 验证跨端 signed-envelope fixture，并覆盖篡改、三种更新模式及串行写入竞态、博客/GitHub 来源、最新发布时间选择、URL-only/顺序镜像等价、同时间冲突拒绝与持久 blocked floor、暂停权威、完整决定摘要防回退、未来协议状态、严格版本/构建号、0–100 灰度边界和 bucket 20 固定向量、重复平台/JSON 字段、整秒 UTC 与小数秒拒绝、带 query 的正式 HTTPS 下载 URL、userinfo/fragment 拒绝、应用市场/正式跳转严格 allowlist、时间及 cohort 策略。ArkTS SDK 类型检查、C++ 编译链接、Localization Kit 运行时切换、Crypto Architecture Kit 真机验签、GitHub 重定向和 AppGallery 行为仍未验证，详见 `VERIFICATION.md`。
 
 ## 文件结构
 
 | 路径 | 职责 |
 | --- | --- |
 | `entry/src/main/ets/pages/Index.ets` | ArkUI 连接、Surface 生命周期、停止与旋转重连 |
+| `entry/src/main/ets/localization/AppLocalization.ets` | 三种持久语言选择、Localization Kit 应用首选语言与资源读取 |
 | `entry/src/main/ets/protocol/Session.ets` | TLS 证书固定、认证、配置/视频接收、0x14 统计 |
 | `entry/src/main/ets/protocol/Wire.ts` | 有界二进制分包与严格连接信息解析 |
 | `entry/src/main/ets/protocol/DisplayProfile.ets` | 读取当前物理尺寸、方向和刷新率 |

@@ -62,12 +62,12 @@ final class NativeTransport {
                     try self.send(.profile, payload: initialProfile) { [weak self] in
                         self?.onReady?(); self?.readHeader()
                     }
-                } catch { self.fail("无法创建认证请求", terminal: true) }
+                } catch { self.fail(L10n.text("transport.authRequestFailed"), terminal: true) }
             case .failed:
-                self.fail(self.pinRejected ? "电脑证书不匹配或已过期，请检查日期并重新扫描当前二维码。" : "网络连接失败，请检查同一 Wi-Fi、电脑会话和本地网络权限。",
+                self.fail(self.pinRejected ? L10n.text("transport.pinRejected") : L10n.text("transport.networkFailed"),
                           terminal: self.pinRejected)
             case .cancelled:
-                if !self.ended { self.fail("连接已关闭", terminal: false) }
+                if !self.ended { self.fail(L10n.text("transport.closed"), terminal: false) }
             default: break
             }
         }
@@ -76,7 +76,7 @@ final class NativeTransport {
         timer.setEventHandler { [weak self] in
             guard let self, !self.ended else { return }
             if ProcessInfo.processInfo.systemUptime - self.lastActivity > 15 {
-                self.fail("电脑长时间没有响应，将重新连接。", terminal: false)
+                self.fail(L10n.text("transport.timeout"), terminal: false)
             }
         }
         self.timer = timer; timer.resume()
@@ -86,7 +86,7 @@ final class NativeTransport {
     func send(_ type: PacketType, payload: Data, completion: (() -> Void)? = nil) throws {
         guard !ended else { throw TabLinkError.invalid("连接已经关闭") }
         guard pending.count < 64 else {
-            fail("发送队列已满，重新连接以释放鼠标状态。", terminal: false)
+            fail(L10n.text("transport.sendQueueFull"), terminal: false)
             throw TabLinkError.invalid("发送队列已满")
         }
         pending.append((try PacketHeader.encode(type, payload: payload), completion))
@@ -100,7 +100,7 @@ final class NativeTransport {
         connection.send(content: item.0, completion: .contentProcessed { [weak self] error in
             guard let self, !self.ended else { return }
             self.sending = false
-            if error != nil { self.fail("发送失败，正在重新连接。", terminal: false); return }
+            if error != nil { self.fail(L10n.text("transport.sendFailed"), terminal: false); return }
             item.1?(); self.pumpSend()
         })
     }
@@ -117,7 +117,7 @@ final class NativeTransport {
                         self.queue.async { [weak self] in self?.readHeader() }
                     })
                 }
-            } catch { self.fail("电脑发送了无效或不兼容的数据包。", terminal: true) }
+            } catch { self.fail(L10n.text("transport.invalidPacket"), terminal: true) }
         }
     }
 
@@ -126,7 +126,7 @@ final class NativeTransport {
         connection?.receive(minimumIncompleteLength: count, maximumLength: count) { [weak self] data, _, complete, error in
             guard let self, !self.ended else { return }
             guard error == nil, let data, data.count == count else {
-                self.fail(complete ? "电脑结束了当前连接，将重新协商显示参数。" : "网络数据中断，将重新连接。", terminal: false)
+                self.fail(complete ? L10n.text("transport.hostClosed") : L10n.text("transport.dataInterrupted"), terminal: false)
                 return
             }
             self.lastActivity = ProcessInfo.processInfo.systemUptime

@@ -496,7 +496,7 @@ public final class VideoDecoder implements AutoCloseable {
         String reason = decoderSurface == null || !decoderSurface.isValid() ? "surface-unavailable"
                 : candidates.isEmpty() ? "no-compatible-decoder"
                 : nextCandidate >= candidates.size() ? "candidates-exhausted" : "initialization-failed";
-        try { listener.onError("H.264 解码中断（" + reason + "）"); }
+        try { listener.onError("h264-decoder-interrupted:" + reason); }
         catch (RuntimeException ignored) { }
         close();
     }

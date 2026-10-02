@@ -17,6 +17,7 @@
     <RepositoryUrl>https://github.com/linjierd/TabLink</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
   </PropertyGroup>
+  <ItemGroup><ProjectReference Include="../TabLink.Core/TabLink.Core.csproj" /></ItemGroup>
   <ItemGroup>
     <Compile Include="../TabLink.Windows/VirtualDisplayManager.cs" Link="DisplaySafety/VirtualDisplayManager.cs" />
     <Compile Include="../TabLink.Windows/DisplayLease.cs" Link="DisplaySafety/DisplayLease.cs" />

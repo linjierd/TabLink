@@ -1,0 +1,3 @@
+"CFBundleDisplayName" = "TabLink Second Display";
+"NSCameraUsageDescription" = "Scan the local connection QR code shown by TabLink for Windows.";
+"NSLocalNetworkUsageDescription" = "Connect securely to the PC over the local network and use this device as a second display.";

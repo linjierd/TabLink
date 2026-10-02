@@ -39,8 +39,8 @@ internal sealed partial class MainForm
         catch(Exception ex) when(ex is IOException or UnauthorizedAccessException or InvalidDataException or FormatException or
             System.Text.Json.JsonException or System.Security.Cryptography.CryptographicException or System.Security.SecurityException)
         {
-            updateConfigurationError="正式版更新配置当前不可用："+SafeError(ex);
-            Log("自动更新配置未启用："+SafeError(ex));
+            updateConfigurationError=Ui("正式版更新配置当前不可用：","Stable-update configuration is unavailable: ")+SafeError(ex);
+            Log(Ui("自动更新配置未启用：","Automatic-update configuration was not enabled: ")+SafeError(ex));
             RefreshUpdatePreferenceUi();
         }
     }
@@ -53,9 +53,9 @@ internal sealed partial class MainForm
         if(coordinator is not null)
             coordinator.ReadyChanged-=OnUpdateReadyChanged;
         try{if(checks is not null)await Task.Run(checks.Cancel);}
-        catch(Exception ex){Log("取消自动更新后台任务时出现错误："+SafeError(ex));}
+            catch(Exception ex){Log(Ui("取消自动更新后台任务时出现错误：","An error occurred while cancelling the automatic-update background task: ")+SafeError(ex));}
         try{if(coordinator is not null)await coordinator.WaitForWorkerAsync();}
-        catch(Exception ex){Log("自动更新后台任务结束时出现错误："+SafeError(ex));}
+            catch(Exception ex){Log(Ui("自动更新后台任务结束时出现错误：","The automatic-update background task ended with an error: ")+SafeError(ex));}
         finally
         {
             coordinator?.Dispose();
@@ -88,12 +88,13 @@ internal sealed partial class MainForm
         if(!CanInstallReadyUpdateFromCurrentLocation)
         {
             RestoreFromTray();
-            SetStatus("更新已安全下载；请从正式安装目录启动后安装："+ExpectedProtectedInstallDirectory);
+            SetStatus("更新已安全下载；请从正式安装目录启动后安装："+ExpectedProtectedInstallDirectory,
+                "The update was downloaded and verified. Start TabLink from the protected install directory to install: "+ExpectedProtectedInstallDirectory);
             RefreshUpdatePreferenceUi();
             return;
         }
         RestoreFromTray();
-        SetStatus("正在结束连接，随后安装正式版更新…");
+        SetStatus("正在结束连接，随后安装正式版更新…","Stopping connections before installing the stable update…");
         await ExitAsync(requireReadyUpdater:true);
         if(!closing)RefreshUpdatePreferenceUi();
     }
@@ -109,18 +110,18 @@ internal sealed partial class MainForm
             return;
         }
         trayUpdate.Visible = update is not null;
-        trayUpdate.Text = update is null ? "没有待安装更新" : "重启并安装正式版 " + update.Version;
+        trayUpdate.Text = update is null ? Ui("没有待安装更新","No update is ready to install") : Ui("重启并安装正式版 ","Restart and install stable release ") + update.Version;
         if (update is not null && announcedUpdateRelease != update.ReleaseId)
         {
             announcedUpdateRelease = update.ReleaseId;
             var message=!CanInstallReadyUpdateFromCurrentLocation
-                ? "版本 "+update.Version+" 已安全下载。请从正式安装目录启动后安装。"
+                ? Ui("版本 "+update.Version+" 已安全下载。请从正式安装目录启动后安装。","Version "+update.Version+" was downloaded and verified. Start from the protected install directory to install it.")
                 : CurrentUpdateMode==TabLink.Core.UpdateMode.DownloadThenAsk
-                ? "版本 "+update.Version+" 已安全下载。请从设置页或托盘中选择重启安装。"
+                ? Ui("版本 "+update.Version+" 已安全下载。请从设置页或托盘中选择重启安装。","Version "+update.Version+" was downloaded and verified. Choose restart and install in Settings or the tray.")
                 : HasAnySessions||HasPendingNetworkStart||connectionStarts.IsStarting
-                    ? "版本 " + update.Version + " 已安全下载。当前副屏保持连接；最后一台设备停止后自动安装。"
-                    : "版本 " + update.Version + " 已安全下载。电脑空闲时将自动重启并安装。";
-            tray.ShowBalloonTip(5000, "TabLink 正式版更新已准备完成", message, ToolTipIcon.Info);
+                    ? Ui("版本 " + update.Version + " 已安全下载。当前副屏保持连接；最后一台设备停止后自动安装。","Version " + update.Version + " was downloaded and verified. The current display stays connected; installation starts after the last device stops.")
+                    : Ui("版本 " + update.Version + " 已安全下载。电脑空闲时将自动重启并安装。","Version " + update.Version + " was downloaded and verified. TabLink will restart and install while the computer is idle.");
+            tray.ShowBalloonTip(5000, Ui("TabLink 正式版更新已准备完成","TabLink stable update is ready"), message, ToolTipIcon.Info);
         }
         RefreshUpdatePreferenceUi();
         EvaluateAutomaticUpdateApplication();
@@ -164,8 +165,8 @@ internal sealed partial class MainForm
             updateCoordinator?.Ready is not null,hasConnectionWork,busy,stopping,closing||exitStarting||updateExitStarted)!=
             AutomaticUpdateApplyDisposition.ScheduleWhenIdle)return;
         updateExitStarted = true;
-        SetStatus("正在安装已验证的正式版更新…");
-        Log("电脑当前没有副屏会话，开始自动安装已下载的正式版更新。");
+        SetStatus("正在安装已验证的正式版更新…","Installing the verified stable update…");
+        Log(Ui("电脑当前没有副屏会话，开始自动安装已下载的正式版更新。","No display session is active; beginning automatic installation of the downloaded stable update."));
         await ExitAsync(requireReadyUpdater: true);
     }
 

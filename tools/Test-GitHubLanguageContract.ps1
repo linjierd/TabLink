@@ -24,6 +24,10 @@ function Read-StrictUtf8([string]$RelativePath) {
     }
 }
 
+function Test-OrdinalContains([string]$Text, [string]$Value) {
+    return $Text.IndexOf($Value, [StringComparison]::Ordinal) -ge 0
+}
+
 $versionIdentity = Get-Content -LiteralPath (Join-Path $root 'eng\version.json') -Raw | ConvertFrom-Json
 $version = [string]$versionIdentity.version
 $pairs = @(
@@ -74,12 +78,11 @@ foreach ($target in @(
     }
 }
 $englishAuthors = Read-StrictUtf8 'AUTHORS.md'
-if (-not $englishAuthors.Contains('[Linjie / Development Notes](https://linjie.space/)',
-        [StringComparison]::Ordinal)) {
+if (-not (Test-OrdinalContains $englishAuthors '[Linjie / Development Notes](https://linjie.space/)')) {
     throw 'English author page must use the English blog label.'
 }
 $englishContributing = Read-StrictUtf8 'CONTRIBUTING.md'
-if (-not $englishContributing.Contains('After editing the catalogue,', [StringComparison]::Ordinal)) {
+if (-not (Test-OrdinalContains $englishContributing 'After editing the catalogue,')) {
     throw 'English contribution guidance must use the en-SG catalogue spelling in prose.'
 }
 
@@ -128,7 +131,7 @@ foreach ($requiredHeading in @(
         '## 变更内容',
         '## 验证',
         '## 安全与隐私')) {
-    if (-not $pullRequestTemplate.Contains($requiredHeading, [StringComparison]::Ordinal)) {
+    if (-not (Test-OrdinalContains $pullRequestTemplate $requiredHeading)) {
         throw "Pull request template is missing bilingual heading: $requiredHeading"
     }
 }

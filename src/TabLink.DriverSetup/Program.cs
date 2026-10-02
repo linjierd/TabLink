@@ -1,10 +1,21 @@
 using System.Text.Json;
 using System.Globalization;
+using TabLink.Core;
 
 namespace TabLink.DriverSetup;
 
 internal static class Program
 {
+    private static readonly ProductLanguage UiLanguage = new LanguagePreferencesStore(Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TabLink", "language.json"))
+        .Load(CultureInfo.CurrentUICulture).EffectiveLanguage;
+    private static string Ui(string chinese, string english) => UiLanguage == ProductLanguage.SimplifiedChinese ? chinese : english;
+    private static string ResultMessage(InstallResult result) => UiLanguage == ProductLanguage.SimplifiedChinese
+        ? result.Message
+        : result.Success
+            ? "The TabLink display-driver operation completed successfully."
+            : "The TabLink display-driver operation failed. Open Diagnostics & logs in TabLink for details.";
+
     [STAThread]
     private static int Main(string[] args)
     {
@@ -19,7 +30,7 @@ internal static class Program
         }
         catch (ArgumentException ex)
         {
-            if (!quiet) MessageBox.Show(ex.Message, "TabLink 驱动管理", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            if (!quiet) MessageBox.Show(Ui(ex.Message,"The TabLink driver command is invalid."), Ui("TabLink 驱动管理","TabLink driver management"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return 2;
         }
         // There is deliberately no auto-install entry point, service, download, or
@@ -34,7 +45,7 @@ internal static class Program
         var control = args.Length == 1 && args[0] is "--install" or "--uninstall" or "--collect-idle-pool";
         if (!profile && !single && !removeSingle && !pool && !tablet && !control)
         {
-            if (!quiet) MessageBox.Show("请从 TabLink 启动此程序。可用操作：--install、--prepare-tablet-only <child-id> <parent-id>、--prepare-single-display 宽度 高度 刷新率、--remove-session-display，以及显式单屏维护命令。", "TabLink 驱动管理", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            if (!quiet) MessageBox.Show(Ui("请从 TabLink 启动此程序。可用操作：--install、--prepare-tablet-only <child-id> <parent-id>、--prepare-single-display 宽度 高度 刷新率、--remove-session-display，以及显式单屏维护命令。","Start this program from TabLink. Supported operations include install, prepare one display, remove the session display and explicit single-display maintenance commands."), Ui("TabLink 驱动管理","TabLink driver management"), MessageBoxButtons.OK, MessageBoxIcon.Information);
             return 2;
         }
 
@@ -80,11 +91,11 @@ internal static class Program
         }
         catch (Exception ex)
         {
-            if (!quiet) MessageBox.Show(result.Message + "\n\n无法保存安装结果：" + ex.Message, "TabLink 驱动安装", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            if (!quiet) MessageBox.Show(ResultMessage(result) + Ui("\n\n无法保存安装结果：" + ex.Message,"\n\nThe operation result could not be saved."), Ui("TabLink 驱动安装","TabLink driver installation"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return 1;
         }
 
-        if (!quiet) MessageBox.Show(result.Message, "TabLink 驱动安装", MessageBoxButtons.OK,
+        if (!quiet) MessageBox.Show(ResultMessage(result), Ui("TabLink 驱动安装","TabLink driver installation"), MessageBoxButtons.OK,
             result.Success ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
         return result.Success ? 0 : 1;
     }

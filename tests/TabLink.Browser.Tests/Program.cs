@@ -17,6 +17,59 @@ if(args.Length is 2 or 5&&args[0]=="--chromium-smoke")
 
 var results=new List<string>();
 void Check(bool value,string message){if(!value)throw new Exception(message);var line="PASS "+message;results.Add(line);Console.WriteLine(line);}
+var missingAdb=WindowsUiText.TranslateRuntime("尚未配置 Android 平台工具，请先选择 adb.exe。",ProductLanguage.English);
+var exclusionSaved=WindowsUiText.TranslateRuntime("排除规则已添加并保存。",ProductLanguage.English);
+Check(missingAdb.Contains("Platform-Tools",StringComparison.Ordinal)&&
+    exclusionSaved.Contains("exclusion rule",StringComparison.OrdinalIgnoreCase)&&missingAdb!=exclusionSaved&&
+    !WindowsUiText.ContainsHan(missingAdb)&&!WindowsUiText.ContainsHan(exclusionSaved),
+    "Distinct owned log events retain meaningful English translations");
+var prefixedFailure=WindowsUiText.TranslateRuntime(
+    "Network-display preparation failed: ADB 错误：AdbExecutionException。",ProductLanguage.English);
+var nativeFailure=WindowsUiText.TranslateNativeSessionLog(
+    "设备 27186 副屏准备失败：内部失败。",ProductLanguage.English);
+Check(prefixedFailure.StartsWith("Network-display preparation failed:",StringComparison.Ordinal)&&
+    nativeFailure.StartsWith("Device 27186 display preparation failed:",StringComparison.Ordinal)&&
+    !WindowsUiText.ContainsHan(prefixedFailure)&&!WindowsUiText.ContainsHan(nativeFailure),
+    "English diagnostic prefixes survive redacted Chinese error suffixes");
+var encoderEvent=WindowsUiText.TranslateRuntime("画质计划已更新：12.5 Mbps；保持同一连接与唯一副屏，重建本次编码器。",ProductLanguage.English);
+var updaterEvent=WindowsUiText.TranslateRuntime("正式版 0.9.0 已准备完成；TabLink 退出后将自动安装并验证启动。",ProductLanguage.English);
+Check(encoderEvent.Contains("12.5 Mbps",StringComparison.Ordinal)&&encoderEvent.Contains("encoder",StringComparison.OrdinalIgnoreCase)&&
+    updaterEvent.Contains("0.9.0",StringComparison.Ordinal)&&updaterEvent.Contains("Stable release",StringComparison.Ordinal)&&
+    encoderEvent!=updaterEvent&&!WindowsUiText.ContainsHan(encoderEvent)&&!WindowsUiText.ContainsHan(updaterEvent),
+    "Dynamic encoder and updater logs retain distinct English meaning and values");
+var sentHealth=WindowsUiText.TranslateHealthDetail("本次连接已发送 1,234 帧",ProductLanguage.English);
+var presentedHealth=WindowsUiText.TranslateHealthDetail("收到 Surface 呈现回调 987 帧",ProductLanguage.English);
+var pausedHealth=WindowsUiText.TranslateHealthDetail("安全桌面或采集恢复期间保留连接",ProductLanguage.English);
+Check(sentHealth.Contains("1,234",StringComparison.Ordinal)&&sentHealth.Contains("sent",StringComparison.OrdinalIgnoreCase)&&
+    presentedHealth.Contains("987",StringComparison.Ordinal)&&presentedHealth.Contains("Surface",StringComparison.Ordinal)&&
+    pausedHealth.Contains("connection is retained",StringComparison.OrdinalIgnoreCase)&&
+    sentHealth!=presentedHealth&&presentedHealth!=pausedHealth&&
+    !WindowsUiText.ContainsHan(sentHealth)&&!WindowsUiText.ContainsHan(presentedHealth)&&!WindowsUiText.ContainsHan(pausedHealth),
+    "Health evidence keeps distinct English stages and numeric values");
+var interrupted=WindowsUiText.TranslateRuntime("连接中断，等待平板重连：内部网络失败",ProductLanguage.English);
+var encryptedEnded=WindowsUiText.TranslateRuntime("加密连接已结束，等待平板重新连接（IOException, 0x80004005）。",ProductLanguage.English);
+Check(interrupted.Contains("waiting for the tablet to reconnect",StringComparison.OrdinalIgnoreCase)&&
+    encryptedEnded.Contains("waiting for the tablet to reconnect",StringComparison.OrdinalIgnoreCase)&&
+    encryptedEnded.Contains("IOException",StringComparison.Ordinal)&&encryptedEnded.Contains("0x80004005",StringComparison.Ordinal)&&
+    !WindowsUiText.ContainsHan(interrupted)&&!WindowsUiText.ContainsHan(encryptedEnded),
+    "Primary connection status keeps safe reconnect meaning and error codes in English");
+var selectedEncoder=WindowsUiText.TranslateRuntime("已选择 NVIDIA NVENC：1920 × 1200 @ 60 fps（驱动降级原因）。 本次连接内的画质与捕获恢复继续使用此后端。",ProductLanguage.English);
+var selectedSoftware=WindowsUiText.TranslateRuntime("已选择 软件 x264：1920 × 1200 @ 30 fps（软件兼容模式最高 30 fps）。 本次连接内的画质与捕获恢复继续使用此后端。",ProductLanguage.English);
+var encoderBackend=WindowsUiText.TranslateRuntime("H.264 捕获后端：ddagrab；编码器：h264_nvenc；回退原因",ProductLanguage.English);
+var encoderPriority=WindowsUiText.TranslateRuntime("软件编码器优先级无法降低：访问被拒绝",ProductLanguage.English);
+var softwareLimit=WindowsUiText.TranslateEncoderDowngradeReason("设备请求 90 fps，软件兼容模式最高 30 fps",ProductLanguage.English);
+var pathLimit=WindowsUiText.TranslateEncoderDowngradeReason("设备请求 90 fps，当前编码路径安全上限为 60 fps",ProductLanguage.English);
+Check(selectedEncoder.Contains("NVIDIA NVENC",StringComparison.Ordinal)&&selectedEncoder.Contains("1920 × 1200 @ 60 fps",StringComparison.Ordinal)&&
+    selectedSoftware.Contains("Software x264",StringComparison.Ordinal)&&selectedSoftware.Contains("30 fps",StringComparison.Ordinal)&&
+    encoderBackend.Contains("ddagrab",StringComparison.Ordinal)&&encoderBackend.Contains("h264_nvenc",StringComparison.Ordinal)&&
+    encoderPriority.Contains("priority",StringComparison.OrdinalIgnoreCase)&&
+    softwareLimit.Contains("90 fps",StringComparison.Ordinal)&&softwareLimit.Contains("30 fps",StringComparison.Ordinal)&&
+    pathLimit.Contains("90 fps",StringComparison.Ordinal)&&pathLimit.Contains("60 fps",StringComparison.Ordinal)&&
+    WindowsUiText.TranslateEncoderBackendName("软件 x264",ProductLanguage.English)=="Software x264"&&
+    !WindowsUiText.ContainsHan(selectedEncoder)&&!WindowsUiText.ContainsHan(selectedSoftware)&&
+    !WindowsUiText.ContainsHan(encoderBackend)&&!WindowsUiText.ContainsHan(encoderPriority)&&
+    !WindowsUiText.ContainsHan(softwareLimit)&&!WindowsUiText.ContainsHan(pathLimit),
+    "Encoder status templates preserve backend and frame-rate evidence in English");
 async Task Eventually(Func<bool> value,string description,int ms=6000)
 {var until=DateTime.UtcNow.AddMilliseconds(ms);while(!value()&&DateTime.UtcNow<until)await Task.Delay(25);Check(value(),description);}
 var storage=Path.Combine(Path.GetTempPath(),"TabLink-Browser-Test-"+Guid.NewGuid().ToString("N"));
@@ -52,9 +105,18 @@ try
     Check(offer.Uri.StartsWith(host.BaseUri+"/#token=")&&offer.ExpiresUtc>DateTimeOffset.UtcNow.AddMinutes(4),"Pairing uses fragment and five-minute lifetime");
     using var handler=new HttpClientHandler{ServerCertificateCustomValidationCallback=(_,cert,_,error)=>TestClient.Trusted(cert!,caPublic,error)};
     using var http=new HttpClient(handler);
-    Check((await http.GetStringAsync(host.BaseUri+"/")).Contains("浏览器副屏"),"HTTPS serves embedded offline client");
+    var page=await http.GetStringAsync(host.BaseUri+"/");
+    Check(page.Contains("Browser display")&&page.Contains("id=\"language\"")&&page.Contains("id=\"viewerLanguage\"")&&
+        page.Contains("value=\"system\"")&&page.Contains("value=\"zh-CN\"")&&page.Contains("value=\"en\""),
+        "HTTPS serves the English-first offline client with system, Chinese and English choices");
     using var response=await http.GetAsync(host.BaseUri+"/client.js");
+    var clientScript=await response.Content.ReadAsStringAsync();
     Check(response.Headers.Contains("Content-Security-Policy")&&response.Headers.CacheControl?.NoStore==true,"No-store and CSP protect pairing page");
+    Check(clientScript.Contains("navigator.language")&&clientScript.Contains("localStorage.getItem(languageStorageKey)")&&
+        clientScript.Contains("value===\"system\"||value===\"zh-CN\"||value===\"en\"")&&
+        clientScript.Contains("[\"language\",\"viewerLanguage\"]")&&
+        clientScript.Contains("statusKey(hostStatusKey(message))")&&!clientScript.Contains("status(message.message)"),
+        "Browser language follows navigator by default, persists all three modes and maps host states locally");
     using(var ordinary=new HttpClient())
     {
         bool rejected=false;try{await ordinary.GetStringAsync(host.BaseUri);}catch(HttpRequestException){rejected=true;}

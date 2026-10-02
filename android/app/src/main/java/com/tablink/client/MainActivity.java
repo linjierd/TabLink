@@ -2,6 +2,7 @@ package com.tablink.client;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.Context;
 import android.content.Intent;
 import android.content.ActivityNotFoundException;
 import android.content.ClipboardManager;
@@ -101,6 +102,7 @@ public final class MainActivity extends Activity {
     private String configurationError;
     private volatile boolean renderPacingEnabled = true;
     private boolean activityStarted;
+    private Context localizedContext;
     private boolean brightnessOverrideActive;
     private float previousWindowBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE;
     private Session brightnessOwner;
@@ -127,8 +129,13 @@ public final class MainActivity extends Activity {
         }
     };
 
+    @Override protected void attachBaseContext(Context base) {
+        super.attachBaseContext(AppLanguage.wrap(base));
+    }
+
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        localizedContext = this;
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         preferences = getSharedPreferences("display", MODE_PRIVATE);
         hudStyle = new HudStyle(preferences.getInt("hudPosition", 0),
@@ -277,7 +284,8 @@ public final class MainActivity extends Activity {
                             ? trustedComputer.certificateSha256
                             : networkPairing != null ? networkPairing.certificateSha256 : null;
                     if (parsedPairing.certificateSha256.equals(activeCertificate)) {
-                        android.widget.Toast.makeText(this, "当前会话正在使用这台可信电脑", android.widget.Toast.LENGTH_SHORT).show();
+                        android.widget.Toast.makeText(this, tr(R.string.toast_current_trusted_computer),
+                                android.widget.Toast.LENGTH_SHORT).show();
                         return ConfigurationDecision.IGNORED;
                     }
                     pendingExternalPairing = parsedPairing;
@@ -294,7 +302,8 @@ public final class MainActivity extends Activity {
                 }
             } catch (IllegalArgumentException invalid) {
                 if (reentry && hasLiveSession) {
-                    android.widget.Toast.makeText(this, "已忽略无效的 TabLink 连接链接", android.widget.Toast.LENGTH_SHORT).show();
+                    android.widget.Toast.makeText(this, tr(R.string.toast_invalid_connection_ignored),
+                            android.widget.Toast.LENGTH_SHORT).show();
                     return ConfigurationDecision.IGNORED;
                 }
                 // Invalid initial links follow the normal configuration-error path below.
@@ -361,13 +370,13 @@ public final class MainActivity extends Activity {
             performance.setMaxWidth(Math.max(dp(100), r - l - dp(24)));
         });
         createConnectionPanel();
-        performance = text("TabLink · 等待连接", 12, Color.WHITE);
+        performance = text(tr(R.string.status_waiting_connection), 12, Color.WHITE);
         performance.setBackgroundColor(Color.TRANSPARENT);
         performance.setShadowLayer(dp(1), 0, 0, Color.BLACK);
         performance.setPadding(dp(8), dp(8), dp(8), dp(8));
         performance.setMinHeight(dp(44));
         performance.setGravity(Gravity.CENTER_VERTICAL);
-        performance.setContentDescription("统计信息；长按打开显示设置");
+        performance.setContentDescription(tr(R.string.hud_content_description));
         performance.setOnLongClickListener(v -> { showSettings(); return true; });
         content.addView(performance, new FrameLayout.LayoutParams(-2, -2));
         applyHudStyle(false);
@@ -382,21 +391,21 @@ public final class MainActivity extends Activity {
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setGravity(Gravity.CENTER_VERTICAL);
         panel.setPadding(dp(28), dp(60), dp(28), dp(32));
-        TextView title = text("TabLink · 平板副屏", 28, Color.WHITE);
+        TextView title = text(tr(R.string.home_title), 28, Color.WHITE);
         title.setTypeface(null, android.graphics.Typeface.BOLD);
         panel.addView(title);
-        help = text("无线或 USB 数据线，把平板变成电脑的第二块屏幕。", 16, Color.rgb(190, 204, 219));
+        help = text(tr(R.string.home_subtitle), 16, Color.rgb(190, 204, 219));
         help.setPadding(0, dp(12), 0, dp(22));
         panel.addView(help);
-        Button scan = button("扫描电脑二维码");
+        Button scan = button(tr(R.string.scan_computer_qr));
         scan.setBackgroundTintList(android.content.res.ColorStateList.valueOf(ACCENT));
         scan.setTextColor(BACKGROUND);
         scan.setOnClickListener(v -> startScanner());
         panel.addView(scan, new LinearLayout.LayoutParams(-1, dp(56)));
-        Button paste = button("粘贴连接链接");
+        Button paste = button(tr(R.string.paste_connection_link));
         paste.setOnClickListener(v -> showPasteDialog());
         panel.addView(paste, new LinearLayout.LayoutParams(-1, dp(56)));
-        reconnectPairing = button("重连上次配对的电脑");
+        reconnectPairing = button(tr(R.string.reconnect_last_computer));
         reconnectPairing.setOnClickListener(v -> {
             TrustedComputer saved = loadTrustedComputer();
             if (saved != null) {
@@ -408,17 +417,16 @@ public final class MainActivity extends Activity {
         });
         panel.addView(reconnectPairing, new LinearLayout.LayoutParams(-1, dp(56)));
         refreshSavedPairing();
-        TextView instructions = text("Wi-Fi：平板和电脑连接同一局域网，再扫描电脑端显示的二维码。\n\n"
-                + "USB：连接数据线，在系统设置中开启“USB 网络共享”，然后扫描电脑端的 USB 网络二维码。无需 USB 调试。", 14, Color.LTGRAY);
+        TextView instructions = text(tr(R.string.connection_instructions), 14, Color.LTGRAY);
         instructions.setPadding(0, dp(22), 0, dp(10));
         panel.addView(instructions);
-        Button tether = button("打开 USB 网络共享设置");
+        Button tether = button(tr(R.string.open_usb_tethering_settings));
         tether.setOnClickListener(v -> openTetherSettings());
         panel.addView(tether, new LinearLayout.LayoutParams(-1, dp(52)));
-        TextView legacy = text("已配置 ADB 的设备仍可由电脑端启动。播放时长按统计文字，或使用返回手势打开设置。", 12, Color.GRAY);
+        TextView legacy = text(tr(R.string.legacy_adb_hint), 12, Color.GRAY);
         legacy.setPadding(0, dp(14), 0, dp(12));
         panel.addView(legacy);
-        status = text("请选择连接方式", 14, ACCENT);
+        status = text(tr(R.string.status_choose_connection), 14, ACCENT);
         status.setPadding(0, dp(8), 0, dp(8));
         panel.addView(status);
         scroll.addView(panel, new ScrollView.LayoutParams(-1, -1));
@@ -430,7 +438,7 @@ public final class MainActivity extends Activity {
         TrustedComputer previous = loadTrustedComputer();
         try {
             if (previous == null) throw new IllegalArgumentException("missing");
-            reconnectPairing.setText("重连可信电脑 · " + previous.lastHost);
+            reconnectPairing.setText(tr(R.string.reconnect_trusted_computer, previous.lastHost));
             reconnectPairing.setVisibility(View.VISIBLE);
         } catch (IllegalArgumentException missing) {
             reconnectPairing.setVisibility(View.GONE);
@@ -468,13 +476,13 @@ public final class MainActivity extends Activity {
     private void persistTrustedComputerFromSession(Session source, TrustedComputer computer) throws IOException {
         synchronized (trustedComputerLock) {
             if (session != source || !source.running)
-                throw new IOException("连接已结束，不保存过期的可信电脑记录");
+                throw new IOException("trusted-record-stale-session");
             boolean saved = getSharedPreferences("trustedComputer", MODE_PRIVATE).edit()
                     .putString("hostId", computer.hostId)
                     .putString("certificateSha256", computer.certificateSha256)
                     .putString("lastHost", computer.lastHost)
                     .putInt("port", computer.port).commit();
-            if (!saved) throw new IOException("无法保存可信电脑记录");
+            if (!saved) throw new IOException("trusted-record-save-failed");
         }
         ui.post(() -> {
             if (session != source) return;
@@ -531,7 +539,7 @@ public final class MainActivity extends Activity {
         setIntent(new Intent(this, MainActivity.class).setAction(Intent.ACTION_MAIN));
         if (settingsDialog != null) settingsDialog.dismiss();
         refreshSavedPairing();
-        status.setText("请选择连接方式；已登记电脑可点“重连可信电脑”自动发现");
+        status.setText(tr(R.string.status_choose_connection_registered));
     }
 
     @SuppressWarnings("deprecation")
@@ -561,7 +569,7 @@ public final class MainActivity extends Activity {
             if (activityStarted) connect();
             return true;
         } catch (IllegalArgumentException invalid) {
-            status.setText(invalid.getMessage());
+            status.setText(tr(R.string.pairing_invalid));
             return false;
         }
     }
@@ -575,16 +583,16 @@ public final class MainActivity extends Activity {
         boolean replacing = loadTrustedComputer() != null || trustedComputer != null
                 || activeSession != null && activeSession.running;
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle(replacing ? "确认更换可信电脑" : "确认连接这台电脑")
-                .setMessage((replacing ? "外部链接请求把当前连接更换为 " : "外部链接请求连接 ") + pending.host + "。\n\n"
-                        + "证书：" + fingerprint + "…\n\n"
-                        + "只有这是你刚刚主动打开的 TabLink 二维码或连接链接时，才继续连接。")
-                .setPositiveButton("允许并连接", (ignored, which) -> {
+                .setTitle(tr(replacing ? R.string.pairing_replace_title : R.string.pairing_connect_title))
+                .setMessage(tr(replacing ? R.string.pairing_replace_message : R.string.pairing_connect_message,
+                        pending.host, fingerprint))
+                .setPositiveButton(tr(R.string.action_allow_connect), (ignored, which) -> {
                     if (pendingExternalPairing != pending) return;
                     pendingExternalPairing = null;
                     acceptPairing(pending.toPrivateUri());
                 })
-                .setNegativeButton(replacing ? "保留当前电脑" : "取消", (ignored, which) -> rejectPairingReplacement(pending))
+                .setNegativeButton(tr(replacing ? R.string.action_keep_current_computer : R.string.action_cancel),
+                        (ignored, which) -> rejectPairingReplacement(pending))
                 .create();
         pairingReplacementDialog = dialog;
         dialog.setOnDismissListener(ignored -> {
@@ -607,7 +615,7 @@ public final class MainActivity extends Activity {
             trustedComputer = loadTrustedComputer();
             if (trustedComputer != null) port = trustedComputer.port;
             configurationError = null;
-            status.setText(trustedComputer == null ? "已取消外部连接请求" : "已保留原可信电脑");
+            status.setText(tr(trustedComputer == null ? R.string.pairing_cancelled : R.string.pairing_kept_original));
             if (activityStarted) connect();
         }
     }
@@ -627,9 +635,10 @@ public final class MainActivity extends Activity {
             CharSequence copied = clip.getItemAt(0).getText();
             if (copied != null && copied.length() <= 512 && copied.toString().startsWith("tablink://")) input.setText(copied);
         }
-        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("粘贴电脑端连接链接")
-                .setMessage("在电脑端复制连接链接后粘贴到这里。链接只用于当前电脑会话。")
-                .setView(input).setPositiveButton("连接", null).setNegativeButton("取消", null).create();
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle(tr(R.string.paste_dialog_title))
+                .setMessage(tr(R.string.paste_dialog_message))
+                .setView(input).setPositiveButton(tr(R.string.action_connect), null)
+                .setNegativeButton(tr(R.string.action_cancel), null).create();
         dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
             if (acceptPairing(input.getText().toString().trim())) dialog.dismiss();
             else input.setError(status.getText());
@@ -642,7 +651,7 @@ public final class MainActivity extends Activity {
         catch (ActivityNotFoundException | SecurityException unavailable) {
             try { startActivity(new Intent(Settings.ACTION_WIRELESS_SETTINGS)); }
             catch (ActivityNotFoundException | SecurityException alsoUnavailable) {
-                status.setText("请手动打开系统设置 → 热点与网络共享 → USB 网络共享");
+                status.setText(tr(R.string.manual_tether_settings));
             }
         }
     }
@@ -689,39 +698,79 @@ public final class MainActivity extends Activity {
         options.setPadding(dp(22), dp(6), dp(22), dp(12));
         settingsStatus = text(status.getText().toString(), 13, ACCENT);
         options.addView(settingsStatus);
-        TextView instruction = text("长按统计文字或返回手势打开此面板。设置即时保存，关闭后继续全屏观看。", 13, Color.LTGRAY);
+        TextView instruction = text(tr(R.string.settings_instruction), 13, Color.LTGRAY);
         instruction.setPadding(0, dp(10), 0, dp(14));
         options.addView(instruction);
-        Button change = button("更换连接 / 扫描二维码");
+        options.addView(text(tr(R.string.language_title), 15, Color.WHITE));
+        Spinner language = new Spinner(this);
+        LanguagePreference.Mode[] languageModes = LanguagePreference.Mode.values();
+        ArrayAdapter<String> languageAdapter = new ArrayAdapter<>(this,
+                android.R.layout.simple_spinner_item, trArray(R.array.language_modes));
+        languageAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        language.setAdapter(languageAdapter);
+        LanguagePreference.Mode initialLanguage = AppLanguage.read(this);
+        language.setSelection(initialLanguage.ordinal());
+        language.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view, int index, long id) {
+                LanguagePreference.Mode selected = languageModes[index];
+                if (selected == AppLanguage.read(MainActivity.this)) return;
+                if (!AppLanguage.save(MainActivity.this, selected)) {
+                    settingsStatus.setText(tr(R.string.language_save_failed));
+                    language.post(() -> language.setSelection(AppLanguage.read(MainActivity.this).ordinal()));
+                    return;
+                }
+                localizedContext = AppLanguage.wrap(MainActivity.this);
+                updater.onLanguageChanged();
+                Session current = session;
+                boolean activeDisplay = current != null && current.running;
+                if (settingsDialog != null) settingsDialog.dismiss();
+                if (LanguageSwitchPolicy.choose(activeDisplay)
+                        == LanguageSwitchPolicy.Action.REFRESH_IN_PLACE) {
+                    rebuildConnectionPanelForLanguage(current);
+                    performance.setContentDescription(tr(R.string.hud_content_description));
+                    videoSurface.setContentDescription(tr(R.string.desktop_h264_description));
+                    desktop.setContentDescription(tr(R.string.desktop_touch_description));
+                    updatePerformance(current);
+                    android.widget.Toast.makeText(MainActivity.this, tr(R.string.language_applied_live),
+                            android.widget.Toast.LENGTH_SHORT).show();
+                } else {
+                    recreate();
+                }
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) { }
+        });
+        options.addView(language, new LinearLayout.LayoutParams(-1, dp(48)));
+
+        Button change = button(tr(R.string.settings_change_connection));
         change.setOnClickListener(v -> changeConnection());
         options.addView(change, new LinearLayout.LayoutParams(-1, dp(48)));
-        Button forget = button("忘记上次配对的电脑");
+        Button forget = button(tr(R.string.settings_forget_computer));
         forget.setOnClickListener(v -> {
             disconnect();
             TrustedComputerForgetCoordinator.Outcome outcome = forgetTrustedComputer();
             refreshSavedPairing();
             if (outcome == TrustedComputerForgetCoordinator.Outcome.SUCCESS) {
-                forget.setText("已删除可信电脑和设备密钥");
-                settingsStatus.setText("可信电脑记录和 Android Keystore 设备密钥均已删除");
+                forget.setText(tr(R.string.forget_complete_button));
+                settingsStatus.setText(tr(R.string.forget_complete_status));
                 forget.setEnabled(false);
             } else if (outcome == TrustedComputerForgetCoordinator.Outcome.METADATA_CLEAR_FAILED) {
-                forget.setText("重试删除可信电脑");
-                settingsStatus.setText("未能写入可信电脑存储；原记录和设备密钥已保留，请释放存储空间后重试");
+                forget.setText(tr(R.string.forget_retry_button));
+                settingsStatus.setText(tr(R.string.forget_metadata_failed));
             } else if (outcome == TrustedComputerForgetCoordinator.Outcome.IDENTITY_DELETE_FAILED) {
-                forget.setText("重试删除可信电脑");
-                settingsStatus.setText("Android Keystore 设备密钥仍然存在；可信电脑记录已保持删除前状态，请解锁设备后重试");
+                forget.setText(tr(R.string.forget_retry_button));
+                settingsStatus.setText(tr(R.string.forget_identity_failed));
             } else if (outcome == TrustedComputerForgetCoordinator.Outcome.IDENTITY_STATE_UNKNOWN) {
-                forget.setText("重试确认设备密钥删除");
-                settingsStatus.setText("无法确认 Android Keystore 密钥状态；为安全起见已删除可信电脑记录和当前配对链接，请重启应用后重试清理，再重新扫码");
+                forget.setText(tr(R.string.forget_identity_unknown_button));
+                settingsStatus.setText(tr(R.string.forget_identity_unknown));
             } else {
-                forget.setText("检查后重试删除");
-                settingsStatus.setText("删除失败且未能完整恢复本地记录；不会报告成功，请重新启动 TabLink 后检查并重试");
+                forget.setText(tr(R.string.forget_rollback_failed_button));
+                settingsStatus.setText(tr(R.string.forget_rollback_failed));
             }
         });
         options.addView(forget, new LinearLayout.LayoutParams(-1, dp(48)));
-        options.addView(text("正式版更新", 15, Color.WHITE));
+        options.addView(text(tr(R.string.update_settings_title), 15, Color.WHITE));
         Spinner updateMode = new Spinner(this);
-        String[] updateModeNames = { "自动更新", "自动下载，手动安装", "从不更新" };
+        String[] updateModeNames = trArray(R.array.update_modes);
         UpdateStateMachine.Mode[] updateModes = {
                 UpdateStateMachine.Mode.AUTOMATIC,
                 UpdateStateMachine.Mode.DOWNLOAD_THEN_ASK,
@@ -737,7 +786,7 @@ public final class MainActivity extends Activity {
         updateStatus = text(updater.status(), 13, ACCENT);
         updateStatus.setPadding(0, dp(4), 0, dp(6));
         options.addView(updateStatus);
-        Button checkUpdate = button("检查 / 继续正式版更新");
+        Button checkUpdate = button(tr(R.string.update_check_continue));
         checkUpdate.setEnabled(initialUpdateMode != UpdateStateMachine.Mode.NEVER);
         checkUpdate.setOnClickListener(v -> updater.requestDownloadOrInstall());
         options.addView(checkUpdate, new LinearLayout.LayoutParams(-1, dp(48)));
@@ -752,12 +801,12 @@ public final class MainActivity extends Activity {
             }
             @Override public void onNothingSelected(AdapterView<?> parent) { }
         });
-        TextView updateExplanation = text("更新清单会从个人博客和 GitHub 获取，并验证签名；下载包还会核对大小和 SHA-256。“自动更新”会在副屏空闲时直接打开系统安装确认，“自动下载，手动安装”只准备更新包，“从不更新”不会联网检查。Android 安装仍需在系统界面确认。", 12, Color.LTGRAY);
+        TextView updateExplanation = text(tr(R.string.update_explanation), 12, Color.LTGRAY);
         updateExplanation.setPadding(0, 0, 0, dp(12));
         options.addView(updateExplanation);
-        options.addView(text("统计位置", 15, Color.WHITE));
+        options.addView(text(tr(R.string.hud_position_title), 15, Color.WHITE));
         Spinner position = new Spinner(this);
-        String[] positions = { "左上", "上中", "右上", "左中", "正中", "右中", "左下", "下中", "右下" };
+        String[] positions = trArray(R.array.hud_positions);
         ArrayAdapter<String> positionAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, positions);
         positionAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         position.setAdapter(positionAdapter);
@@ -771,7 +820,7 @@ public final class MainActivity extends Activity {
             @Override public void onNothingSelected(AdapterView<?> parent) { }
         });
         options.addView(position, new LinearLayout.LayoutParams(-1, dp(48)));
-        options.addView(text("文字颜色（#RRGGBB）", 15, Color.WHITE));
+        options.addView(text(tr(R.string.hud_colour_title), 15, Color.WHITE));
         EditText color = new EditText(this);
         color.setSingleLine(true);
         color.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
@@ -780,7 +829,7 @@ public final class MainActivity extends Activity {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
             @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
                 Integer parsed = HudStyle.parseColor(s.toString());
-                color.setError(parsed == null ? "请输入 # 和六位颜色，例如 #FFFFFF" : null);
+                color.setError(parsed == null ? tr(R.string.hud_colour_invalid) : null);
                 if (parsed != null) {
                     hudStyle = new HudStyle(hudStyle.position, parsed, hudStyle.transparency);
                     applyHudStyle(true);
@@ -790,7 +839,7 @@ public final class MainActivity extends Activity {
         });
         options.addView(color, new LinearLayout.LayoutParams(-1, -2));
         LinearLayout palette = new LinearLayout(this);
-        String[] colorNames = { "白", "绿", "青", "黄", "黑" };
+        String[] colorNames = trArray(R.array.hud_colours);
         String[] colorValues = { "#FFFFFF", "#6EE7B7", "#67E8F9", "#FDE047", "#000000" };
         for (int i = 0; i < colorNames.length; i++) {
             final String value = colorValues[i];
@@ -817,8 +866,8 @@ public final class MainActivity extends Activity {
             @Override public void onStopTrackingTouch(SeekBar bar) { }
         });
         options.addView(opacity, new LinearLayout.LayoutParams(-1, dp(48)));
-        options.addView(text("0% 完全不透明；100% 隐藏文字。隐藏后仍可用返回手势进入设置。", 12, Color.LTGRAY));
-        TextView aboutTitle = text(getString(R.string.about_title), 15, Color.WHITE);
+        options.addView(text(tr(R.string.hud_transparency_help), 12, Color.LTGRAY));
+        TextView aboutTitle = text(tr(R.string.about_title), 15, Color.WHITE);
         aboutTitle.setPadding(0, dp(18), 0, dp(4));
         options.addView(aboutTitle);
         addAboutLink(options, R.string.about_author, R.string.about_github_url);
@@ -826,10 +875,10 @@ public final class MainActivity extends Activity {
         addAboutLink(options, R.string.about_blog, R.string.about_blog_url);
         ScrollView scroll = new ScrollView(this);
         scroll.addView(options);
-        settingsDialog = new AlertDialog.Builder(this).setTitle("TabLink · 设置").setView(scroll)
-                .setPositiveButton("完成", (dialog, which) -> { })
-                .setNeutralButton("重连", (dialog, which) -> connect())
-                .setNegativeButton("退出", (dialog, which) -> { disconnect(); finishAndRemoveTask(); })
+        settingsDialog = new AlertDialog.Builder(this).setTitle(tr(R.string.settings_title)).setView(scroll)
+                .setPositiveButton(tr(R.string.action_done), (dialog, which) -> { })
+                .setNeutralButton(tr(R.string.action_reconnect), (dialog, which) -> connect())
+                .setNegativeButton(tr(R.string.action_exit), (dialog, which) -> { disconnect(); finishAndRemoveTask(); })
                 .create();
         settingsDialog.setOnDismissListener(dialog -> {
             settingsDialog = null;
@@ -845,18 +894,18 @@ public final class MainActivity extends Activity {
         enterImmersive(settingsDialog.getWindow());
     }
 
-    private static String transparencyLabel(int value) {
-        return "文字透明度 " + value + "%（不透明度 " + (100 - value) + "%）";
+    private String transparencyLabel(int value) {
+        return tr(R.string.hud_transparency, value, 100 - value);
     }
 
     private void addAboutLink(LinearLayout parent, int labelResource, int urlResource) {
-        TextView link = text(getString(labelResource), 13, ACCENT);
+        TextView link = text(tr(labelResource), 13, ACCENT);
         link.setGravity(Gravity.CENTER_VERTICAL);
         link.setPaintFlags(link.getPaintFlags() | Paint.UNDERLINE_TEXT_FLAG);
         link.setClickable(true);
         link.setFocusable(true);
-        link.setContentDescription(getString(labelResource) + "，在浏览器中打开");
-        link.setOnClickListener(v -> openTrustedExternalUrl(getString(urlResource)));
+        link.setContentDescription(tr(R.string.link_open_browser, tr(labelResource)));
+        link.setOnClickListener(v -> openTrustedExternalUrl(tr(urlResource)));
         parent.addView(link, new LinearLayout.LayoutParams(-1, dp(44)));
     }
 
@@ -866,7 +915,7 @@ public final class MainActivity extends Activity {
         boolean trustedHost = "github.com".equalsIgnoreCase(host) || "linjie.space".equalsIgnoreCase(host);
         if (!"https".equalsIgnoreCase(uri.getScheme()) || !trustedHost
                 || uri.getUserInfo() != null || uri.getPort() != -1) {
-            if (settingsStatus != null) settingsStatus.setText("链接无效，无法打开");
+            if (settingsStatus != null) settingsStatus.setText(tr(R.string.link_invalid));
             return;
         }
         Intent browser = new Intent(Intent.ACTION_VIEW, uri);
@@ -874,8 +923,41 @@ public final class MainActivity extends Activity {
         try {
             startActivity(browser);
         } catch (ActivityNotFoundException noBrowser) {
-            if (settingsStatus != null) settingsStatus.setText("未找到可打开此链接的浏览器");
+            if (settingsStatus != null) settingsStatus.setText(tr(R.string.link_no_browser));
         }
+    }
+
+    private String tr(int resource, Object... arguments) {
+        Context context = localizedContext == null ? this : localizedContext;
+        return arguments.length == 0 ? context.getString(resource) : context.getString(resource, arguments);
+    }
+
+    private String[] trArray(int resource) {
+        Context context = localizedContext == null ? this : localizedContext;
+        return context.getResources().getStringArray(resource);
+    }
+
+    private void rebuildConnectionPanelForLanguage(Session current) {
+        int visibility = connectionPanel == null ? View.VISIBLE : connectionPanel.getVisibility();
+        if (connectionPanel != null) content.removeView(connectionPanel);
+        createConnectionPanel();
+        connectionPanel.setVisibility(visibility);
+        LanguageSwitchPolicy.SessionState sessionState = current == null
+                ? LanguageSwitchPolicy.SessionState.IDLE
+                : LanguageSwitchPolicy.sessionState(current.running, current.connected, current.reconnecting);
+        if (sessionState == LanguageSwitchPolicy.SessionState.CONNECTED) {
+            String value = current.captureState.paused
+                    ? localizeProtocolMessage(current.captureState.message)
+                    : tr(R.string.status_connected_waiting_desktop, current.connectionLabel());
+            status.setText(value);
+            status.setVisibility(visibility);
+        } else if (sessionState == LanguageSwitchPolicy.SessionState.CONNECTING
+                || sessionState == LanguageSwitchPolicy.SessionState.RECONNECTING) {
+            status.setText(tr(sessionState == LanguageSwitchPolicy.SessionState.RECONNECTING
+                    ? R.string.status_reconnecting : R.string.status_connecting, current.connectionLabel()));
+            status.setVisibility(visibility);
+        }
+        performance.bringToFront();
     }
 
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
@@ -968,11 +1050,11 @@ public final class MainActivity extends Activity {
         disconnect();
         requestPreferredDisplayMode();
         if (configurationError != null) {
-            status.setText(configurationError);
+            status.setText(tr(R.string.pairing_invalid));
             return;
         }
         if (token == null && trustedComputer == null) {
-            status.setText("扫描电脑端二维码连接；Wi-Fi 或 USB 网络共享均无需 USB 调试");
+            status.setText(tr(R.string.status_scan_to_connect));
             return;
         }
         if (!activityStarted) return;
@@ -980,7 +1062,7 @@ public final class MainActivity extends Activity {
         if (networkPairing != null || trustedComputer != null) {
             try { identity = TrustedDeviceIdentity.loadOrCreate(); }
             catch (Exception unavailable) {
-                status.setText("无法创建 Android Keystore 设备身份；请解锁设备后重试");
+                status.setText(tr(R.string.status_keystore_unavailable));
                 return;
             }
         }
@@ -998,7 +1080,7 @@ public final class MainActivity extends Activity {
         if (previous != null) previous.stop();
         videoSurface.hide();
         desktop.setVisibility(View.VISIBLE);
-        performance.setText("TabLink · 等待连接");
+        performance.setText(tr(R.string.status_waiting_connection));
         desktop.clearFrame();
         connectionPanel.setVisibility(View.VISIBLE);
         refreshSavedPairing();
@@ -1009,16 +1091,15 @@ public final class MainActivity extends Activity {
     private void showUpdateInstallPrompt(ReleaseManifest.Artifact artifact, boolean activeSession) {
         if (!activityStarted || isFinishing() || updateInstallDialog != null && updateInstallDialog.isShowing()) return;
         if (settingsDialog != null) settingsDialog.dismiss();
-        String message = "正式版 " + artifact.version + " 已下载并完成安全校验。"
-                + (activeSession ? "\n\n当前副屏正在使用；继续会先断开连接。" : "")
-                + "\n\nAndroid 会打开系统安装界面，需要你确认安装。";
-        updateInstallDialog = new AlertDialog.Builder(this).setTitle("安装 TabLink 正式版")
+        String message = tr(R.string.update_install_prompt, artifact.version,
+                activeSession ? tr(R.string.update_active_disconnect_notice) : "");
+        updateInstallDialog = new AlertDialog.Builder(this).setTitle(tr(R.string.update_install_prompt_title))
                 .setMessage(message)
-                .setPositiveButton(activeSession ? "断开并安装" : "安装", (dialog, which) -> {
+                .setPositiveButton(tr(activeSession ? R.string.update_disconnect_install : R.string.action_install), (dialog, which) -> {
                     if (activeSession) changeConnection();
                     updater.installPending(true);
                 })
-                .setNegativeButton("稍后", null).create();
+                .setNegativeButton(tr(R.string.action_later), null).create();
         updateInstallDialog.setOnDismissListener(dialog -> updateInstallDialog = null);
         updateInstallDialog.show();
     }
@@ -1026,12 +1107,12 @@ public final class MainActivity extends Activity {
     private void showUpdateDownloadPrompt(ReleaseManifest.Artifact artifact) {
         if (!activityStarted || isFinishing() || updateInstallDialog != null && updateInstallDialog.isShowing()) return;
         if (settingsDialog != null) settingsDialog.dismiss();
-        updateInstallDialog = new AlertDialog.Builder(this).setTitle("下载 TabLink 正式版")
-                .setMessage("发现正式版 " + artifact.version + "。当前副屏正在使用；继续会先断开连接，然后下载并校验更新包。")
-                .setPositiveButton("断开并下载", (dialog, which) -> {
+        updateInstallDialog = new AlertDialog.Builder(this).setTitle(tr(R.string.update_download_prompt_title))
+                .setMessage(tr(R.string.update_download_prompt, artifact.version))
+                .setPositiveButton(tr(R.string.update_disconnect_download), (dialog, which) -> {
                     changeConnection();
                     updater.continueAfterExplicitDisconnect();
-                }).setNegativeButton("稍后", null).create();
+                }).setNegativeButton(tr(R.string.action_later), null).create();
         updateInstallDialog.setOnDismissListener(dialog -> updateInstallDialog = null);
         updateInstallDialog.show();
     }
@@ -1057,7 +1138,7 @@ public final class MainActivity extends Activity {
         if (session != source || !activityStarted) return;
         CapturePauseState capture = source.captureState;
         if (capture.paused) {
-            performance.setText("采集暂停 · " + capture.message + "\n长按或返回打开设置");
+            performance.setText(tr(R.string.hud_capture_paused, localizeProtocolMessage(capture.message)));
         } else if ("H.264".equals(source.streamCodec)
                 && (source.hasPresentedFrame || !source.decoderName.isEmpty())) {
             JSONObject profile = DisplayCapabilities.read(this);
@@ -1066,19 +1147,17 @@ public final class MainActivity extends Activity {
             String requested = formatHz(profile.optDouble("requestedRefreshRate", Double.NaN));
             String submitted = formatFps(source.submittedFps, source.lastSubmittedMillis, now);
             String presented = formatFps(source.actualFps, source.lastPresentedMillis, now);
-            String decoder = source.decoderName.isEmpty() ? "正在选择" : source.decoderName;
+            String decoder = source.decoderName.isEmpty() ? tr(R.string.hud_selecting_decoder) : source.decoderName;
             DecoderRecoveryState.Snapshot recovery = source.decoderRecovery.snapshot();
             String state = recovery != null
-                    ? ("network".equals(recovery.kind) ? "网络恢复中 · 等待关键帧" : "解码恢复中 · 等待关键帧")
-                    : source.decoderSelection.isEmpty() ? "等待首帧" : source.decoderSelection;
-            performance.setText("面板 " + panel + " · 请求 " + requested
-                    + "\n解码提交 " + submitted + " · 呈现回调 " + presented
-                    + "\n解码器 " + decoder + " · " + state
-                    + (brightnessOverrideActive ? " · 高刷最低亮度" : ""));
+                    ? ("network".equals(recovery.kind) ? tr(R.string.hud_network_recovery) : tr(R.string.hud_decoder_recovery))
+                    : source.decoderSelection.isEmpty() ? tr(R.string.hud_waiting_first_frame)
+                    : source.decoderSelectionText();
+            performance.setText(tr(R.string.hud_h264_metrics, panel, requested, submitted, presented,
+                    decoder, state, brightnessOverrideActive ? tr(R.string.hud_high_refresh_brightness) : ""));
         } else if (source.hasPresentedFrame) {
-            performance.setText(String.format(Locale.ROOT, "%s · 呈现回调 %.1f fps",
-                    source.streamCodec, source.actualFps));
-        } else performance.setText("TabLink · " + status.getText());
+            performance.setText(tr(R.string.hud_presented_fps, source.streamCodec, source.actualFps));
+        } else performance.setText(tr(R.string.hud_tablink_status, status.getText()));
     }
 
     private static String formatHz(double value) {
@@ -1096,6 +1175,40 @@ public final class MainActivity extends Activity {
         return trimmed.length() <= 180 ? trimmed : trimmed.substring(0, 180);
     }
 
+    private String localizeProtocolMessage(String value) {
+        String safe = value == null ? "" : visibleMessage(value);
+        if (safe.isEmpty() || "capture-paused".equals(safe)) return tr(R.string.capture_paused_default);
+        if (safe.startsWith("h264-decoder-interrupted:"))
+            return tr(R.string.decoder_interrupted, safe.substring("h264-decoder-interrupted:".length()));
+        if (isChineseUi() != containsHan(safe)) return tr(R.string.status_untranslated_from_computer);
+        return safe;
+    }
+
+    private String localizeServerError(String value) {
+        String safe = value == null ? "" : visibleMessage(value);
+        if (safe.isEmpty() || !isChineseUi() && containsHan(safe))
+            return tr(R.string.status_computer_reported_untranslated);
+        return tr(R.string.status_computer_reported, safe);
+    }
+
+    private boolean isChineseUi() {
+        Configuration configuration = (localizedContext == null ? this : localizedContext)
+                .getResources().getConfiguration();
+        Locale locale = Build.VERSION.SDK_INT >= 24 ? configuration.getLocales().get(0) : configuration.locale;
+        return locale != null && "zh".equalsIgnoreCase(locale.getLanguage());
+    }
+
+    private static boolean containsHan(String value) {
+        for (int i = 0; i < value.length();) {
+            int codePoint = value.codePointAt(i);
+            if (codePoint >= 0x3400 && codePoint <= 0x4dbf || codePoint >= 0x4e00 && codePoint <= 0x9fff
+                    || codePoint >= 0xf900 && codePoint <= 0xfaff || codePoint >= 0x20000 && codePoint <= 0x323af)
+                return true;
+            i += Character.charCount(codePoint);
+        }
+        return false;
+    }
+
     private final class Session {
         final String sessionToken;
         final int sessionPort;
@@ -1108,6 +1221,7 @@ public final class MainActivity extends Activity {
         final Thread reader;
         volatile boolean running = true;
         volatile boolean connected;
+        volatile boolean reconnecting;
         volatile Socket socket;
         volatile Thread writer;
         volatile PresentationProgress presentation;
@@ -1137,6 +1251,8 @@ public final class MainActivity extends Activity {
         volatile String streamCodec = "JPEG";
         volatile String decoderName = "";
         volatile String decoderSelection = "";
+        volatile boolean decoderFallback;
+        volatile boolean decoderRecovered;
         volatile long droppedFrames;
         volatile CapturePauseState captureState = new CapturePauseState();
 
@@ -1153,13 +1269,25 @@ public final class MainActivity extends Activity {
         }
 
         String connectionLabel() {
-            if (identity == null) return "USB 调试通道";
-            return trusted != null ? "可信电脑 · " + activeHost : "加密网络 · " + activeHost;
+            if (identity == null) return tr(R.string.connection_usb_debug);
+            return tr(trusted != null ? R.string.connection_trusted : R.string.connection_encrypted, activeHost);
+        }
+
+        String decoderSelectionText() {
+            String tierLabel = "hardware".equals(decoderSelection) ? tr(R.string.decoder_tier_hardware)
+                    : "software".equals(decoderSelection) ? tr(R.string.decoder_tier_software)
+                    : tr(R.string.decoder_tier_generic);
+            String value = decoderFallback && "hardware".equals(decoderSelection)
+                    ? tr(R.string.decoder_selected_fallback_hardware)
+                    : decoderFallback ? tr(R.string.decoder_selected_fallback, tierLabel)
+                    : tr(R.string.decoder_selected_preferred, tierLabel);
+            return decoderRecovered ? value + tr(R.string.decoder_recovered_suffix) : value;
         }
 
         void stop() {
             running = false;
             connected = false;
+            reconnecting = false;
             UpdateInstallerUiGate.deactivateDisplay(this);
             closeSocket();
             reader.interrupt();
@@ -1200,15 +1328,15 @@ public final class MainActivity extends Activity {
             if (report == null) return;
             if (!hasPresentedFrame) {
                 hasPresentedFrame = true;
-                setStatus(this, connectionLabel() + " 已连接 · " + width + " × " + height + " · 触摸控制", true);
+                setStatus(this, tr(R.string.status_connected_touch, connectionLabel(), width, height), true);
             }
-            final String telemetry = String.format(Locale.ROOT, "%s · 解码 %.1f fps", streamCodec, actualFps);
+            final String telemetry = tr(R.string.telemetry_decode_fps, streamCodec, actualFps);
             ui.post(() -> {
                 if (session != this || !activityStarted) return;
                 updateStreamingBrightness(this);
                 updatePerformance(this);
-                String detail = captureState.paused ? captureState.message
-                        : connectionLabel() + " 已连接 · " + width + " × " + height + " · " + telemetry;
+                String detail = captureState.paused ? localizeProtocolMessage(captureState.message)
+                        : tr(R.string.status_connected_telemetry, connectionLabel(), width, height, telemetry);
                 status.setText(detail);
                 if (settingsStatus != null) settingsStatus.setText(detail);
             });
@@ -1381,6 +1509,8 @@ public final class MainActivity extends Activity {
             removeDecoderRefreshThrough(cancelled.wireGenerationCutoff);
             decoderName = "";
             decoderSelection = "";
+            decoderFallback = false;
+            decoderRecovered = false;
             actualFps = submittedFps = 0;
             lastPresentedMillis = lastSubmittedMillis = 0;
             if (previous != null) previous.close();
@@ -1412,6 +1542,8 @@ public final class MainActivity extends Activity {
             lastPresentedMillis = lastSubmittedMillis = 0;
             decoderName = "";
             decoderSelection = "";
+            decoderFallback = false;
+            decoderRecovered = false;
             droppedFrames = 0;
             final VideoDecoder[] holder = new VideoDecoder[1];
             VideoDecoder next = new VideoDecoder(configuration, new VideoDecoder.Listener() {
@@ -1442,8 +1574,7 @@ public final class MainActivity extends Activity {
                         pendingDecoderRefresh.cancelThrough(completed.wireGenerationCutoff);
                         removeDecoderRefreshThrough(completed.wireGenerationCutoff);
                     }
-                    if (recovered && !decoderSelection.endsWith(" · 已恢复"))
-                        decoderSelection += " · 已恢复";
+                    if (recovered) decoderRecovered = true;
                     droppedFrames = dropped;
                     framePresented(progress, frameIds.incrementAndGet(), width, height);
                 }
@@ -1458,11 +1589,9 @@ public final class MainActivity extends Activity {
                             || video != holder[0] || presentation != progress || submission != submittedProgress) return;
                     decoderName = selectedDecoder;
                     receiverFeedback.decoderSelected(fallback);
-                    String tierLabel = "hardware".equals(tier) ? "硬解"
-                            : "software".equals(tier) ? "软件解码" : "解码器";
-                    decoderSelection = fallback
-                            ? "切换到" + ("hardware".equals(tier) ? "备用硬解" : tierLabel)
-                            : "首选" + tierLabel;
+                    decoderSelection = tier;
+                    decoderFallback = fallback;
+                    decoderRecovered = false;
                     if (fallback) {
                         actualFps = submittedFps = 0;
                         lastPresentedMillis = lastSubmittedMillis = 0;
@@ -1472,7 +1601,7 @@ public final class MainActivity extends Activity {
                         if (session != Session.this || generation != videoGeneration || video != holder[0]
                                 || !activityStarted) return;
                         if (fallback) {
-                            String message = "H.264 解码器已切换，正在等待关键帧；连接与副屏保持不变";
+                            String message = tr(R.string.decoder_switch_wait_keyframe);
                             status.setText(message);
                             if (settingsStatus != null) settingsStatus.setText(message);
                         }
@@ -1492,7 +1621,7 @@ public final class MainActivity extends Activity {
                     ui.post(() -> {
                         if (session != Session.this || generation != videoGeneration || video != holder[0]
                                 || !activityStarted) return;
-                        String message = "视频队列正在等待新的关键帧；连接与副屏保持不变";
+                        String message = tr(R.string.video_queue_wait_keyframe);
                         status.setText(message);
                         if (settingsStatus != null) settingsStatus.setText(message);
                         updatePerformance(Session.this);
@@ -1500,7 +1629,7 @@ public final class MainActivity extends Activity {
                 }
                 @Override public void onError(String message) {
                     if (generation != videoGeneration || video != holder[0]) return;
-                    setStatus(Session.this, message, false);
+                    setStatus(Session.this, localizeProtocolMessage(message), false);
                     closeSocket();
                 }
             }, renderPacingEnabled);
@@ -1530,7 +1659,7 @@ public final class MainActivity extends Activity {
             catch (IOException failure) { firstFailure = failure; }
             IOException lastFailure = firstFailure;
             for (TrustedDiscovery.Endpoint discovered : TrustedDiscovery.discover(current.hostId, 1800)) {
-                if (!running) throw new IOException("连接已停止");
+                if (!running) throw new IOException("connection-stopped");
                 if (discovered.host.equals(current.lastHost) && discovered.port == current.port) continue;
                 try {
                     // Discovery is only a route hint. Every candidate still has to
@@ -1581,25 +1710,25 @@ public final class MainActivity extends Activity {
 
         void sendTrustedAuthentication(DataInputStream input, DataOutputStream output) throws IOException, JSONException {
             TrustedComputer computer = trusted;
-            if (computer == null || identity == null) throw new IOException("可信设备身份尚未就绪");
+            if (computer == null || identity == null) throw new IOException("trusted-identity-not-ready");
             JSONObject hello = new JSONObject();
             hello.put("protocol", 1);hello.put("deviceId", identity.deviceId);hello.put("features", requestedFeatures());
             WireProtocol.write(output, WireProtocol.TRUSTED_HELLO, hello.toString().getBytes(StandardCharsets.UTF_8));
             WireProtocol.Packet packet = WireProtocol.read(input);
             if (packet.type != WireProtocol.TRUSTED_CHALLENGE || packet.payload.length > 4096)
-                throw new IOException("电脑未返回可信设备挑战");
+                throw new IOException("trusted-challenge-missing");
             JSONObject challenge = new JSONObject(new String(packet.payload, StandardCharsets.UTF_8));
             requireKeys(challenge, "protocol", "feature", "hostId", "deviceId", "challenge");
             if (challenge.getInt("protocol") != 1 || !WireProtocol.FEATURE_TRUSTED_DEVICE.equals(challenge.getString("feature")) ||
                     !computer.hostId.equals(challenge.getString("hostId")) || !identity.deviceId.equals(challenge.getString("deviceId")))
-                throw new IOException("电脑返回的可信设备挑战身份不匹配");
+                throw new IOException("trusted-challenge-identity-mismatch");
             byte[] nonce;
             try { nonce = android.util.Base64.decode(challenge.getString("challenge"), android.util.Base64.DEFAULT); }
-            catch (IllegalArgumentException invalid) { throw new IOException("电脑返回的可信设备挑战无效", invalid); }
-            if (nonce.length != TrustedDeviceProtocol.CHALLENGE_BYTES) throw new IOException("电脑返回的可信设备挑战长度无效");
+            catch (IllegalArgumentException invalid) { throw new IOException("trusted-challenge-invalid", invalid); }
+            if (nonce.length != TrustedDeviceProtocol.CHALLENGE_BYTES) throw new IOException("trusted-challenge-length-invalid");
             byte[] signature;
             try { signature = identity.sign(computer.hostId, nonce); }
-            catch (java.security.GeneralSecurityException failure) { throw new IOException("Android Keystore 无法签署可信设备挑战", failure); }
+            catch (java.security.GeneralSecurityException failure) { throw new IOException("trusted-challenge-signing-failed", failure); }
             JSONObject proof = new JSONObject();
             proof.put("deviceId", identity.deviceId);
             proof.put("signature", android.util.Base64.encodeToString(signature, android.util.Base64.NO_WRAP));
@@ -1607,13 +1736,13 @@ public final class MainActivity extends Activity {
         }
 
         void acceptTrustEstablished(byte[] payload) throws IOException, JSONException {
-            if (identity == null || paired == null || payload.length > 4096) throw new IOException("收到意外的可信设备登记确认");
+            if (identity == null || paired == null || payload.length > 4096) throw new IOException("unexpected-trust-confirmation");
             JSONObject state = new JSONObject(new String(payload, StandardCharsets.UTF_8));
             requireKeys(state, "protocol", "feature", "hostId", "deviceId");
             String hostId = state.getString("hostId");
             if (state.getInt("protocol") != 1 || !WireProtocol.FEATURE_TRUSTED_DEVICE.equals(state.getString("feature")) ||
                     !identity.deviceId.equals(state.getString("deviceId")) || !paired.certificateSha256.equals(hostId))
-                throw new IOException("可信电脑登记确认与当前二维码不匹配");
+                throw new IOException("trust-confirmation-pairing-mismatch");
             TrustedComputer enrolled = new TrustedComputer(hostId, paired.certificateSha256, activeHost, activePort);
             persistTrustedComputerFromSession(this, enrolled);
             trusted = enrolled;
@@ -1635,7 +1764,7 @@ public final class MainActivity extends Activity {
             java.util.HashSet<String> expected = new java.util.HashSet<>(java.util.Arrays.asList(names));
             java.util.HashSet<String> actual = new java.util.HashSet<>();
             for (java.util.Iterator<String> iterator = value.keys(); iterator.hasNext();) actual.add(iterator.next());
-            if (!actual.equals(expected)) throw new IOException("可信设备认证包含未知、重复或缺失字段");
+            if (!actual.equals(expected)) throw new IOException("trusted-authentication-fields-invalid");
         }
 
         void run() {
@@ -1643,6 +1772,7 @@ public final class MainActivity extends Activity {
             while (running) {
                 transportGeneration++;
                 if (transportGeneration <= 0) transportGeneration = 1;
+                reconnecting = transportGeneration > 1;
                 PresentationProgress progress = new PresentationProgress();
                 SubmissionProgress submittedProgress = new SubmissionProgress();
                 presentation = progress;
@@ -1660,6 +1790,8 @@ public final class MainActivity extends Activity {
                 hasPresentedFrame = false;
                 decoderName = "";
                 decoderSelection = "";
+                decoderFallback = false;
+                decoderRecovered = false;
                 actualFps = submittedFps = 0;
                 lastPresentedMillis = lastSubmittedMillis = 0;
                 captureState = new CapturePauseState();
@@ -1669,7 +1801,8 @@ public final class MainActivity extends Activity {
                 jpegRate = new FrameRateMeter();
                 boolean serverRejected = false;
                 try {
-                    setStatus(this, (retry == 0 ? "正在连接 " : "正在重新连接 ") + connectionLabel() + "…", false);
+                    setStatus(this, tr(reconnecting ? R.string.status_reconnecting : R.string.status_connecting,
+                            connectionLabel()), false);
                     boolean trustedAttempt = trusted != null;
                     Socket local = openAttemptSocket();
                     socket = local;
@@ -1693,7 +1826,7 @@ public final class MainActivity extends Activity {
                             String deviceName = (Build.MANUFACTURER + " " + Build.MODEL)
                                     .replaceAll("[\\p{Cntrl}]", " ").trim();
                             if (deviceName.length() > 64) deviceName = deviceName.substring(0, 64);
-                            hello.put("deviceName", deviceName.isEmpty() ? "Android 设备" : deviceName);
+                            hello.put("deviceName", deviceName.isEmpty() ? tr(R.string.android_device_name) : deviceName);
                         }
                         WireProtocol.write(output, WireProtocol.HELLO,
                                 hello.toString().getBytes(StandardCharsets.UTF_8));
@@ -1704,12 +1837,13 @@ public final class MainActivity extends Activity {
                     WireProtocol.write(output, WireProtocol.DISPLAY_PROFILE, lastDisplayProfile.getBytes(StandardCharsets.UTF_8));
                     outgoing.clear();
                     if (!UpdateInstallerUiGate.tryActivateDisplay(this))
-                        throw new IOException("Android 安装界面正在处理更新；返回 TabLink 后将自动重连");
+                        throw new IOException("installer-ui-busy");
                     connected = true;
+                    reconnecting = false;
                     if (updater != null) updater.onSessionChanged();
                     writer = new Thread(() -> writeLoop(local, output), "TabLink-input");
                     writer.start();
-                    setStatus(this, connectionLabel() + " 已连接，等待桌面画面…", false);
+                    setStatus(this, tr(R.string.status_connected_waiting_desktop, connectionLabel()), false);
                     while (running) {
                         WireProtocol.Packet packet = WireProtocol.read(input);
                         if (packet.type == WireProtocol.FRAME) {
@@ -1731,37 +1865,40 @@ public final class MainActivity extends Activity {
                         } else if (packet.type == WireProtocol.TRUST_ESTABLISHED) {
                             acceptTrustEstablished(packet.payload);
                         } else if (packet.type == WireProtocol.STATUS) {
-                            if (packet.payload.length > 16384) throw new IOException("状态数据过长");
+                            if (packet.payload.length > 16384) throw new IOException("status-packet-too-long");
                             JSONObject state = new JSONObject(new String(packet.payload, StandardCharsets.UTF_8));
                             acceptHostFeatures(state);
                             if (trustedAttempt) persistTrustedEndpoint();
-                            String message = state.optString("message", connectionLabel() + " 已连接");
+                            String message = state.optString("message", tr(R.string.status_connected, connectionLabel()));
                             Object paused = state.opt("capturePaused");
                             captureState = captureState.update(paused instanceof Boolean ? (Boolean) paused : null,
-                                    visibleMessage(message));
+                                    localizeProtocolMessage(message));
                             retryKeyFrameRequest();
                             // Keep the same decoder, Surface, last frame and presentation sequence.
                             // Only actual JPEG/codec rendering may advance an acknowledgement.
-                            setStatus(this, visibleMessage(message), hasPresentedFrame);
+                            setStatus(this, localizeProtocolMessage(message), hasPresentedFrame);
                         } else if (packet.type == WireProtocol.ERROR) {
                             serverRejected = true;
                             String message = new String(packet.payload, 0, Math.min(packet.payload.length, 4096), StandardCharsets.UTF_8);
-                            throw new IOException(visibleMessage(message));
+                            throw new IOException(localizeProtocolMessage(message));
                         } else {
-                            throw new IOException("电脑端协议不兼容，请更新两端 TabLink");
+                            throw new IOException("protocol-incompatible");
                         }
                     }
                 } catch (IOException | JSONException | IllegalArgumentException problem) {
                     if (running) {
+                        reconnecting = true;
                         boolean certificateFailure = identity != null && problem instanceof SSLHandshakeException;
                         if (certificateFailure && trusted == null) serverRejected = true;
                         String message = certificateFailure && trusted != null
-                                ? "发现的电脑未通过已保存证书验证，将继续寻找原可信电脑。如电脑已重装或重置，请先忘记可信电脑，再重新扫码。"
-                                : certificateFailure ? "无法验证电脑证书。请检查平板日期，重新扫描电脑当前二维码；不会使用未验证的连接。"
-                                : serverRejected ? "电脑端提示：" + problem.getMessage()
-                                : identity == null ? "连接中断，请检查 USB 调试通道和电脑端；将自动重连"
-                                : trusted != null ? "尚未连通可信电脑，将按已保存地址和局域网发现自动重试；不会信任同名或未验证电脑。"
-                                : "尚未连通电脑，将自动重试。请确认同一 Wi-Fi 或已开启 USB 网络共享，并重新扫描电脑当前二维码。";
+                                ? tr(R.string.status_saved_certificate_failed)
+                                : certificateFailure ? tr(R.string.status_certificate_failed)
+                                : serverRejected ? localizeServerError(problem.getMessage())
+                                : "installer-ui-busy".equals(problem.getMessage()) ? tr(R.string.installer_busy_reconnect)
+                                : "protocol-incompatible".equals(problem.getMessage()) ? tr(R.string.status_protocol_incompatible)
+                                : identity == null ? tr(R.string.status_adb_disconnected)
+                                : trusted != null ? tr(R.string.status_trusted_retry)
+                                : tr(R.string.status_network_retry);
                         hasPresentedFrame = false;
                         setStatus(this, message, false);
                     }
@@ -1790,6 +1927,7 @@ public final class MainActivity extends Activity {
                 long delay = Math.min(10000, 1000L << Math.min(retry++, 4));
                 try { Thread.sleep(delay); } catch (InterruptedException interrupted) { break; }
             }
+            reconnecting = false;
         }
 
         void writeLoop(Socket local, DataOutputStream output) {
@@ -1831,19 +1969,19 @@ public final class MainActivity extends Activity {
 
     private static Bitmap decodeFrame(byte[] bytes) throws IOException {
         if (bytes.length < 3 || bytes[0] != (byte) 0xff || bytes[1] != (byte) 0xd8) {
-            throw new IOException("画面不是 JPEG 数据");
+            throw new IOException("frame-not-jpeg");
         }
         BitmapFactory.Options size = new BitmapFactory.Options();
         size.inJustDecodeBounds = true;
         BitmapFactory.decodeByteArray(bytes, 0, bytes.length, size);
         if (size.outWidth <= 0 || size.outHeight <= 0 || size.outWidth > 8192 || size.outHeight > 8192
                 || (long) size.outWidth * size.outHeight > 16000000L) {
-            throw new IOException("画面尺寸无效或过大");
+            throw new IOException("frame-dimensions-invalid");
         }
         BitmapFactory.Options decode = new BitmapFactory.Options();
         decode.inPreferredConfig = Bitmap.Config.RGB_565;
         Bitmap bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, decode);
-        if (bitmap == null) throw new IOException("无法解码桌面画面");
+        if (bitmap == null) throw new IOException("frame-decode-failed");
         return bitmap;
     }
 
@@ -1859,7 +1997,7 @@ public final class MainActivity extends Activity {
             super(MainActivity.this);
             getHolder().addCallback(this);
             setFocusable(true);
-            setContentDescription("电脑扩展桌面，H.264 硬件解码");
+            setContentDescription(tr(R.string.desktop_h264_description));
         }
 
         void show(VideoDecoder decoder, Session source) {
@@ -1955,7 +2093,7 @@ public final class MainActivity extends Activity {
             super(MainActivity.this);
             getHolder().addCallback(this);
             setFocusable(true);
-            setContentDescription("电脑扩展桌面，单指点击和拖动模拟鼠标");
+            setContentDescription(tr(R.string.desktop_touch_description));
         }
 
         void showFrame(Bitmap bitmap, Session source, PresentationProgress progress, long id) {

@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = $PSScriptRoot
 & (Join-Path $projectRoot 'tools\Test-TabLinkVersionContract.ps1') -RepositoryRoot $projectRoot
 & (Join-Path $projectRoot 'tools\Test-GitHubLanguageContract.ps1') -RepositoryRoot $projectRoot
+& (Join-Path $projectRoot 'tools\Test-LocalizationContract.ps1') -RepositoryRoot $projectRoot
 & (Join-Path $projectRoot 'tools\Test-AndroidPresentationMeasurement.ps1') -RepositoryRoot $projectRoot
 $versionIdentity = Get-Content -LiteralPath (Join-Path $projectRoot 'eng\version.json') -Raw | ConvertFrom-Json
 $releaseVersion = [string]$versionIdentity.version

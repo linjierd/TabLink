@@ -17,7 +17,10 @@ function Resolve-TabLinkTrustedAdbPath {
         Join-Path $ProjectRoot 'third_party\adb\bin\adb.exe'
     }
     else {
-        if (-not [IO.Path]::IsPathFullyQualified($Adb)) {
+        # Windows PowerShell 5.1 and PowerShell 7 disagree about
+        # IsPathFullyQualified for drive-relative paths. Accept only an
+        # explicit drive-rooted or UNC path on both runtimes.
+        if ($Adb -cnotmatch '\A(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+(?:[\\/]|$))') {
             throw 'ADB must be an explicit absolute path; PATH lookup is not trusted.'
         }
         [IO.Path]::GetFullPath($Adb)
