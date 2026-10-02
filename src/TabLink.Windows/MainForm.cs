@@ -94,7 +94,7 @@ internal sealed partial class MainForm : Form
         this.requestedSerial=requestedSerial;
         verificationMode=verification;
         this.diagnosticPairing=diagnosticPairing;
-        Text="TabLink · 平板副屏"; AutoScaleMode=AutoScaleMode.Dpi; Size=new Size(960,680); MinimumSize=new Size(760,640);
+        Text="TabLink · 平板副屏"; AutoScaleMode=AutoScaleMode.Dpi; Size=PreferredExpandedWindowSize; MinimumSize=PreferredCompactWindowSize;
         StartPosition=FormStartPosition.CenterScreen; Font=new Font("Microsoft YaHei UI",10); BackColor=Color.FromArgb(244,247,251); ForeColor=ink;
         if(!verification)
         {
@@ -108,6 +108,7 @@ internal sealed partial class MainForm : Form
             authorFooterPreferences=authorFooterStore.Load();
         }
         BuildUi();
+        ConfigureWindowSizing();
         var showWindow=new ToolStripMenuItem("打开主窗口");
         var exit=new ToolStripMenuItem("退出 TabLink");
         showWindow.Click+=(_,_)=>RestoreFromTray();
@@ -198,7 +199,7 @@ internal sealed partial class MainForm : Form
         if(closing||exitStarting)return;
         ShowInTaskbar=true;Show();
         if(WindowState==FormWindowState.Minimized)WindowState=FormWindowState.Normal;
-        if(!Screen.AllScreens.Any(screen=>screen.WorkingArea.IntersectsWith(Bounds)))CenterToScreen();
+        ClampWindowToCurrentWorkingArea();
         Activate();BringToFront();
     }
     async Task ExitAsync(bool requireReadyUpdater = false)
@@ -249,7 +250,7 @@ internal sealed partial class MainForm : Form
         var connectionLayout=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=1,RowCount=2};
         connectionLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));connectionLayout.RowStyles.Add(new RowStyle(SizeType.Percent,100));
         var modeHeader=new FlowLayoutPanel{Dock=DockStyle.Top,AutoSize=true,FlowDirection=FlowDirection.TopDown,WrapContents=false,Margin=new Padding(4,0,4,6)};
-        var modeRow=new FlowLayoutPanel{AutoSize=true,WrapContents=false,Margin=Padding.Empty};
+        var modeRow=new FlowLayoutPanel{AutoSize=true,WrapContents=true,Margin=Padding.Empty};
         modeRow.Controls.Add(new Label{Text="连接方式",AutoSize=true,Font=new Font("Microsoft YaHei UI",10,FontStyle.Bold),Margin=new Padding(0,7,14,0)});
         connectionMode.Items.AddRange(["TabLink 客户端（推荐）","浏览器接入","USB 调试（兼容）"]);modeRow.Controls.Add(connectionMode);
         modeRow.Controls.Add(new Label{Text="画质",AutoSize=true,Font=new Font("Microsoft YaHei UI",10,FontStyle.Bold),Margin=new Padding(22,7,10,0)});
@@ -257,7 +258,7 @@ internal sealed partial class MainForm : Form
         qualityMode.SelectedItem=qualityMode.Items.OfType<QualityChoice>().First(item=>item.Preset==selectedQuality);
         qualityMode.SelectedIndexChanged+=(_,_)=>ChangeVideoQuality();
         modeRow.Controls.Add(qualityMode);
-        var encoderRow=new FlowLayoutPanel{AutoSize=true,WrapContents=false,Margin=new Padding(0,2,0,0)};
+        var encoderRow=new FlowLayoutPanel{AutoSize=true,WrapContents=true,Margin=new Padding(0,2,0,0)};
         encoderRow.Controls.Add(new Label{Text="编码",AutoSize=true,Font=new Font("Microsoft YaHei UI",10,FontStyle.Bold),Margin=new Padding(0,7,14,0)});
         encoderMode.Items.AddRange(Enum.GetValues<VideoEncoderPreference>().Select(value=>(object)new EncoderChoice(value)).ToArray());
         encoderMode.SelectedItem=encoderMode.Items.OfType<EncoderChoice>().First(item=>item.Preference==selectedEncoder);
@@ -288,7 +289,7 @@ internal sealed partial class MainForm : Form
         connectionPage.SizeChanged+=(_,_)=>
         {
             var width=Math.Max(280,connectionPage.ClientSize.Width-connectionPage.Padding.Horizontal-28);
-            connectionModeHint.MaximumSize=help.MaximumSize=new Size(width,0);
+            modeRow.MaximumSize=encoderRow.MaximumSize=connectionModeHint.MaximumSize=help.MaximumSize=new Size(width,0);
         };
         var settingsLayout=new TableLayoutPanel{Dock=DockStyle.Top,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,ColumnCount=1,RowCount=2,Margin=Padding.Empty};
         settingsLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));settingsLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));exclusions.Controls.Add(settingsLayout);

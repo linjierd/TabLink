@@ -14,9 +14,10 @@ internal sealed partial class MainForm
             ("connection-client",0,0),("connection-browser",0,1),("connection-usb-debug",0,2),
             ("device-settings",1,-1),("diagnostics-log",2,-1)
         };
-        foreach(var view in views)RenderView(directory,view.Name,view.Tab,view.Mode,new Size(1100,900));
-        foreach(var view in views)RenderView(directory,"default-"+view.Name,view.Tab,view.Mode,new Size(960,680));
-        foreach(var view in views)RenderView(directory,"compact-"+view.Name,view.Tab,view.Mode,new Size(760,640));
+        VerifyWindowSizingPolicy();
+        foreach(var view in views)RenderView(directory,view.Name,view.Tab,view.Mode,PreferredExpandedWindowSize,
+            requireNoInternalScroll:view.Tab==0&&view.Mode==0);
+        foreach(var view in views)RenderView(directory,"compact-"+view.Name,view.Tab,view.Mode,PreferredCompactWindowSize);
         RenderView(directory,"compact-settings-author-custom",1,-1,new Size(760,640),form=>
         {
             var custom=new AuthorFooterPreferences
@@ -49,7 +50,8 @@ internal sealed partial class MainForm
             form.PopulateAuthorFooterEditors(maximum);form.ApplyAuthorFooterPreferences(maximum);
         });
     }
-    static void RenderView(string directory,string name,int tab,int mode,Size size,Action<MainForm>? configure=null)
+    static void RenderView(string directory,string name,int tab,int mode,Size size,Action<MainForm>? configure=null,
+        bool requireNoInternalScroll=false)
     {
         using var form=new MainForm(verification:true);
         try
@@ -59,7 +61,11 @@ internal sealed partial class MainForm
             form.mainTabs.SelectedIndex=tab;
             if(mode>=0)form.connectionMode.SelectedIndex=mode;
             configure?.Invoke(form);
-            PrepareView(form);Save(form,directory,name);
+            PrepareView(form);
+            if(requireNoInternalScroll&&form.clientConnectionPanel is ScrollableControl client&&
+                (client.VerticalScroll.Visible||client.HorizontalScroll.Visible))
+                throw new InvalidOperationException($"默认展开窗口仍需滚动才能查看连接副屏内容：client={client.ClientSize}，display={client.DisplayRectangle.Size}，vertical={client.VerticalScroll.Visible}，horizontal={client.HorizontalScroll.Visible}。");
+            Save(form,directory,name);
         }
         finally{form.closing=true;form.Close();}
     }
@@ -77,6 +83,25 @@ internal sealed partial class MainForm
         using var warmup=new Bitmap(form.Width,form.Height);
         form.DrawToBitmap(warmup,new Rectangle(Point.Empty,form.Size));
         form.Refresh();Application.DoEvents();
+    }
+
+    static void VerifyWindowSizingPolicy()
+    {
+        var large=CalculateInitialWindowBounds(new Rectangle(0,0,2048,1232),96);
+        if(large!=new Rectangle(552,97,944,1038))
+            throw new InvalidOperationException("大工作区默认窗口居中验证失败。");
+        var standard=CalculateInitialWindowBounds(new Rectangle(0,0,1920,1040),96);
+        if(standard!=new Rectangle(488,1,944,1038))
+            throw new InvalidOperationException("1080p 工作区默认窗口验证失败。");
+        var shortWork=CalculateInitialWindowBounds(new Rectangle(0,0,1366,728),96);
+        if(shortWork!=new Rectangle(211,0,944,728))
+            throw new InvalidOperationException("低高度工作区约束验证失败。");
+        var smallWork=new Rectangle(-800,40,800,600);
+        var small=CalculateInitialWindowBounds(smallWork,144);
+        if(small!=smallWork)
+            throw new InvalidOperationException("小屏工作区约束验证失败。");
+        if(ScaleLogicalSize(PreferredExpandedWindowSize,144)!=new Size(1416,1557))
+            throw new InvalidOperationException("逻辑窗口尺寸的 DPI 换算验证失败。");
     }
     static void Save(Form form,string directory,string name)
     {
