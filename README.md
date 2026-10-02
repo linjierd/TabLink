@@ -240,6 +240,14 @@ dotnet run --project tests/TabLink.Core.Tests -c Release
 .\build.ps1 -SkipAndroid
 ```
 
+To create a complete self-contained package for use on your own Windows computer, including the browser receiver and bundled ADB, use a new empty directory:
+
+```powershell
+.\build.ps1 -LocalFullBuild -OutputDirectory E:\TabLink-local-full
+```
+
+The browser receiver currently depends on SIPSorcery 10.0.16. Review its bundled licence before sharing that local package; the globally downloadable public archive continues to exclude this dependency.
+
 Building from source requires the .NET 10 SDK and the Android toolchain for Android work. The public Windows x64 ZIP is self-contained and does not require a separate .NET runtime. A public build may not use `-SkipAndroid`; it checks the fixed Android package identity and Preview signing certificate, produces a self-contained Windows build and a non-debuggable APK, copies the applicable licences and complete FFmpeg/x264 corresponding source, and generates `SHA256SUMS.txt`.
 
 CI runs Windows managed tests in both browser-feature configurations, DriverSetup builds, Android JVM tests, `assembleDebug`, `lintDebug`, APK signing checks, and the cross-platform version contract. Automated tests do not install a driver, create a real display, call ADB, or prove physical MediaCodec, network migration, or display behaviour.

@@ -308,6 +308,7 @@ try
         var path = Path.Combine(temporary, "author-footer-default.json");
         var preferences = new AuthorFooterPreferencesStore(path).Load();
         Assert(preferences.Enabled);
+        Assert(preferences.SummaryText == "只有一块副屏，点 × 后在托盘继续运行");
         Assert(preferences.AuthorText == "作者：张林杰（Jey / @linjierd）");
         Assert(preferences.GitHubLabel == "GitHub" && preferences.GitHubUrl == "https://github.com/linjierd");
         Assert(preferences.BlogLabel == "博客：linjie.space" && preferences.BlogUrl == "https://linjie.space/");
@@ -321,6 +322,7 @@ try
         store.Save(new AuthorFooterPreferences
         {
             Enabled = false,
+            SummaryText = "  One display; keep running in tray  ",
             AuthorText = "  Custom author  ",
             GitHubLabel = " ",
             GitHubUrl = " ",
@@ -328,14 +330,24 @@ try
             BlogUrl = "  HTTPS://Example.COM/tablink  "
         });
         var read = store.Load();
-        Assert(!read.Enabled && read.AuthorText == "Custom author");
+        Assert(!read.Enabled && read.SummaryText == "One display; keep running in tray" && read.AuthorText == "Custom author");
         Assert(read.GitHubLabel == "" && read.GitHubUrl == "");
         Assert(read.BlogLabel == "Project site" && read.BlogUrl == "https://example.com/tablink");
         Assert(read.NormalizeAndValidate().BlogUrl == read.BlogUrl);
         var json = File.ReadAllText(path);
-        Assert(json.Contains("\"SchemaVersion\": 1", StringComparison.Ordinal));
+        Assert(json.Contains("\"SchemaVersion\": 2", StringComparison.Ordinal));
         Assert(!json.Contains("ExcludedDevices", StringComparison.Ordinal));
         Assert(Directory.GetFiles(Path.GetDirectoryName(path)!, "." + Path.GetFileName(path) + ".*.tmp").Length == 0);
+    });
+    await Test("Version 1 author footer preferences migrate with the default summary", () =>
+    {
+        var path = Path.Combine(temporary, "author-footer-v1.json");
+        const string version1 = "{\"SchemaVersion\":1,\"Enabled\":false,\"AuthorText\":\"Original author\",\"GitHubLabel\":\"GitHub\",\"GitHubUrl\":\"https://github.com/example\",\"BlogLabel\":\"\",\"BlogUrl\":\"\"}";
+        File.WriteAllText(path, version1);
+        var read = new AuthorFooterPreferencesStore(path).Load();
+        Assert(!read.Enabled && read.AuthorText == "Original author");
+        Assert(read.SummaryText == "只有一块副屏，点 × 后在托盘继续运行");
+        Assert(File.ReadAllText(path) == version1);
     });
     await Test("Old device settings remain compatible and separate from author preferences", () =>
     {
@@ -395,6 +407,8 @@ try
         Reject(value => value.GitHubUrl = "https://user:password@example.com/");
         Reject(value => value.GitHubLabel = "");
         Reject(value => value.AuthorText = "line one\nline two");
+        Reject(value => value.SummaryText = "line one\nline two");
+        Reject(value => value.SummaryText = new string('x', AuthorFooterPreferences.MaximumSummaryTextLength + 1));
         Reject(value => value.AuthorText = "line one\u2028line two");
         Reject(value => value.AuthorText = "safe\u202Etxt.exe");
         Reject(value => value.AuthorText = "safe\U000E0001txt.exe");

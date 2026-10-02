@@ -24,12 +24,14 @@ internal sealed partial class MainForm
         VerifyWindowSizingPolicy();
         foreach(var view in views)RenderView(directory,view.Name,view.Tab,view.Mode,PreferredExpandedWindowSize,language,
             requireNoInternalScroll:view.Tab==0&&view.Mode==0);
+        RenderHelpView(directory,language);
         foreach(var view in views)RenderView(directory,"compact-"+view.Name,view.Tab,view.Mode,PreferredCompactWindowSize,language);
         RenderView(directory,"compact-settings-author-custom",1,-1,new Size(760,640),language,form=>
         {
             var custom=new AuthorFooterPreferences
             {
                 Enabled=true,
+                SummaryText=language==ProductLanguage.SimplifiedChinese?"只有一块副屏，可自定义底部提示":"One second screen; the footer summary can be customised",
                 AuthorText=language==ProductLanguage.SimplifiedChinese?"作者：这是一段用于验证窄窗口与高 DPI 自动换行的较长自定义显示名称（团队 / 社区维护者）":"Author: A deliberately long custom display name used to verify narrow-window and high-DPI wrapping (team / community maintainer)",
                 GitHubLabel=language==ProductLanguage.SimplifiedChinese?"项目主页、源代码和问题反馈":"Project home, source and issue tracker",
                 GitHubUrl="https://github.com/example/example-project",
@@ -48,6 +50,7 @@ internal sealed partial class MainForm
             var maximum=new AuthorFooterPreferences
             {
                 Enabled=true,
+                SummaryText=new string(language==ProductLanguage.SimplifiedChinese?'提':'S',AuthorFooterPreferences.MaximumSummaryTextLength),
                 AuthorText=new string(language==ProductLanguage.SimplifiedChinese?'作':'A',AuthorFooterPreferences.MaximumAuthorTextLength),
                 GitHubLabel=new string('G',AuthorFooterPreferences.MaximumLinkLabelLength),
                 GitHubUrl="https://github.com/example/example-project",
@@ -70,8 +73,11 @@ internal sealed partial class MainForm
             if(mode>=0)form.connectionMode.SelectedIndex=mode;
             configure?.Invoke(form);
             PrepareView(form);
+            if(name.EndsWith("connection-browser",StringComparison.Ordinal))VerifyBrowserButtonContract(form);
             Console.WriteLine($"render:prepared {language}/{name}");
-            VerifyLanguageContract(form,language,verifyDynamicStatus:name=="connection-client"&&language==ProductLanguage.English);
+            VerifyLanguageContract(form,language,
+                verifyDynamicStatus:name=="connection-client"&&language==ProductLanguage.English,
+                verifyDefaultFooter:configure is null);
             Console.WriteLine($"render:verified {language}/{name}");
             if(requireNoInternalScroll&&form.clientConnectionPanel is ScrollableControl client&&
                 (client.VerticalScroll.Visible||client.HorizontalScroll.Visible))
@@ -93,7 +99,49 @@ internal sealed partial class MainForm
         }
     }
 
-    static void VerifyLanguageContract(MainForm form,ProductLanguage language,bool verifyDynamicStatus)
+    static void RenderHelpView(string directory,ProductLanguage language)
+    {
+        Console.WriteLine($"render:start {language}/help");
+        using var owner=new MainForm(verification:true,verificationLanguage:language);
+        owner.activationTimer.Stop();owner.monitor.Stop();owner.tray.Visible=false;
+        using var help=owner.CreateHelpWindow();
+        help.ShowInTaskbar=false;help.Opacity=0;help.Show();Application.DoEvents();
+        try
+        {
+            help.PerformLayout();help.Refresh();Application.DoEvents();
+            var expected=language==ProductLanguage.SimplifiedChinese?"TabLink 使用帮助":"TabLink Help";
+            if(help.Text!=expected||!FindControlText(help,expected))
+                throw new InvalidOperationException("帮助窗口未按当前语言完整呈现。");
+            if(FindNamedControl(help,"helpBody") is not ScrollableControl body||body.HorizontalScroll.Visible||
+                FindNamedControl(help,"helpClose") is not Button{Visible:true} close||
+                !help.RectangleToScreen(help.ClientRectangle).Contains(close.RectangleToScreen(close.ClientRectangle)))
+                throw new InvalidOperationException("帮助窗口出现水平裁切或关闭按钮不可见。");
+            Save(help,directory,"help");
+            Console.WriteLine($"render:saved {language}/help");
+        }
+        finally
+        {
+            help.Close();owner.closing=true;owner.DisposeAutomaticUpdates();owner.activationTimer.Dispose();owner.monitor.Dispose();
+            owner.tray.Visible=false;owner.tray.Dispose();owner.trayMenu.Dispose();owner.nativeTrust?.Dispose();owner.lifetime.Dispose();
+            Console.WriteLine($"render:disposed {language}/help");
+        }
+    }
+
+    static bool FindControlText(Control root,string text)=>root.Text==text||root.Controls.Cast<Control>().Any(child=>FindControlText(child,text));
+    static Control? FindNamedControl(Control root,string name)=>root.Name==name?root:
+        root.Controls.Cast<Control>().Select(child=>FindNamedControl(child,name)).FirstOrDefault(found=>found is not null);
+
+    static void VerifyBrowserButtonContract(MainForm form)
+    {
+        form.browserNetworks.Items.Clear();
+        form.browserNetworks.Items.Add(new NetworkInterfaceChoice(System.Net.IPAddress.Parse("192.0.2.20"),
+            "UI verification route",24,NetworkInterfaceKind.WiFi,null,"00000000-0000-0000-0000-000000000020",20));
+        form.browserNetworks.SelectedIndex=0;form.UpdateBrowserButtons(ready:true);
+        if(form.startBrowser.Enabled!=BrowserRtcSession.IsSupported)
+            throw new InvalidOperationException("浏览器接入按钮没有反映当前构建是否包含接收组件。");
+    }
+
+    static void VerifyLanguageContract(MainForm form,ProductLanguage language,bool verifyDynamicStatus,bool verifyDefaultFooter)
     {
         var english=language==ProductLanguage.English;
         static void Require(bool condition,string message)
@@ -102,6 +150,23 @@ internal sealed partial class MainForm
         Require(form.mainTabs.TabPages.Cast<TabPage>().Select(page=>page.Text).SequenceEqual(english
             ?["Connect display","Settings","Diagnostics & logs"]
             :["连接副屏","设置","检测与日志"]),"主标签未完整本地化。");
+        var clientBounds=form.RectangleToScreen(form.ClientRectangle);
+        var settingsBounds=form.openSettings.RectangleToScreen(form.openSettings.ClientRectangle);
+        var helpBounds=form.openHelp.RectangleToScreen(form.openHelp.ClientRectangle);
+        Require(form.openSettings.Text==(english?"Settings":"设置")&&form.openHelp.Text==(english?"Help":"帮助")&&
+            form.openSettings.Visible&&form.openHelp.Visible&&
+            clientBounds.Contains(settingsBounds)&&clientBounds.Contains(helpBounds),
+            $"标题区设置和帮助按钮未完整呈现或超出窗口客户区：client={clientBounds}，settings={settingsBounds}，help={helpBounds}。");
+        var selectedTab=form.mainTabs.SelectedIndex;form.openSettings.PerformClick();
+        Require(form.mainTabs.SelectedIndex==1,"标题区设置按钮没有打开设置页。");
+        form.mainTabs.SelectedIndex=selectedTab;
+        if(verifyDefaultFooter)
+            Require(form.footerContent.Visible&&form.footerBehaviour.Text==(english
+                ?"One second screen only; selecting × keeps TabLink running in the tray"
+                :"只有一块副屏，点 × 后在托盘继续运行")&&
+                form.authorFooterAuthor.Text==(english?"Author: Zhang Linjie (Jey / @linjierd)":"作者：张林杰（Jey / @linjierd）")&&
+                form.authorFooterGitHub.Text=="GitHub"&&form.authorFooterBlog.Text==(english?"Blog: linjie.space":"博客：linjie.space"),
+                "默认底部提示、作者和链接未完整呈现。");
         Require(form.connectionMode.Items.Cast<object>().Select(item=>item.ToString()).SequenceEqual(english
             ?["TabLink client (recommended)","Browser connection","USB debugging (compatibility)"]
             :["TabLink 客户端（推荐）","浏览器接入","USB 调试（兼容）"]),"连接方式未完整本地化。");
@@ -329,19 +394,19 @@ internal sealed partial class MainForm
     static void VerifyWindowSizingPolicy()
     {
         var large=CalculateInitialWindowBounds(new Rectangle(0,0,2048,1232),96);
-        if(large!=new Rectangle(552,97,944,1038))
+        if(large!=new Rectangle(484,56,1080,1120))
             throw new InvalidOperationException("大工作区默认窗口居中验证失败。");
         var standard=CalculateInitialWindowBounds(new Rectangle(0,0,1920,1040),96);
-        if(standard!=new Rectangle(488,1,944,1038))
+        if(standard!=new Rectangle(420,0,1080,1040))
             throw new InvalidOperationException("1080p 工作区默认窗口验证失败。");
         var shortWork=CalculateInitialWindowBounds(new Rectangle(0,0,1366,728),96);
-        if(shortWork!=new Rectangle(211,0,944,728))
+        if(shortWork!=new Rectangle(143,0,1080,728))
             throw new InvalidOperationException("低高度工作区约束验证失败。");
         var smallWork=new Rectangle(-800,40,800,600);
         var small=CalculateInitialWindowBounds(smallWork,144);
         if(small!=smallWork)
             throw new InvalidOperationException("小屏工作区约束验证失败。");
-        if(ScaleLogicalSize(PreferredExpandedWindowSize,144)!=new Size(1416,1557))
+        if(ScaleLogicalSize(PreferredExpandedWindowSize,144)!=new Size(1620,1680))
             throw new InvalidOperationException("逻辑窗口尺寸的 DPI 换算验证失败。");
     }
     static void Save(Form form,string directory,string name)

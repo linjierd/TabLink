@@ -2,7 +2,7 @@ namespace TabLink.Windows;
 
 internal sealed partial class MainForm
 {
-    internal static readonly Size PreferredExpandedWindowSize=new(944,1038);
+    internal static readonly Size PreferredExpandedWindowSize=new(1080,1120);
     internal static readonly Size PreferredCompactWindowSize=new(760,640);
     const int LogicalDpi=96;
 

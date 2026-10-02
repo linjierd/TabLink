@@ -10,7 +10,8 @@ internal sealed partial class MainForm
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"TabLink","author-footer.json"));
     AuthorFooterPreferences authorFooterPreferences=AuthorFooterPreferences.CreateDefault();
 
-    readonly CheckBox authorFooterEnabledEditor=new(){Text="显示底部作者信息",AutoSize=true};
+    readonly CheckBox authorFooterEnabledEditor=new(){Text="显示底部信息",AutoSize=true};
+    readonly TextBox authorFooterSummaryEditor=new(){Dock=DockStyle.Fill,MaxLength=AuthorFooterPreferences.MaximumSummaryTextLength};
     readonly TextBox authorFooterAuthorEditor=new(){Dock=DockStyle.Fill,MaxLength=AuthorFooterPreferences.MaximumAuthorTextLength};
     readonly TextBox authorFooterGitHubLabelEditor=new(){Dock=DockStyle.Fill,MaxLength=AuthorFooterPreferences.MaximumLinkLabelLength};
     readonly TextBox authorFooterGitHubUrlEditor=new(){Dock=DockStyle.Fill,MaxLength=AuthorFooterPreferences.MaximumUrlLength};
@@ -20,7 +21,7 @@ internal sealed partial class MainForm
     readonly Button restoreAuthorFooter=new(){Text="恢复默认"};
     readonly Label authorFooterHelp=new()
     {
-        Text="作者信息默认显示在主窗口底部。保存后立即生效，不会停止当前副屏；链接只接受完整的 HTTPS 地址。",
+        Text="底部提示和作者信息默认显示。可以整体关闭或自定义；保存后立即生效且不会停止当前副屏，链接只接受完整的 HTTPS 地址。",
         AutoSize=true,ForeColor=Color.FromArgb(90,107,128),Margin=new Padding(0,0,0,8)
     };
     readonly Label authorFooterPreferenceState=new()
@@ -33,6 +34,12 @@ internal sealed partial class MainForm
         Dock=DockStyle.Fill,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,
         FlowDirection=FlowDirection.LeftToRight,WrapContents=false,Margin=Padding.Empty,Padding=Padding.Empty
     };
+    readonly Label footerBehaviour=new()
+    {
+        Text="只有一块副屏，点 × 后在托盘继续运行",Dock=DockStyle.Fill,AutoSize=true,
+        ForeColor=Color.FromArgb(90,107,128),TextAlign=ContentAlignment.MiddleLeft,Margin=Padding.Empty,UseMnemonic=false
+    };
+    readonly TableLayoutPanel footerContent=new();
     readonly Label authorFooterAuthor=new()
     {
         AutoSize=false,AutoEllipsis=true,ForeColor=Color.FromArgb(90,107,128),
@@ -55,13 +62,13 @@ internal sealed partial class MainForm
     {
         var group=new GroupBox
         {
-            Text="底部作者信息",Dock=DockStyle.Top,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,
+            Text="底部信息",Dock=DockStyle.Top,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,
             Padding=new Padding(12),Margin=new Padding(0,0,0,12)
         };
         var layout=new TableLayoutPanel
         {
             Dock=DockStyle.Top,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,
-            ColumnCount=2,RowCount=8,Margin=Padding.Empty,Padding=Padding.Empty
+            ColumnCount=2,RowCount=9,Margin=Padding.Empty,Padding=Padding.Empty
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
@@ -70,22 +77,23 @@ internal sealed partial class MainForm
         layout.Controls.Add(authorFooterHelp,0,0);layout.SetColumnSpan(authorFooterHelp,2);
         authorFooterEnabledEditor.Margin=new Padding(0,2,0,8);
         layout.Controls.Add(authorFooterEnabledEditor,0,1);layout.SetColumnSpan(authorFooterEnabledEditor,2);
-        AddAuthorFooterEditorRow(layout,2,"作者文字",authorFooterAuthorEditor);
-        AddAuthorFooterEditorRow(layout,3,"GitHub 显示文字",authorFooterGitHubLabelEditor);
-        AddAuthorFooterEditorRow(layout,4,"GitHub 地址",authorFooterGitHubUrlEditor);
-        AddAuthorFooterEditorRow(layout,5,"博客显示文字",authorFooterBlogLabelEditor);
-        AddAuthorFooterEditorRow(layout,6,"博客地址",authorFooterBlogUrlEditor);
+        AddAuthorFooterEditorRow(layout,2,"底部提示文字",authorFooterSummaryEditor);
+        AddAuthorFooterEditorRow(layout,3,"作者文字",authorFooterAuthorEditor);
+        AddAuthorFooterEditorRow(layout,4,"GitHub 显示文字",authorFooterGitHubLabelEditor);
+        AddAuthorFooterEditorRow(layout,5,"GitHub 地址",authorFooterGitHubUrlEditor);
+        AddAuthorFooterEditorRow(layout,6,"博客显示文字",authorFooterBlogLabelEditor);
+        AddAuthorFooterEditorRow(layout,7,"博客地址",authorFooterBlogUrlEditor);
 
         var commands=Flow(saveAuthorFooter,restoreAuthorFooter);
         commands.Controls.Add(authorFooterPreferenceState);
-        layout.Controls.Add(commands,0,7);layout.SetColumnSpan(commands,2);
+        layout.Controls.Add(commands,0,8);layout.SetColumnSpan(commands,2);
         group.Controls.Add(layout);
 
         saveAuthorFooter.Click+=(_,_)=>SaveAndApplyAuthorFooterPreferences();
         restoreAuthorFooter.Click+=(_,_)=>RestoreDefaultAuthorFooterPreferences();
         PopulateAuthorFooterEditors(authorFooterPreferences);
         authorFooterEnabledEditor.CheckedChanged+=(_,_)=>MarkAuthorFooterPreferencesDirty();
-        foreach(var editor in new[]{authorFooterAuthorEditor,authorFooterGitHubLabelEditor,
+        foreach(var editor in new[]{authorFooterSummaryEditor,authorFooterAuthorEditor,authorFooterGitHubLabelEditor,
             authorFooterGitHubUrlEditor,authorFooterBlogLabelEditor,authorFooterBlogUrlEditor})
             editor.TextChanged+=(_,_)=>MarkAuthorFooterPreferencesDirty();
         return group;
@@ -104,19 +112,13 @@ internal sealed partial class MainForm
 
     Control BuildFooter()
     {
-        var footer=new TableLayoutPanel
-        {
-            Dock=DockStyle.Fill,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,
-            ColumnCount=1,RowCount=2,Margin=Padding.Empty,Padding=Padding.Empty
-        };
-        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
-        footer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        footer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        footer.Controls.Add(new Label
-        {
-            Text="只启用一块副屏  ·  点 × 后在托盘继续运行",Dock=DockStyle.Fill,AutoSize=true,
-            ForeColor=muted,TextAlign=ContentAlignment.MiddleLeft,Margin=Padding.Empty,UseMnemonic=false
-        },0,0);
+        footerContent.Dock=DockStyle.Fill;footerContent.AutoSize=true;footerContent.AutoSizeMode=AutoSizeMode.GrowAndShrink;
+        footerContent.ColumnCount=1;footerContent.RowCount=2;footerContent.Margin=Padding.Empty;footerContent.Padding=Padding.Empty;
+        footerContent.ColumnStyles.Clear();footerContent.RowStyles.Clear();footerContent.Controls.Clear();
+        footerContent.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
+        footerContent.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        footerContent.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        footerContent.Controls.Add(footerBehaviour,0,0);
 
         authorFooterGitHub.LinkClicked+=OpenAuthorFooterLink;
         authorFooterBlog.LinkClicked+=OpenAuthorFooterLink;
@@ -124,16 +126,17 @@ internal sealed partial class MainForm
         authorFooterRow.Controls.Add(authorFooterGitHub);
         authorFooterRow.Controls.Add(authorFooterBlog);
         authorFooterRow.SizeChanged+=(_,_)=>ResizeAuthorFooterRow();
-        footer.SizeChanged+=(_,_)=>ResizeAuthorFooterRow();
+        footerContent.SizeChanged+=(_,_)=>ResizeAuthorFooterRow();
         SizeChanged+=(_,_)=>ResizeAuthorFooterRow();
-        footer.Controls.Add(authorFooterRow,0,1);
+        footerContent.Controls.Add(authorFooterRow,0,1);
         ApplyAuthorFooterPreferences(authorFooterPreferences);
-        return footer;
+        return footerContent;
     }
 
     void PopulateAuthorFooterEditors(AuthorFooterPreferences preferences)
     {
         authorFooterEnabledEditor.Checked=preferences.Enabled;
+        authorFooterSummaryEditor.Text=preferences.SummaryText;
         authorFooterAuthorEditor.Text=preferences.AuthorText;
         authorFooterGitHubLabelEditor.Text=preferences.GitHubLabel;
         authorFooterGitHubUrlEditor.Text=preferences.GitHubUrl;
@@ -144,6 +147,7 @@ internal sealed partial class MainForm
     AuthorFooterPreferences ReadAuthorFooterEditors()=>new()
     {
         Enabled=authorFooterEnabledEditor.Checked,
+        SummaryText=authorFooterSummaryEditor.Text,
         AuthorText=authorFooterAuthorEditor.Text,
         GitHubLabel=authorFooterGitHubLabelEditor.Text,
         GitHubUrl=authorFooterGitHubUrlEditor.Text,
@@ -161,7 +165,7 @@ internal sealed partial class MainForm
             PopulateAuthorFooterEditors(saved);
             ApplyAuthorFooterPreferences(saved);
             SetAuthorFooterPreferenceState(Ui("已保存并应用。","Saved and applied."),false);
-            Log(Ui("底部作者信息已保存并应用。","Footer author details were saved and applied."));
+            Log(Ui("底部信息已保存并应用。","Footer details were saved and applied."));
         }
         catch(Exception ex) when(ex is ArgumentException or IOException or UnauthorizedAccessException or SecurityException)
         {
@@ -175,6 +179,7 @@ internal sealed partial class MainForm
         var defaults=AuthorFooterPreferences.CreateDefault();
         if(uiLanguage==ProductLanguage.English)
         {
+            defaults.SummaryText="One second screen only; selecting × keeps TabLink running in the tray";
             defaults.AuthorText="Author: Zhang Linjie (Jey / @linjierd)";
             defaults.BlogLabel="Blog: linjie.space";
         }
@@ -185,10 +190,11 @@ internal sealed partial class MainForm
     void ApplyAuthorFooterPreferences(AuthorFooterPreferences preferences)
     {
         var applied=preferences.NormalizeAndValidate();
+        footerBehaviour.Text=applied.SummaryText;
         authorFooterAuthor.Text=applied.AuthorText;
         ConfigureAuthorFooterLink(authorFooterGitHub,applied.GitHubLabel,applied.GitHubUrl);
         ConfigureAuthorFooterLink(authorFooterBlog,applied.BlogLabel,applied.BlogUrl);
-        authorFooterRow.Visible=applied.Enabled;
+        footerContent.Visible=applied.Enabled;
         ResizeAuthorFooterRow();
         authorFooterRow.Parent?.PerformLayout();
     }
@@ -251,7 +257,7 @@ internal sealed partial class MainForm
         {
             if(argument.ParamName is nameof(AuthorFooterPreferences.GitHubUrl) or nameof(AuthorFooterPreferences.BlogUrl))
                 return Ui("未保存：链接必须是完整的 HTTPS 地址，且不能包含账号信息。","Not saved: links must be complete HTTPS URLs without embedded credentials.");
-            return Ui("未保存：请检查作者文字、链接文字和地址，不能包含换行或超出长度限制。","Not saved: check the author text, labels and addresses. They cannot contain line breaks or exceed their limits.");
+            return Ui("未保存：请检查底部提示、作者文字、链接文字和地址，不能包含换行或超出长度限制。","Not saved: check the footer summary, author text, labels and addresses. They cannot contain line breaks or exceed their limits.");
         }
         return Ui("未保存：设置文件所在位置当前不可写。","Not saved: the settings location is not writable.");
     }

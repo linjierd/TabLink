@@ -76,6 +76,8 @@ internal sealed partial class MainForm : Form
     readonly Button removeRule=new(){Text="移除选中规则"};
     readonly TextBox log=new(){Multiline=true,ReadOnly=true,Dock=DockStyle.Fill,ScrollBars=ScrollBars.Vertical,BorderStyle=BorderStyle.None};
     readonly TabControl mainTabs=new(){Dock=DockStyle.Fill,Multiline=false,Padding=new Point(16,7),Margin=new Padding(0,8,0,6)};
+    readonly Button openSettings=new(){Text="设置",AutoSize=true,Padding=new Padding(14,6,14,6)};
+    readonly Button openHelp=new(){Text="帮助",AutoSize=true,Padding=new Padding(14,6,14,6)};
     readonly ComboBox connectionMode=new(){DropDownStyle=ComboBoxStyle.DropDownList,Width=280};
     readonly ComboBox qualityMode=new(){DropDownStyle=ComboBoxStyle.DropDownList,Width=150};
     readonly ComboBox encoderMode=new(){DropDownStyle=ComboBoxStyle.DropDownList,Width=200,DropDownWidth=220};
@@ -144,6 +146,7 @@ internal sealed partial class MainForm : Form
             settings=new DevicePolicySettings();policy=new DevicePolicy(settings);LoadRules();adbPath.Text=Ui("界面验证模式：未读取本机 ADB 配置。","UI verification mode: local ADB settings were not read.");
         }
         refresh.Click+=async(_,_)=>await GuardAsync(RefreshAsync);
+        devices.SelectedIndexChanged+=(_,_)=>UpdateButtons();
         chooseAdb.Click+=(_,_)=>BrowseAdb();
         connect.Click+=async(_,_)=>await GuardAsync(ConnectAsync);
         stop.Click+=async(_,_)=>{SuppressTrustedNetworkAutoStart();await GuardAsync(StopAsync);};
@@ -256,9 +259,30 @@ internal sealed partial class MainForm : Form
         var root=new TableLayoutPanel{Dock=DockStyle.Fill,Padding=new Padding(16),ColumnCount=1,RowCount=4};
         root.RowStyles.Add(new RowStyle(SizeType.Absolute,96));root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent,100));root.RowStyles.Add(new RowStyle(SizeType.AutoSize));Controls.Add(root);
-        var header=new FlowLayoutPanel{Dock=DockStyle.Top,AutoSize=true,MinimumSize=new Size(0,88),FlowDirection=FlowDirection.TopDown,WrapContents=false,Margin=new Padding(0,0,0,8)};
-        header.Controls.Add(new Label{Text="TabLink",Font=new Font("Segoe UI",22,FontStyle.Bold),AutoSize=true,ForeColor=accent});
-        header.Controls.Add(new Label{Text="让手机、平板成为电脑的独立扩展桌面",AutoSize=true,ForeColor=muted});root.Controls.Add(header,0,0);
+        var header=new TableLayoutPanel
+        {
+            Dock=DockStyle.Top,AutoSize=false,ColumnCount=2,RowCount=1,Height=88,
+            MinimumSize=new Size(0,88),Margin=new Padding(0,0,0,8)
+        };
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        var branding=new TableLayoutPanel{Dock=DockStyle.Fill,AutoSize=false,ColumnCount=1,RowCount=2,Margin=Padding.Empty};
+        branding.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
+        branding.RowStyles.Add(new RowStyle(SizeType.AutoSize));branding.RowStyles.Add(new RowStyle(SizeType.Percent,100));
+        branding.Controls.Add(new Label{Text="TabLink",Font=new Font("Segoe UI",22,FontStyle.Bold),AutoSize=true,ForeColor=accent},0,0);
+        branding.Controls.Add(new Label
+        {
+            Text="让手机、平板成为电脑的独立扩展桌面",Dock=DockStyle.Top,AutoSize=false,AutoEllipsis=true,Height=24,
+            ForeColor=muted,TextAlign=ContentAlignment.TopLeft,UseMnemonic=false
+        },0,1);header.Controls.Add(branding,0,0);
+        var headerCommands=new FlowLayoutPanel{Dock=DockStyle.Fill,AutoSize=true,FlowDirection=FlowDirection.LeftToRight,WrapContents=false,Margin=Padding.Empty,Padding=new Padding(0,10,0,0)};
+        openSettings.Margin=new Padding(0,0,8,0);openHelp.Margin=Padding.Empty;
+        headerCommands.Controls.Add(openSettings);headerCommands.Controls.Add(openHelp);header.Controls.Add(headerCommands,1,0);root.Controls.Add(header,0,0);
+        void ConstrainHeaderWidth()
+        {
+            var width=Math.Max(320,ClientSize.Width-root.Padding.Horizontal);
+            header.MaximumSize=new Size(width,0);header.Width=width;
+        }
+        ConstrainHeaderWidth();SizeChanged+=(_,_)=>ConstrainHeaderWidth();
         var state=new FlowLayoutPanel{Dock=DockStyle.Fill,AutoSize=true,MinimumSize=new Size(0,64),BackColor=Color.White,Padding=new Padding(14,7,10,6),FlowDirection=FlowDirection.TopDown,WrapContents=false};
         metrics.ForeColor=muted;state.Controls.Add(status);state.Controls.Add(metrics);root.Controls.Add(state,0,1);
         state.SizeChanged+=(_,_)=>{var width=Math.Max(240,state.ClientSize.Width-state.Padding.Horizontal-12);status.MaximumSize=metrics.MaximumSize=new Size(width,0);};
@@ -293,7 +317,16 @@ internal sealed partial class MainForm : Form
         clientConnectionPanel=BuildNetworkPanel();browserConnectionPanel=BuildBrowserPanel();
         var connection=new Panel{Dock=DockStyle.Fill,BackColor=Color.White,Padding=new Padding(20),AutoScroll=true};usbDebugConnectionPanel=connection;
         connectionHost.Controls.Add(clientConnectionPanel);connectionHost.Controls.Add(browserConnectionPanel);connectionHost.Controls.Add(usbDebugConnectionPanel);
-        connectionMode.SelectedIndexChanged+=(_,_)=>ShowConnectionMode();connectionMode.SelectedIndex=0;
+        connectionMode.SelectedIndexChanged+=(_,_)=>ShowConnectionMode();
+        connectionMode.SelectionChangeCommitted+=async(_,_)=>
+        {
+            if(verificationMode||!settingsValid)return;
+            if(connectionMode.SelectedIndex==1)await GuardAsync(RefreshNetworksAsync);
+            else if(connectionMode.SelectedIndex==2)await GuardAsync(RefreshAsync,adbOperation:true);
+        };
+        connectionMode.SelectedIndex=0;
+        openSettings.Click+=(_,_)=>OpenSettingsPage();
+        openHelp.Click+=(_,_)=>ShowHelpWindow();
 
         log.BackColor=Color.White;log.ForeColor=muted;
         var form=new TableLayoutPanel{Dock=DockStyle.Top,AutoSize=true,ColumnCount=2,RowCount=5};
@@ -560,22 +593,40 @@ internal sealed partial class MainForm : Form
     }
     async Task RefreshAsync()
     {
-        LocateAdb();devices.Items.Clear();displays.Items.Clear();
-        foreach(var display in VirtualDisplayManager.GetDisplays().Where(d=>d.IsTabLinkCompatible&&!d.IsPrimary))displays.Items.Add(new DisplayChoice(display));
-        if(displays.Items.Count>0)displays.SelectedIndex=0;
+        var previousSerial=(devices.SelectedItem as DeviceChoice)?.Device.Serial;
+        LocateAdb();
+        var refreshedDisplays=VirtualDisplayManager.GetDisplays().Where(d=>d.IsTabLinkCompatible&&!d.IsPrimary).Select(d=>new DisplayChoice(d)).ToArray();
+        var refreshedDevices=new List<DeviceChoice>();
         if(adb is not null && settingsValid)
         {
             var inventory=await UsbInventory.ReadAsync(lifetime.Token);
-            foreach(var device in await adb.ListDevicesAsync(lifetime.Token))devices.Items.Add(new DeviceChoice(device,policy.Evaluate(device,inventory),uiLanguage));
-            if(devices.Items.Count>0)devices.SelectedIndex=0;
-            Log(Ui($"刷新完成：{devices.Items.Count} 台 USB 调试候选设备（含待授权/离线），{displays.Items.Count} 块可用虚拟副屏。",
-                $"Refresh complete: {devices.Items.Count} USB-debugging candidates (including unauthorised/offline) and {displays.Items.Count} available virtual displays."));
+            refreshedDevices.AddRange((await adb.ListDevicesAsync(lifetime.Token))
+                .Select(device=>new DeviceChoice(device,policy.Evaluate(device,inventory),uiLanguage)));
+            Log(Ui($"刷新完成：{refreshedDevices.Count} 台 USB 调试候选设备（含待授权/离线），{refreshedDisplays.Length} 块可用虚拟副屏。",
+                $"Refresh complete: {refreshedDevices.Count} USB-debugging candidates (including unauthorised/offline) and {refreshedDisplays.Length} available virtual displays."));
         }
         else Log(Ui("尚未配置 Android 平台工具，请先选择 adb.exe。","Android Platform-Tools are not configured. Select adb.exe first."));
-        if(devices.Items.Count==0)devices.Items.Add(Ui("未发现 ADB 平板：请确认 USB 调试已开启并在平板允许此电脑","No ADB tablet found: enable USB debugging and allow this computer on the tablet"));
-        if(displays.Items.Count==0)displays.Items.Add(File.Exists(SessionGuard.LastDisplayPath)?Ui("当前没有虚拟副屏 · 连接时自动安装","No virtual display is present · installed automatically when connecting"):Ui("尚无活动虚拟副屏","No active virtual display"));
-        if(devices.SelectedIndex<0)devices.SelectedIndex=0;
-        if(displays.SelectedIndex<0)displays.SelectedIndex=0;
+        devices.BeginUpdate();displays.BeginUpdate();
+        try
+        {
+            devices.Items.Clear();displays.Items.Clear();
+            foreach(var display in refreshedDisplays)displays.Items.Add(display);
+            if(displays.Items.Count==0)displays.Items.Add(File.Exists(SessionGuard.LastDisplayPath)?Ui("当前没有虚拟副屏 · 连接时自动安装","No virtual display is present · installed automatically when connecting"):Ui("尚无活动虚拟副屏","No active virtual display"));
+            displays.SelectedIndex=0;
+
+            var selection=UsbDeviceAutoSelection.FindPreferredIndex(
+                refreshedDevices.Select(device=>(device.Device.Serial,device.Decision.Allowed)).ToArray(),previousSerial);
+            if(selection<0)
+            {
+                var allowedCount=refreshedDevices.Count(device=>device.Decision.Allowed);
+                devices.Items.Add(allowedCount>1
+                    ?Ui("检测到多台可连接设备，请选择一台","More than one connectable device was found; select one")
+                    :Ui("未发现已授权且未排除的 USB 调试设备","No authorised, non-excluded USB debugging device was found"));
+            }
+            foreach(var device in refreshedDevices)devices.Items.Add(device);
+            devices.SelectedIndex=selection>=0?selection:0;
+        }
+        finally{devices.EndUpdate();displays.EndUpdate();}
         if(server is null)
         {
             if(devices.Items.OfType<DeviceChoice>().Any(d=>d.Decision.Allowed))ShowStatus("平板已识别，请连接副屏","Tablet recognised; connect the display");
@@ -1374,7 +1425,8 @@ internal sealed partial class MainForm : Form
         qualityMode.Enabled=ready&&connectionMode.SelectedIndex!=1&&browserHost is null&&
             !additionalSessions.Any(session=>!session.IsStopped);
         encoderMode.Enabled=softwareFallback.Enabled=ready&&!HasAnySessions;
-        refresh.Enabled=idle;chooseAdb.Enabled=idle;connect.Enabled=idle&&adb is not null;installApk.Enabled=idle&&adb is not null;
+        var allowedDevice=devices.SelectedItem is DeviceChoice{Decision.Allowed:true};
+        refresh.Enabled=idle;chooseAdb.Enabled=idle;connect.Enabled=idle&&adb is not null&&allowedDevice;installApk.Enabled=idle&&adb is not null&&allowedDevice;
         devices.Enabled=idle;displays.Enabled=idle;touch.Enabled=idle;
         stop.Enabled=!busy&&!stopping&&!closing&&!exitStarting&&!updateExitStarted&&(server is not null||HasPendingNetworkStart);
         trayStop.Enabled=!busy&&!stopping&&!closing&&!exitStarting&&!updateExitStarted&&(HasAnySessions||HasPendingNetworkStart);

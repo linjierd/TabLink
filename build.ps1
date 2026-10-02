@@ -1,4 +1,4 @@
-param([switch]$SkipAndroid,[string]$OutputDirectory,[switch]$PublicRelease)
+param([switch]$SkipAndroid,[string]$OutputDirectory,[switch]$PublicRelease,[switch]$LocalFullBuild)
 $ErrorActionPreference = 'Stop'
 $projectRoot = $PSScriptRoot
 & (Join-Path $projectRoot 'tools\Test-TabLinkVersionContract.ps1') -RepositoryRoot $projectRoot
@@ -9,6 +9,12 @@ $versionIdentity = Get-Content -LiteralPath (Join-Path $projectRoot 'eng\version
 $releaseVersion = [string]$versionIdentity.version
 if ($PublicRelease -and $SkipAndroid) {
     throw 'PublicRelease cannot use -SkipAndroid. A public package must rebuild, lint, identify and verify the Android APK from the same clean source commit.'
+}
+if ($LocalFullBuild -and $SkipAndroid) {
+    throw 'LocalFullBuild cannot use -SkipAndroid. The complete local package must include the matching Android client.'
+}
+if ($PublicRelease -and $LocalFullBuild) {
+    throw 'PublicRelease and LocalFullBuild are mutually exclusive.'
 }
 if ($PublicRelease) {
     $insideWorkTree = & git -C $projectRoot rev-parse --is-inside-work-tree 2>$null
@@ -21,8 +27,8 @@ if ($PublicRelease) {
         throw 'PublicRelease requires a clean Git working tree. Commit or remove every tracked and untracked source change first.'
     }
 }
-if ($PublicRelease -and -not $PSBoundParameters.ContainsKey('OutputDirectory')) {
-    throw 'PublicRelease requires an explicit new or empty OutputDirectory.'
+if (($PublicRelease -or $LocalFullBuild) -and -not $PSBoundParameters.ContainsKey('OutputDirectory')) {
+    throw 'PublicRelease and LocalFullBuild require an explicit new or empty OutputDirectory.'
 }
 if ($PSBoundParameters.ContainsKey('OutputDirectory')) {
     if ([string]::IsNullOrWhiteSpace($OutputDirectory)) { throw 'OutputDirectory cannot be empty when explicitly supplied.' }
@@ -508,7 +514,7 @@ foreach ($windowsTest in @(
 }
 dotnet run --project (Join-Path $projectRoot 'tests\TabLink.Update.Tests\TabLink.Update.Tests.csproj') -c Release
 if ($LASTEXITCODE -ne 0) { throw 'Stable update tests failed.' }
-$selfContained = if ($PublicRelease) { 'true' } else { 'false' }
+$selfContained = if ($PublicRelease -or $LocalFullBuild) { 'true' } else { 'false' }
 $publicPublishProperties = @()
 if ($PublicRelease) {
     # Public artifacts must not disclose local source/PDB paths. PathMap is a
@@ -529,9 +535,12 @@ if ($PublicRelease) {
     $windowsPublishArguments += '-p:EnableBrowserReceiver=false'
     $windowsPublishArguments += $publicPublishProperties
 }
+elseif ($LocalFullBuild) {
+    $windowsPublishArguments += '-p:EnableBrowserReceiver=true'
+}
 dotnet @windowsPublishArguments
 if ($LASTEXITCODE -ne 0) { throw 'Windows publish failed.' }
-if ($PublicRelease) {
+if ($PublicRelease -or $LocalFullBuild) {
     $updaterPublishArguments = @(
         'publish', (Join-Path $projectRoot 'src\TabLink.Updater\TabLink.Updater.csproj'),
         '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true',

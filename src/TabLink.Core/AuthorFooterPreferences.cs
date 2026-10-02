@@ -10,10 +10,12 @@ namespace TabLink.Core;
 public sealed class AuthorFooterPreferences
 {
     public const int MaximumAuthorTextLength = 160;
+    public const int MaximumSummaryTextLength = 160;
     public const int MaximumLinkLabelLength = 64;
     public const int MaximumUrlLength = 2048;
 
     public bool Enabled { get; set; } = true;
+    public string SummaryText { get; set; } = "只有一块副屏，点 × 后在托盘继续运行";
     public string AuthorText { get; set; } = "作者：张林杰（Jey / @linjierd）";
     public string GitHubLabel { get; set; } = "GitHub";
     public string GitHubUrl { get; set; } = "https://github.com/linjierd";
@@ -29,6 +31,7 @@ public sealed class AuthorFooterPreferences
         return new AuthorFooterPreferences
         {
             Enabled = Enabled,
+            SummaryText = NormalizeText(SummaryText, nameof(SummaryText), MaximumSummaryTextLength, allowEmpty: false),
             AuthorText = NormalizeText(AuthorText, nameof(AuthorText), MaximumAuthorTextLength, allowEmpty: false),
             GitHubLabel = github.Label,
             GitHubUrl = github.Url,
@@ -97,7 +100,7 @@ public sealed class AuthorFooterPreferences
 /// </summary>
 public sealed class AuthorFooterPreferencesStore(string path)
 {
-    private const int CurrentSchema = 1;
+    private const int CurrentSchema = 2;
     private static readonly JsonSerializerOptions Options = new()
     {
         WriteIndented = true,
@@ -115,14 +118,17 @@ public sealed class AuthorFooterPreferencesStore(string path)
             var content = File.ReadAllText(Path);
             using var document = JsonDocument.Parse(content);
             if (document.RootElement.ValueKind != JsonValueKind.Object ||
-                !HasCompleteUniqueShape(document.RootElement))
+                !HasCompleteUniqueShape(document.RootElement, out var schemaVersion))
                 return AuthorFooterPreferences.CreateDefault();
             var stored = JsonSerializer.Deserialize<StoredPreferences>(content, Options);
-            if (stored is null || stored.SchemaVersion != CurrentSchema)
+            if (stored is null || stored.SchemaVersion != schemaVersion || schemaVersion is not (1 or CurrentSchema))
                 return AuthorFooterPreferences.CreateDefault();
             return new AuthorFooterPreferences
             {
                 Enabled = stored.Enabled,
+                SummaryText = schemaVersion == 1
+                    ? AuthorFooterPreferences.CreateDefault().SummaryText
+                    : stored.SummaryText ?? "",
                 AuthorText = stored.AuthorText ?? "",
                 GitHubLabel = stored.GitHubLabel ?? "",
                 GitHubUrl = stored.GitHubUrl ?? "",
@@ -151,6 +157,7 @@ public sealed class AuthorFooterPreferencesStore(string path)
             {
                 SchemaVersion = CurrentSchema,
                 Enabled = normalized.Enabled,
+                SummaryText = normalized.SummaryText,
                 AuthorText = normalized.AuthorText,
                 GitHubLabel = normalized.GitHubLabel,
                 GitHubUrl = normalized.GitHubUrl,
@@ -171,9 +178,12 @@ public sealed class AuthorFooterPreferencesStore(string path)
         }
     }
 
-    private static bool HasCompleteUniqueShape(JsonElement element)
+    private static bool HasCompleteUniqueShape(JsonElement element, out int schemaVersion)
     {
-        if (!HasUniquePropertiesRecursively(element)) return false;
+        schemaVersion = 0;
+        if (!HasUniquePropertiesRecursively(element) ||
+            !element.TryGetProperty(nameof(StoredPreferences.SchemaVersion), out var schema) ||
+            !schema.TryGetInt32(out schemaVersion) || schemaVersion is not (1 or CurrentSchema)) return false;
         var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var property in element.EnumerateObject())
             names.Add(property.Name);
@@ -184,7 +194,7 @@ public sealed class AuthorFooterPreferencesStore(string path)
             nameof(StoredPreferences.GitHubUrl), nameof(StoredPreferences.BlogLabel),
             nameof(StoredPreferences.BlogUrl)
         ];
-        return required.All(names.Contains);
+        return required.All(names.Contains) && (schemaVersion == 1 || names.Contains(nameof(StoredPreferences.SummaryText)));
     }
 
     private static bool HasUniquePropertiesRecursively(JsonElement element)
@@ -207,6 +217,7 @@ public sealed class AuthorFooterPreferencesStore(string path)
     {
         public int SchemaVersion { get; set; }
         public bool Enabled { get; set; }
+        public string? SummaryText { get; set; }
         public string? AuthorText { get; set; }
         public string? GitHubLabel { get; set; }
         public string? GitHubUrl { get; set; }

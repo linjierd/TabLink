@@ -56,9 +56,11 @@ try
     Check(AdbLocator.FindAdbPath(null, new(".", null, null, null, [".", "", "bad\0path"])) is null,
         "relative and invalid discovery roots cannot search current working directory");
     Check(AdbLocator.FindAdbPath(null, new(app, null, null, null, [])) is null, "no complete installation returns null");
+    VerifyUsbDeviceAutoSelection();
     VerifyProtectedStagingRecovery(root);
     Console.WriteLine($"PASS: {count} bundled ADB locator assertions; no adb process was executed.");
 }
+
 finally
 {
     var checkedRoot = Path.GetFullPath(root);
@@ -69,6 +71,22 @@ finally
     Directory.Delete(checkedRoot, recursive: true);
     if (Directory.Exists(intendedParent) && !Directory.EnumerateFileSystemEntries(intendedParent).Any())
         Directory.Delete(intendedParent);
+}
+
+void VerifyUsbDeviceAutoSelection()
+{
+    Check(UsbDeviceAutoSelection.FindPreferredIndex([], null) == -1,
+        "empty refresh has no automatic USB selection");
+    Check(UsbDeviceAutoSelection.FindPreferredIndex([("blocked", false), ("ready", true)], null) == 1,
+        "the only allowed USB device is selected even when it is not first");
+    Check(UsbDeviceAutoSelection.FindPreferredIndex([("first", true), ("second", true)], null) == -1,
+        "multiple allowed USB devices require an explicit selection");
+    Check(UsbDeviceAutoSelection.FindPreferredIndex([("first", true), ("second", true)], "second") == 1,
+        "an explicitly selected allowed USB device is preserved");
+    Check(UsbDeviceAutoSelection.FindPreferredIndex([("old", false), ("ready", true)], "old") == 1,
+        "a no-longer-allowed old selection falls back to the only allowed USB device");
+    Check(UsbDeviceAutoSelection.FindPreferredIndex([("old", false), ("other", false)], "old") == -1,
+        "blocked USB devices are never selected automatically");
 }
 
 void VerifyProtectedStagingRecovery(string fixtureRoot)

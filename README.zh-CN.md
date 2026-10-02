@@ -267,6 +267,14 @@ dotnet run --project tests/TabLink.Core.Tests -c Release
 .\build.ps1 -SkipAndroid
 ```
 
+如需给自己的 Windows 电脑生成包含浏览器接收组件和内置 ADB 的完整自包含成品，请指定一个新的空目录：
+
+```powershell
+.\build.ps1 -LocalFullBuild -OutputDirectory E:\TabLink-local-full
+```
+
+浏览器接收组件当前依赖 SIPSorcery 10.0.16。分享这份本地完整包前请阅读随包许可证；面向全球下载的公开压缩包仍会排除该依赖。
+
 每次推送或 Pull Request 都会同时运行 Windows managed 回归和 Android debug 门禁。Android 作业会校验 Windows / Android 版本一致性，执行纯 JVM 协议测试、`assembleDebug`、`lintDebug` 和 APK 签名验证；它不调用 ADB、不安装驱动，也不访问真实设备。
 
 当前版本身份集中在 `eng/version.json`，根构建、Android 构建和 CI 都会在耗时任务前核对 Windows、Android、build 号与当前文档。普通构建使用 `android/artifacts/TabLink-android-0.8.9-debug.apk`；`-PublicRelease` 会生成不可调试但仍使用既有开发证书的 `TabLink-android-0.8.9-preview.apk`，并注入正式稳定频道地址。公开构建禁止 `-SkipAndroid`，既有预览签名密钥缺失或 APK 签名证书、包名、versionCode、versionName 任一不符合固定发布契约时会失败关闭，不会静默生成新签名身份。公开构建同时生成 self-contained Windows x64 程序、排除不可全球再分发的浏览器接收依赖和 Google ADB 二进制。脚本串行运行可信配对、单屏驱动配置、显示分配、清理与生命周期、连接健康、更新、传输和编码后端回归，复制 APK、LGPL 硬件 helper、GPL x264 helper、各自许可与完整对应源码，并生成 `SHA256SUMS.txt`。构建过程不会安装驱动、创建设备或连接平板。
