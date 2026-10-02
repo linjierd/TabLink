@@ -50,7 +50,7 @@ public static class CompatibilityCatalogGenerator
                 .Append(report.Video.Encoder).Append("` / `").Append(report.Video.Decoder)
                 .Append("`; presentation callback ").Append(FormatDecimal(report.Video.PresentationCallbackFps))
                 .Append(" fps; physical presentation ").Append(FormatPhysicalPresentation(report.Video));
-            builder.Append(" | [").Append(report.Evidence.Document).Append("](../")
+            builder.Append(" | [").Append(Path.GetFileName(report.Evidence.Document)).Append("](../")
                 .Append(report.Evidence.Document).Append(") |\n");
         }
 
@@ -118,7 +118,7 @@ public static class CompatibilityCatalogGenerator
                 .Append(report.Video.Encoder).Append("` / `").Append(report.Video.Decoder)
                 .Append("`；呈现回调 ").Append(FormatDecimal(report.Video.PresentationCallbackFps))
                 .Append(" fps；物理呈现 ").Append(FormatPhysicalPresentation(report.Video));
-            builder.Append(" | [").Append(report.Evidence.Document).Append("](../")
+            builder.Append(" | [").Append(Path.GetFileName(report.Evidence.Document)).Append("](../")
                 .Append(report.Evidence.Document).Append(") |\n");
         }
 
@@ -276,7 +276,7 @@ public static class CompatibilityCatalogGenerator
                 ["document"] = new JsonObject
                 {
                     ["type"] = "string",
-                    ["pattern"] = "^VERIFICATION-(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.md$"
+                    ["pattern"] = "^(?:docs/)?VERIFICATION-(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.md$"
                 },
                 ["sourceCommit"] = new JsonObject
                 {

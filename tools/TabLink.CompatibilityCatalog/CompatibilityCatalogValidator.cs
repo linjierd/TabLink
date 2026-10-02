@@ -293,20 +293,33 @@ public static partial class CompatibilityCatalogValidator
     {
         var value = ReadObject(element, path, ["document", "sourceCommit"]);
         var document = ReadString(value, "document", path);
+        var expectedName = $"VERIFICATION-{tabLinkVersion}.md";
         if (!EvidenceDocumentRegex().IsMatch(document) ||
-            !string.Equals(document, $"VERIFICATION-{tabLinkVersion}.md", StringComparison.Ordinal))
-            throw Rule(path + ".document", "must name the matching root VERIFICATION-x.y.z.md file");
+            !(string.Equals(document, expectedName, StringComparison.Ordinal) ||
+              string.Equals(document, "docs/" + expectedName, StringComparison.Ordinal)))
+            throw Rule(path + ".document",
+                "must name the matching root or docs/VERIFICATION-x.y.z.md file");
         var sourceCommit = ReadString(value, "sourceCommit", path);
         if (!LowerCommitRegex().IsMatch(sourceCommit))
             throw Rule(path + ".sourceCommit", "must be exactly 40 lowercase hexadecimal characters");
 
-        var evidencePath = Path.Combine(repositoryRoot, document);
+        var documentSegments = document.Split('/');
+        var evidencePath = Path.Combine([repositoryRoot, .. documentSegments]);
         if (!File.Exists(evidencePath))
-            throw Rule(path + ".document", "must name an existing regular repository-root evidence file");
+            throw Rule(path + ".document", "must name an existing regular repository evidence file");
         try
         {
+            var parentPath = repositoryRoot;
+            foreach (var segment in documentSegments[..^1])
+            {
+                parentPath = Path.Combine(parentPath, segment);
+                if (!Directory.Exists(parentPath) ||
+                    (File.GetAttributes(parentPath) & FileAttributes.ReparsePoint) != 0)
+                    throw Rule(path + ".document",
+                        "must remain inside regular repository directories without reparse points");
+            }
             if ((File.GetAttributes(evidencePath) & FileAttributes.ReparsePoint) != 0)
-                throw Rule(path + ".document", "must name an existing regular repository-root evidence file");
+                throw Rule(path + ".document", "must name an existing regular repository evidence file");
 
             using var stream = new FileStream(evidencePath, FileMode.Open, FileAccess.Read, FileShare.Read,
                 16 * 1024, FileOptions.SequentialScan);
@@ -330,7 +343,7 @@ public static partial class CompatibilityCatalogValidator
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            throw Rule(path + ".document", "must name an accessible regular repository-root evidence file", exception);
+            throw Rule(path + ".document", "must name an accessible regular repository evidence file", exception);
         }
 
         return new EvidenceReference(document, sourceCommit);
@@ -496,7 +509,7 @@ public static partial class CompatibilityCatalogValidator
     [GeneratedRegex("^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)-preview\\.[1-9][0-9]*$", RegexOptions.CultureInvariant)]
     private static partial Regex PreviewTagRegex();
 
-    [GeneratedRegex("^VERIFICATION-(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.md$", RegexOptions.CultureInvariant)]
+    [GeneratedRegex("^(?:docs/)?VERIFICATION-(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.md$", RegexOptions.CultureInvariant)]
     private static partial Regex EvidenceDocumentRegex();
 
     [GeneratedRegex("^[0-9a-f]{40}$", RegexOptions.CultureInvariant)]

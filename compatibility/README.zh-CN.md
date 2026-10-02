@@ -14,7 +14,7 @@
 
 | 日期 | 结果 | 电脑 | 接收设备 | 连接 | 显示 | 刷新率 | 视频 | 证据 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 2026-10-02 | `verified` | Windows 11 / `x64` / NVIDIA RTX 4060 Laptop GPU | `android` / `android-native` / ZTE W202DS / Android 13 / c2.unisoc.avc.decoder | `native-network` | 1920×1200（原生 1200×1920，旋转 1/4 圈） | 90 Hz（请求 90 Hz；支持 60/90 Hz） | `h264` / `nvenc` / `hardware`；呈现回调 90 fps；物理呈现 — | [VERIFICATION-0.8.8.md](../VERIFICATION-0.8.8.md) |
+| 2026-10-02 | `verified` | Windows 11 / `x64` / NVIDIA RTX 4060 Laptop GPU | `android` / `android-native` / ZTE W202DS / Android 13 / c2.unisoc.avc.decoder | `native-network` | 1920×1200（原生 1200×1920，旋转 1/4 圈） | 90 Hz（请求 90 Hz；支持 60/90 Hz） | `h264` / `nvenc` / `hardware`；呈现回调 90 fps；物理呈现 — | [VERIFICATION-0.8.8.md](../docs/VERIFICATION-0.8.8.md) |
 | 2026-10-02 | `verified` | Windows 11 / `x64` / NVIDIA RTX 4060 Laptop GPU | `android` / `android-native` / ZTE W202DS / Android 13 / unknown | `adb` | 1920×1200（原生 1200×1920，旋转 1/4 圈） | 90 Hz（请求 90 Hz；支持 60/90 Hz） | `h264` / `nvenc` / `unknown`；呈现回调 90.004 fps；物理呈现 86.966 fps (`surfaceflinger`) | [VERIFICATION-0.8.9.md](../VERIFICATION-0.8.9.md) |
 
 ## 能力与限制

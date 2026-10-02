@@ -9,7 +9,8 @@ var testParent = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "test-a
 var root = Path.Combine(testParent, "compatibility-catalog-" + Guid.NewGuid().ToString("N"));
 const string sourceCommit = "7c20a72c5d77cd454a4115d4a763d668f002f329";
 Directory.CreateDirectory(Path.Combine(root, "compatibility"));
-File.WriteAllText(Path.Combine(root, "VERIFICATION-0.8.8.md"),
+Directory.CreateDirectory(Path.Combine(root, "docs"));
+File.WriteAllText(Path.Combine(root, "docs", "VERIFICATION-0.8.8.md"),
     "# Public verification\n\nSource commit: `" + sourceCommit + "`\n", new UTF8Encoding(false));
 
 try
@@ -142,11 +143,16 @@ try
         Reject<InvalidDataException>(() => Validate(ToBytes(refreshOrder)), "refresh order rejected");
     });
 
-    Run("evidence stays at the repository root and closes the commit loop", () =>
+    Run("evidence stays at an approved repository path and closes the commit loop", () =>
     {
         var traversal = CreateCatalogNode();
         Evidence(traversal)["document"] = "../VERIFICATION-0.8.8.md";
         Reject<InvalidDataException>(() => Validate(ToBytes(traversal)), "evidence traversal rejected");
+
+        var arbitraryDirectory = CreateCatalogNode();
+        Evidence(arbitraryDirectory)["document"] = "archive/VERIFICATION-0.8.8.md";
+        Reject<InvalidDataException>(() => Validate(ToBytes(arbitraryDirectory)),
+            "unapproved evidence directory rejected");
 
         var missing = CreateCatalogNode();
         TabLink(missing)["version"] = "0.8.9";
@@ -538,6 +544,7 @@ try
             "all inspected source, target and temporary paths stay inside the repository root");
 
         TryAssertRealDirectoryReparseRejected();
+        TryAssertRealEvidenceDirectoryReparseRejected();
     });
 
     Console.WriteLine($"PASS: {scenarios} compatibility catalog scenarios, {assertions} assertions. Build-output test-artifacts fixtures only; no device, network or display operations were performed.");
@@ -641,6 +648,36 @@ void TryAssertRealDirectoryReparseRejected()
     }
 }
 
+void TryAssertRealEvidenceDirectoryReparseRejected()
+{
+    var suffix = Guid.NewGuid().ToString("N");
+    var fixtureRoot = Path.Combine(testParent, "compatibility-evidence-root-" + suffix);
+    var outsideDirectory = Path.Combine(testParent, "compatibility-evidence-outside-" + suffix);
+    var docsLink = Path.Combine(fixtureRoot, "docs");
+    try
+    {
+        Directory.CreateDirectory(fixtureRoot);
+        Directory.CreateDirectory(outsideDirectory);
+        File.WriteAllText(Path.Combine(outsideDirectory, "VERIFICATION-0.8.8.md"),
+            "# Public verification\n\nSource commit: `" + sourceCommit + "`\n", new UTF8Encoding(false));
+        Directory.CreateSymbolicLink(docsLink, outsideDirectory);
+        Reject<InvalidDataException>(
+            () => _ = CompatibilityCatalogValidator.ParseAndValidate(CreateCatalogBytes(), fixtureRoot),
+            "real docs evidence directory reparse point rejected");
+    }
+    catch (Exception exception) when (exception is UnauthorizedAccessException or IOException or
+                                      PlatformNotSupportedException or NotSupportedException)
+    {
+        // The validator's explicit FileAttributes guard remains active on hosts that cannot create links.
+    }
+    finally
+    {
+        DeleteDirectoryLinkIfPresent(docsLink);
+        DeleteSafeFixtureDirectory(fixtureRoot, "compatibility-evidence-root-");
+        DeleteSafeFixtureDirectory(outsideDirectory, "compatibility-evidence-outside-");
+    }
+}
+
 void DeleteDirectoryLinkIfPresent(string path)
 {
     try
@@ -737,7 +774,7 @@ JsonObject CreateCatalogNode() => new()
                 "token-replay-not-tested"),
             ["evidence"] = new JsonObject
             {
-                ["document"] = "VERIFICATION-0.8.8.md",
+                ["document"] = "docs/VERIFICATION-0.8.8.md",
                 ["sourceCommit"] = sourceCommit
             }
         }

@@ -65,7 +65,7 @@
         "token-replay-not-tested"
       ],
       "evidence": {
-        "document": "VERIFICATION-0.8.8.md",
+        "document": "docs/VERIFICATION-0.8.8.md",
         "sourceCommit": "7c20a72c5d77cd454a4115d4a763d668f002f329"
       }
     },

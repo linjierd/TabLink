@@ -30,6 +30,7 @@ if ($PublicRelease) {
 if (($PublicRelease -or $LocalFullBuild) -and -not $PSBoundParameters.ContainsKey('OutputDirectory')) {
     throw 'PublicRelease and LocalFullBuild require an explicit new or empty OutputDirectory.'
 }
+$cleanDefaultPublishRoot = $false
 if ($PSBoundParameters.ContainsKey('OutputDirectory')) {
     if ([string]::IsNullOrWhiteSpace($OutputDirectory)) { throw 'OutputDirectory cannot be empty when explicitly supplied.' }
     $publishRoot = [IO.Path]::GetFullPath($OutputDirectory)
@@ -43,7 +44,8 @@ if ($PSBoundParameters.ContainsKey('OutputDirectory')) {
     }
 }
 else {
-    $publishRoot = Join-Path $projectRoot 'dist\TabLink'
+    $publishRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot 'dist\TabLink'))
+    $cleanDefaultPublishRoot = $true
 }
 $apkPath = Join-Path $projectRoot $(if ($PublicRelease) { "android\artifacts\TabLink-android-$releaseVersion-preview.apk" } else { "android\artifacts\TabLink-android-$releaseVersion-debug.apk" })
 $ffmpegRoot = Join-Path $projectRoot 'third_party\ffmpeg-tablink'
@@ -483,7 +485,6 @@ if ($PublicRelease) {
     Assert-FfmpegBinarySafe -BinaryPath $ffmpegHardwareBinary -Flavor Hardware
     Assert-FfmpegBinarySafe -BinaryPath $ffmpegSoftwareBinary -Flavor Software
 }
-New-Item -ItemType Directory -Path $publishRoot -Force | Out-Null
 if (-not $PublicRelease) {
     & (Join-Path $projectRoot 'tools\Prepare-BundledAdb.ps1') -VerifyOnly
 }
@@ -514,6 +515,44 @@ foreach ($windowsTest in @(
 }
 dotnet run --project (Join-Path $projectRoot 'tests\TabLink.Update.Tests\TabLink.Update.Tests.csproj') -c Release
 if ($LASTEXITCODE -ne 0) { throw 'Stable update tests failed.' }
+if ($cleanDefaultPublishRoot) {
+    $expectedDefaultPublishRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot 'dist\TabLink'))
+    if (-not $publishRoot.Equals($expectedDefaultPublishRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Refusing to clean an unexpected default build output path.'
+    }
+    $defaultPublishParent = [IO.Path]::GetDirectoryName($publishRoot)
+    if (Test-Path -LiteralPath $defaultPublishParent) {
+        if (-not (Test-Path -LiteralPath $defaultPublishParent -PathType Container) -or
+            ((Get-Item -LiteralPath $defaultPublishParent -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'Refusing to clean the default build output through a non-directory or reparse-point parent.'
+        }
+    }
+    if (Test-Path -LiteralPath $publishRoot) {
+        if (-not (Test-Path -LiteralPath $publishRoot -PathType Container) -or
+            ((Get-Item -LiteralPath $publishRoot -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'Refusing to clean a non-directory or reparse-point default build output.'
+        }
+        $pendingBuildDirectories = [Collections.Generic.Stack[string]]::new()
+        $pendingBuildDirectories.Push($publishRoot)
+        while ($pendingBuildDirectories.Count -gt 0) {
+            $buildDirectory = $pendingBuildDirectories.Pop()
+            foreach ($buildEntry in [IO.Directory]::EnumerateFileSystemEntries($buildDirectory)) {
+                $buildEntryAttributes = [IO.File]::GetAttributes($buildEntry)
+                if ($buildEntryAttributes -band [IO.FileAttributes]::ReparsePoint) {
+                    throw 'Refusing to clean a default build output that contains a reparse point.'
+                }
+                if ($buildEntryAttributes -band [IO.FileAttributes]::Directory) {
+                    $pendingBuildDirectories.Push($buildEntry)
+                }
+            }
+        }
+        Remove-Item -LiteralPath $publishRoot -Recurse -Force
+        if (Test-Path -LiteralPath $publishRoot) {
+            throw 'Unable to clean the default build output before creating a reproducible package.'
+        }
+    }
+}
+New-Item -ItemType Directory -Path $publishRoot -Force | Out-Null
 $selfContained = if ($PublicRelease -or $LocalFullBuild) { 'true' } else { 'false' }
 $publicPublishProperties = @()
 if ($PublicRelease) {
@@ -618,26 +657,20 @@ Copy-Item -LiteralPath (Join-Path $projectRoot ("RELEASE-$releaseVersion.md")) -
 Copy-Item -LiteralPath (Join-Path $projectRoot ("RELEASE-$releaseVersion.zh-CN.md")) -Destination $publishRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot ("VERIFICATION-$releaseVersion.md")) -Destination $publishRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot ("VERIFICATION-$releaseVersion.zh-CN.md")) -Destination $publishRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot 'AUTO-UPDATE.md') -Destination $publishRoot
+$historicalDocumentsSource = Join-Path $projectRoot 'docs'
+$historicalDocumentsOutput = Join-Path $publishRoot 'docs'
+if (-not (Test-Path -LiteralPath $historicalDocumentsSource -PathType Container)) {
+    throw 'Historical documentation directory is missing.'
+}
+New-Item -ItemType Directory -Path $historicalDocumentsOutput -Force | Out-Null
+Get-ChildItem -LiteralPath $historicalDocumentsSource -File | ForEach-Object {
+    Copy-Item -LiteralPath $_.FullName -Destination $historicalDocumentsOutput
+}
 Copy-Item -LiteralPath (Join-Path $projectRoot 'eng\version.json') -Destination (Join-Path $publishRoot 'release-version.json')
 if ($PublicRelease) {
     Copy-Item -LiteralPath (Join-Path $projectRoot 'PUBLIC-RELEASE.md') -Destination $publishRoot
     Copy-Item -LiteralPath (Join-Path $projectRoot 'ADB-SETUP.md') -Destination $publishRoot
-    foreach ($publicDocument in @('RELEASE-0.8.0.md','VERIFICATION-0.8.0.md','AUTO-UPDATE.md')) {
-        Copy-Item -LiteralPath (Join-Path $projectRoot $publicDocument) -Destination $publishRoot
-    }
-}
-else {
-    foreach ($document in @(
-        'RELEASE-0.7.0.md','VERIFICATION-0.7.0.md',
-        'RELEASE-0.7.1.md','VERIFICATION-0.7.1.md',
-        'RELEASE-0.7.2.md','VERIFICATION-0.7.2.md',
-        'RELEASE-0.7.3.md','VERIFICATION-0.7.3.md',
-        'RELEASE-0.8.0.md','VERIFICATION-0.8.0.md',
-        'VERIFICATION-0.8.1.md','AUTO-UPDATE.md'
-    )) {
-        $documentPath = Join-Path $projectRoot $document
-        if (Test-Path -LiteralPath $documentPath) { Copy-Item -LiteralPath $documentPath -Destination $publishRoot }
-    }
 }
 $noticeOutput = Join-Path $publishRoot 'licenses'
 New-Item -ItemType Directory -Path $noticeOutput -Force | Out-Null
@@ -652,9 +685,6 @@ foreach($clientSource in @('native','browser')) {
     if(Test-Path -LiteralPath $sourcePath) {
         Copy-Item -LiteralPath $sourcePath -Destination $publishRoot -Recurse -Force
     }
-}
-if (-not $PublicRelease -and (Test-Path -LiteralPath (Join-Path $projectRoot 'VERIFICATION.md'))) {
-    Copy-Item -LiteralPath (Join-Path $projectRoot 'VERIFICATION.md') -Destination $publishRoot
 }
 if ($PublicRelease) {
     Get-ChildItem -LiteralPath $publishRoot -Filter '*.pdb' -File -Recurse | Remove-Item -Force

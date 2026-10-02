@@ -14,7 +14,7 @@ After changing the source data, run `dotnet run --project tools/TabLink.Compatib
 
 | Date | Result | Host | Receiver | Connection | Display | Refresh rates | Video | Evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 2026-10-02 | `verified` | Windows 11 / `x64` / NVIDIA RTX 4060 Laptop GPU | `android` / `android-native` / ZTE W202DS / Android 13 / c2.unisoc.avc.decoder | `native-network` | 1920×1200 (native 1200×1920; rotation 1/4 turn) | 90 Hz (requested 90 Hz; supported 60/90 Hz) | `h264` / `nvenc` / `hardware`; presentation callback 90 fps; physical presentation — | [VERIFICATION-0.8.8.md](../VERIFICATION-0.8.8.md) |
+| 2026-10-02 | `verified` | Windows 11 / `x64` / NVIDIA RTX 4060 Laptop GPU | `android` / `android-native` / ZTE W202DS / Android 13 / c2.unisoc.avc.decoder | `native-network` | 1920×1200 (native 1200×1920; rotation 1/4 turn) | 90 Hz (requested 90 Hz; supported 60/90 Hz) | `h264` / `nvenc` / `hardware`; presentation callback 90 fps; physical presentation — | [VERIFICATION-0.8.8.md](../docs/VERIFICATION-0.8.8.md) |
 | 2026-10-02 | `verified` | Windows 11 / `x64` / NVIDIA RTX 4060 Laptop GPU | `android` / `android-native` / ZTE W202DS / Android 13 / unknown | `adb` | 1920×1200 (native 1200×1920; rotation 1/4 turn) | 90 Hz (requested 90 Hz; supported 60/90 Hz) | `h264` / `nvenc` / `unknown`; presentation callback 90.004 fps; physical presentation 86.966 fps (`surfaceflinger`) | [VERIFICATION-0.8.9.md](../VERIFICATION-0.8.9.md) |
 
 ## Capabilities and limitations

@@ -165,7 +165,7 @@ adb -s SERIAL shell content query --uri content://com.tablink.client.display/pac
 
 B 组的解码回调仍约 90 fps，节拍诊断未记录丢显示帧，观察到的最大未来排程为 25 ms。原始证据为发行目录 `diagnostics/pacing-a042-presentation.json`、`diagnostics/pacing-b042-presentation.json` 及对应 `.latency.txt` 文件。这是该设备、该负载下的短时测量，不代表延迟为零或长期始终满帧。
 
-随后默认开启版重新启动时，实际呈现回落至约 77.38 fps，同时解码回调仍约 90 fps、计划提前量下降至约 7.8 ms。因此不能仅以上面的热切换结果作为最终验收。当前构建增加了连续不足时修正时钟的逻辑；已完成纯 JVM 测试，持续动态负载实测结果以根目录 `VERIFICATION.md` 为准。
+随后默认开启版重新启动时，实际呈现回落至约 77.38 fps，同时解码回调仍约 90 fps、计划提前量下降至约 7.8 ms。因此不能仅以上面的热切换结果作为最终验收。当前构建增加了连续不足时修正时钟的逻辑；已完成纯 JVM 测试，持续动态负载实测结果以 [`docs/VERIFICATION.md`](../docs/VERIFICATION.md) 为准。
 
 ## 传输协议 v1
 
@@ -216,9 +216,9 @@ H.264 必须先发 `0x20` 配置，SPS/PPS 分别为带 Annex-B 起始码的 Bas
 
 ## 已验证范围
 
-本节保留较早版本已完成的安卓逻辑、构建与实机证据，便于回归比较。0.8.8 的 JVM、debug/release preview、lint、签名、W202DS 和公共资产结果已经固定在根目录 `VERIFICATION-0.8.8.md`；当前 0.8.9 / build 21 候选必须按 `VERIFICATION-0.8.9.md` 重新验证，不能借用 0.8.8 的产物或实机结论。
+本节保留较早版本已完成的安卓逻辑、构建与实机证据，便于回归比较。0.8.8 的 JVM、debug/release preview、lint、签名、W202DS 和公共资产结果已经固定在 [`docs/VERIFICATION-0.8.8.md`](../docs/VERIFICATION-0.8.8.md)；当前 0.8.9 / build 21 候选必须按 [`VERIFICATION-0.8.9.md`](../VERIFICATION-0.8.9.md) 重新验证，不能借用 0.8.8 的产物或实机结论。
 
-最终 0.4.2（APK SHA-256 `4F6FBBD8D22447A1D2702B2028A4868CC779D89124074E8923BBE667DFCD58FC`）已通过正常安装、默认开关开启的长时间真机验证：Windows 控制窗口最小化，原生 1200×1920 / 90 Hz，120.433 秒实际呈现 **89.702 fps**，四段 30 秒为 89.800 / 89.667 / 89.733 / 89.567 fps，P99 11.147 ms，最大间隔 33.295 ms，没有断线或采样覆盖缺口。该结果来自 SurfaceFlinger 实际呈现时间戳，而非计划帧率。完整方法和保留的未通过候选结果见根目录 `VERIFICATION.md` 与发行目录 `diagnostics/final042-driftfixed-*`。
+最终 0.4.2（APK SHA-256 `4F6FBBD8D22447A1D2702B2028A4868CC779D89124074E8923BBE667DFCD58FC`）已通过正常安装、默认开关开启的长时间真机验证：Windows 控制窗口最小化，原生 1200×1920 / 90 Hz，120.433 秒实际呈现 **89.702 fps**，四段 30 秒为 89.800 / 89.667 / 89.733 / 89.567 fps，P99 11.147 ms，最大间隔 33.295 ms，没有断线或采样覆盖缺口。该结果来自 SurfaceFlinger 实际呈现时间戳，而非计划帧率。完整方法和保留的未通过候选结果见 [`docs/VERIFICATION.md`](../docs/VERIFICATION.md) 与发行目录 `diagnostics/final042-driftfixed-*`。
 
 - 0.8.8 Preview 1 新增可信设备协议、Android Keystore P-256 身份、只含公开元数据的电脑信任记录和局域网地址发现；旧 bearer `pairing.lastLink` 在启动时删除。0.8.5 的能力协商、队列 recovery epoch、关键帧限频、接收端反馈和 decoder 候选行为保持。纯 JVM 测试不运行真实 Android Keystore、MediaCodec 或 UDP 广播；这些边界必须由最终 W202DS 验证补齐。
 - 20 项纯 JVM HUD / 暂停状态断言：透明度与不透明度方向、持久化数值边界、九宫格位置、颜色格式，以及暂停、普通心跳、恢复和同会话序号延续。0.5.0 的设置手势、沉浸显示和电脑采集暂停恢复仍需真机联合验证；不能用这些逻辑测试替代运行中的画面验收。
@@ -227,6 +227,6 @@ H.264 必须先发 `0x20` 配置，SPS/PPS 分别为带 Annex-B 起始码的 Bas
 - 本地门禁不能代替公共下载副本验证。0.8.9 最终公开 APK 的字节数和 SHA-256 只有在 GitHub Release 建立并从公开地址回下载复核后才能填写；当前公开 APK 仍是 0.8.8 Preview 1。
 - 0.4.0 已在本机 W202DS 上显示 1200 × 1920 独立 USB 桌面，解码器实际为 `c2.unisoc.avc.decoder`。当时系统将物理屏幕固定在 60 Hz，解码回调约 63–65 fps，单次 SurfaceFlinger 实际呈现采样约 50.4 fps；这些数字不是同一指标。
 - 0.4.1 已安装并完成原生 1200 × 1920、物理屏幕 90 Hz 验证。2026-09-20 02:26 的三个只读样本中，能力接口均报告实际模式 2 / 90 Hz；SurfaceFlinger 周期为 11,111,111 ns，显示策略固定 90 Hz。此时中兴“锁定刷新率”已开启，应用亮度补偿未启用。
-- 同次旧 FFmpeg 采样的硬件解码回调为 63.37–64.62 fps，视频层实际呈现为 56.57–59.88 fps。随后 Windows 高精度 FFmpeg 到位，0.4.1 在 02:53 的三个短样本中达到 89.71–90.36 解码 fps、83.39–88.65 实际呈现 fps；物理面板仍为 90 Hz。这些是不同指标，且不代表持续满帧。两轮证据分别位于发行目录 `diagnostics/android-panel-90hz-verification.json` 和 `diagnostics/android-custom-ffmpeg-90hz-verification.json`，各自附有 `-latency.txt` 原始时间戳。动态负载的整体真机验收结果以根目录 `VERIFICATION.md` 为准。
+- 同次旧 FFmpeg 采样的硬件解码回调为 63.37–64.62 fps，视频层实际呈现为 56.57–59.88 fps。随后 Windows 高精度 FFmpeg 到位，0.4.1 在 02:53 的三个短样本中达到 89.71–90.36 解码 fps、83.39–88.65 实际呈现 fps；物理面板仍为 90 Hz。这些是不同指标，且不代表持续满帧。两轮证据分别位于发行目录 `diagnostics/android-panel-90hz-verification.json` 和 `diagnostics/android-custom-ffmpeg-90hz-verification.json`，各自附有 `-latency.txt` 原始时间戳。动态负载的整体真机验收结果以 [`docs/VERIFICATION.md`](../docs/VERIFICATION.md) 为准。
 
 实现参考：[Android SurfaceHolder](https://developer.android.com/reference/android/view/SurfaceHolder)、[MediaCodec](https://developer.android.com/reference/android/media/MediaCodec)、[刷新率请求](https://developer.android.com/media/optimize/performance/frame-rate)、[窗口亮度](https://developer.android.com/reference/android/view/WindowManager.LayoutParams#screenBrightness)、[沉浸全屏](https://developer.android.com/develop/ui/views/layout/immersive)、[返回手势](https://developer.android.com/guide/navigation/custom-back/predictive-back-gesture)、[Android 调试桥](https://developer.android.com/tools/adb)。

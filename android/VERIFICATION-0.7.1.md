@@ -6,7 +6,7 @@ Candidate: `artifacts/TabLink-android-0.7.1-debug.apk`
 
 SHA-256: `DB747316B11B43AE208903886B1FA9BEEEA5DDDE2147F54437FF1346BA33BD72`
 
-The build step did not install or restart the tablet and did not replace the preserved 0.7.0 artifact. Subsequent root validation installed this exact candidate and selected it for the 0.7.1 release: the final 120.418-second native-resolution dynamic test measured 89.140 actual presentations per second, with no input-queue drops in that interval. A static desktop window measured 68.897 fps; this is not a constant-90-fps guarantee. See the root VERIFICATION-0.7.1.md for evidence and workload differences.
+The build step did not install or restart the tablet and did not replace the preserved 0.7.0 artifact. Subsequent repository validation installed this exact candidate and selected it for the 0.7.1 release: the final 120.418-second native-resolution dynamic test measured 89.140 actual presentations per second, with no input-queue drops in that interval. A static desktop window measured 68.897 fps; this is not a constant-90-fps guarantee. See [`docs/VERIFICATION-0.7.1.md`](../docs/VERIFICATION-0.7.1.md) for evidence and workload differences.
 
 ## Change
 

@@ -9,7 +9,7 @@
 
 GitHub 已发布 **0.8.9 Preview 1**，Android 身份为 **0.8.9 / build 21**。它在 0.8.8 的可信设备协议和单副屏生命周期之上，增加稳定线路的有界恢复、迁移中一次性登记 token 的剩余期限保护、用户主动导出的脱敏支持包、人工审核的兼容性目录，以及统一的跨平台版本门禁。协议主版本仍为 v1，全局仍只允许一块 TabLink 副屏。发布 tag `v0.8.9-preview.1` 精确指向提交 `2a1c3aced048315e3171489fc410c6adeb2eed66`；见 [0.8.9 发布说明](RELEASE-0.8.9.zh-CN.md) 与 [0.8.9 验证记录](VERIFICATION-0.8.9.zh-CN.md)。
 
-四项公共资产已从 GitHub Release 的公开 HTTPS 地址重新下载并逐项核对；Windows ZIP 解压后的 463 个文件与最终 PublicRelease 逐字节一致。已签名的公网稳定自动更新频道在发布后重新下载并验签，仍保持 **0.8.0**，不会仅因 GitHub 预览包而自动切换；0.8.0 的签名更新设计见 [0.8.0 发布说明](RELEASE-0.8.0.md)、[自动更新设计与发布说明](AUTO-UPDATE.md) 及 [0.8.0 验证记录](VERIFICATION-0.8.0.md)。
+四项公共资产已从 GitHub Release 的公开 HTTPS 地址重新下载并逐项核对；Windows ZIP 解压后的 463 个文件与最终 PublicRelease 逐字节一致。已签名的公网稳定自动更新频道在发布后重新下载并验签，仍保持 **0.8.0**，不会仅因 GitHub 预览包而自动切换；0.8.0 的签名更新设计见 [0.8.0 发布说明](docs/RELEASE-0.8.0.md)、[自动更新设计与发布说明](AUTO-UPDATE.md) 及 [0.8.0 验证记录](docs/VERIFICATION-0.8.0.md)。全部旧版发布与验证文档统一收录在[历史文档索引](docs/README.zh-CN.md)。
 
 ## 下载 0.8.9 Preview 1
 
@@ -83,14 +83,14 @@ TabLink 自有源码采用 [MIT License](LICENSE)。公开仓库只跟踪源码�
 - Windows 虚拟副屏已运行于 **1200 × 1920 @ 90 Hz**，物理主屏保持 **2560 × 1600 @ 240 Hz**。
 - H.264 已通过 USB 到达平板，实际硬件解码器为 `c2.unisoc.avc.decoder`；修复电脑端采集等待精度后，解码回调约为 **90 帧/秒**。
 - 已通过中兴的可见开发者显示选项“锁定刷新率”，让平板实际运行于 **90 Hz**。APK 与 SurfaceFlinger 均确认活动模式 90 Hz，物理周期为 11,111,111 ns。原设置备份位于 `diagnostics/android-display-settings-before.json`；需要恢复自适应时可关闭该显示选项。
-- 面板刷新率与实际视频画面更新率是不同指标。同一 D3D11 动态源的电脑端采集测试已达到 **89.70 张不同画面/秒**，没有重复旧帧凑数。平板最终呈现与有界呈现调度的对照结果见 `VERIFICATION.md`。
+- 面板刷新率与实际视频画面更新率是不同指标。同一 D3D11 动态源的电脑端采集测试已达到 **89.70 张不同画面/秒**，没有重复旧帧凑数。平板最终呈现与有界呈现调度的对照结果见[旧版综合验证报告](docs/VERIFICATION.md)。
 - 最终 0.4.2 在电脑端最小化、相同动态源的 **120.433 秒连续测试**中，平板实际呈现 **89.702 fps**；四段 30 秒均为 89.57–89.80 fps，P99 间隔 11.147 ms。已修复运行中时间映射漂移造成的再次降帧，实机截图与完整原始证据在交付目录 `diagnostics/`。
 
-完整测量条件与结果由单独的 `VERIFICATION.md` 记录。窗口负载、USB 和 Android 合成策略都会影响实际呈现，不以请求的 90 Hz 代替测量结果。
+完整测量条件与结果由单独的[旧版综合验证报告](docs/VERIFICATION.md)记录。窗口负载、USB 和 Android 合成策略都会影响实际呈现，不以请求的 90 Hz 代替测量结果。
 
 ## 运行与使用
 
-既有版本已在 Windows 11 x64、中兴 W202DS 平板和 NVIDIA RTX 4060 Laptop GPU 上完成过显示与性能验证；0.8.8 Preview 1 的历史验收记录在 [VERIFICATION-0.8.8.md](VERIFICATION-0.8.8.md)，0.8.9 Preview 1 的独立验收与公共发布闭环记录在 [0.8.9 中文验证记录](VERIFICATION-0.8.9.zh-CN.md)。GitHub Release 的 Windows x64 公共包为 self-contained，不需要另装 .NET；从源码运行或使用普通 framework-dependent 构建时需要 .NET 10 Desktop Runtime。0.8.8 起会在每次新连接开始前实际探测可用 H.264 后端；当前 NVIDIA 主机的 Auto 路径已选择 NVENC。QSV 已编入 helper，但本机没有可用的 Intel MFX 实现；AMF 已编入 helper，但本机没有 AMD AMF 运行库。两者都明确失败并保持强制后端不变，仍需在相应 Intel / AMD 电脑上做实机验证。APK 支持 Android 6.0 / API 23 及以上，实际解码能力和刷新率由设备决定。
+既有版本已在 Windows 11 x64、中兴 W202DS 平板和 NVIDIA RTX 4060 Laptop GPU 上完成过显示与性能验证；0.8.8 Preview 1 的历史验收记录在 [VERIFICATION-0.8.8.md](docs/VERIFICATION-0.8.8.md)，0.8.9 Preview 1 的独立验收与公共发布闭环记录在 [0.8.9 中文验证记录](VERIFICATION-0.8.9.zh-CN.md)。GitHub Release 的 Windows x64 公共包为 self-contained，不需要另装 .NET；从源码运行或使用普通 framework-dependent 构建时需要 .NET 10 Desktop Runtime。0.8.8 起会在每次新连接开始前实际探测可用 H.264 后端；当前 NVIDIA 主机的 Auto 路径已选择 NVENC。QSV 已编入 helper，但本机没有可用的 Intel MFX 实现；AMF 已编入 helper，但本机没有 AMD AMF 运行库。两者都明确失败并保持强制后端不变，仍需在相应 Intel / AMD 电脑上做实机验证。APK 支持 Android 6.0 / API 23 及以上，实际解码能力和刷新率由设备决定。
 
 ### 正式版自动更新
 
@@ -226,7 +226,7 @@ Android 会按分辨率、目标帧率、PerformancePoint、低延迟能力和�
 
 “安全修复”只在某个阶段明确进入“需处理”时启用，并执行该阶段允许的有限动作，例如刷新线路、重建连接、配置请求模式或重启视频。涉及显示模式的操作会先停止所有 TabLink 会话，再配置唯一副屏；“打开日志目录”只打开本地记录，不修改显示设备。界面分别显示已发送、客户端解码提交和呈现回调，避免用较早的非零 FPS 掩盖已经停滞的链路。
 
-0.4.2 默认按视频时间戳平滑安排安卓端呈现，90 fps 时目标额外等待约 22.22 ms、未来排程最多 25 ms；这不是整条链路的总延迟。相同动态负载的 30 秒以上 A/B 中，平板最终呈现从 77.665 提高到 **89.837 fps**，P95 间隔从 22.211 降到 **11.121 ms**。慢源、暂停和重连会有界重建时间映射，避免无限排队；完整数据见 `VERIFICATION.md`。
+0.4.2 默认按视频时间戳平滑安排安卓端呈现，90 fps 时目标额外等待约 22.22 ms、未来排程最多 25 ms；这不是整条链路的总延迟。相同动态负载的 30 秒以上 A/B 中，平板最终呈现从 77.665 提高到 **89.837 fps**，P95 间隔从 22.211 降到 **11.121 ms**。慢源、暂停和重连会有界重建时间映射，避免无限排队；完整数据见[旧版综合验证报告](docs/VERIFICATION.md)。
 
 ## 功能范围
 

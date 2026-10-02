@@ -11,7 +11,7 @@ TabLink turns one Android phone or tablet into an independent Windows extended d
 
 The current public prerelease is **0.8.9 Preview 1**. Its Windows version is `0.8.9`; the Android identity is `0.8.9` / build `21`; and the transport protocol remains v1. The annotated tag [`v0.8.9-preview.1`](https://github.com/linjierd/TabLink/releases/tag/v0.8.9-preview.1) points exactly to commit [`2a1c3aced048315e3171489fc410c6adeb2eed66`](https://github.com/linjierd/TabLink/commit/2a1c3aced048315e3171489fc410c6adeb2eed66). The same commit passed both jobs in [GitHub Actions run 36927438600](https://github.com/linjierd/TabLink/actions/runs/36927438600).
 
-The signed public `stable` update channel was downloaded and verified again after the prerelease was published. It remains at **0.8.0** — Windows build `800`, Android build `11`, rollout `100%`. Installing or publishing this Preview does not advance `latest` or the stable channel. See the [0.8.9 release notes](RELEASE-0.8.9.md), [0.8.9 verification record](VERIFICATION-0.8.9.md), and [stable update design](AUTO-UPDATE.md).
+The signed public `stable` update channel was downloaded and verified again after the prerelease was published. It remains at **0.8.0** — Windows build `800`, Android build `11`, rollout `100%`. Installing or publishing this Preview does not advance `latest` or the stable channel. See the [0.8.9 release notes](RELEASE-0.8.9.md), [0.8.9 verification record](VERIFICATION-0.8.9.md), and [stable update design](AUTO-UPDATE.md). Earlier release notes and verification records are collected in the [historical documentation index](docs/README.md).
 
 > **Project vision**
 >

@@ -403,7 +403,7 @@
       "properties": {
         "document": {
           "type": "string",
-          "pattern": "^VERIFICATION-(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.md$"
+          "pattern": "^(?:docs/)?VERIFICATION-(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.md$"
         },
         "sourceCommit": {
           "type": "string",
