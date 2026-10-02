@@ -1,6 +1,13 @@
 export const STABLE_MANIFEST_URL: string = 'https://linjie.space/download/api/download?path=TabLink%2Fstable%2Fmanifest.json';
+export const STABLE_MANIFEST_FALLBACK_URL: string = 'https://github.com/linjierd/TabLink/releases/latest/download/manifest.json';
 export const STABLE_SIGNER_SPKI_BASE64: string = 'MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEXlJPucXJJzRwjf1p/46Uuebom2dMFvSSiN4wdwxVVtbb9bdaIGnru39akKRRd7BaTlUaEk2Thmb/MpqNPYNu4A==';
 export const UPDATE_PROTOCOL_VERSION: number = 1;
+
+export const UPDATE_MODE_AUTOMATIC: string = 'automatic';
+export const UPDATE_MODE_DOWNLOAD_THEN_ASK: string = 'downloadThenAsk';
+export const UPDATE_MODE_NEVER: string = 'never';
+export type StableUpdateMode = 'automatic' | 'downloadThenAsk' | 'never';
+const BLOCKED_DECISION_SHA256: string = '0000000000000000000000000000000000000000000000000000000000000000';
 
 export interface SignedEnvelopeText { payload: string; signature: string; }
 export interface StableVersion { major: number; minor: number; patch: number; text: string; }
@@ -11,6 +18,194 @@ export interface StableArtifact {
 export interface StableManifest {
   releaseId: string; publishedAtUtc: string; rolloutPercentage: number;
   minimumProtocolVersion: number; artifacts: StableArtifact[];
+}
+
+export interface VerifiedStableManifest {
+  sourceUrl: string;
+  payloadText: string;
+  manifest: StableManifest;
+}
+
+export interface StableDecisionFloor {
+  schema: number;
+  publishedAtUtc: string;
+  decisionSha256: string;
+  blocked: boolean;
+}
+
+export interface StableUpdateModeWriteResult {
+  sequence: number;
+  mode: StableUpdateMode;
+  saved: boolean;
+}
+
+/**
+ * Preferences exposes asynchronous put/flush operations. All manager instances
+ * share one of these queues so an older save can never finish after a newer
+ * selection and replace it on disk.
+ */
+export class StableUpdatePreferenceQueue {
+  private tail: Promise<void> = Promise.resolve();
+  private sequence: number = 0;
+
+  runExclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const work: Promise<T> = this.tail.then(operation);
+    this.tail = work.then(() => {}, () => {});
+    return work;
+  }
+
+  enqueueMode(mode: StableUpdateMode, persist: (requested: StableUpdateMode) => Promise<boolean>): Promise<StableUpdateModeWriteResult> {
+    const sequence = ++this.sequence;
+    return this.runExclusive(async (): Promise<StableUpdateModeWriteResult> => {
+      let saved: boolean = false;
+      try { saved = await persist(mode); }
+      catch (_error) { saved = false; }
+      return { sequence, mode, saved };
+    });
+  }
+
+  currentModeSequence(): number { return this.sequence; }
+  isLatestMode(sequence: number): boolean { return sequence === this.sequence; }
+}
+
+/** An absent preference is the first-run default. Any persisted unknown value fails closed. */
+export function parseStoredUpdateMode(value: unknown, exists: boolean): StableUpdateMode {
+  if (!exists) return 'automatic';
+  if (value === UPDATE_MODE_AUTOMATIC || value === UPDATE_MODE_DOWNLOAD_THEN_ASK || value === UPDATE_MODE_NEVER) {
+    return value as StableUpdateMode;
+  }
+  return 'never';
+}
+
+/**
+ * Both transports are untrusted mirrors. Only already verified payloads enter
+ * this function. The newest signed publication wins. Two different signed
+ * decisions with the same publication time are rejected instead of choosing
+ * a mirror by order.
+ */
+export function selectNewestVerifiedManifest(candidates: VerifiedStableManifest[]): VerifiedStableManifest {
+  if (candidates.length < 1) throw new Error('没有可用的已签名更新清单');
+  let newest: VerifiedStableManifest = candidates[0];
+  candidates.slice(1).forEach((candidate: VerifiedStableManifest) => {
+    if (candidate.manifest.publishedAtUtc > newest.manifest.publishedAtUtc) newest = candidate;
+  });
+  if (newestConflictPublishedAt(candidates)) throw new Error('同一发布时间存在冲突的已签名更新决定');
+  return newest;
+}
+
+export function newestConflictPublishedAt(candidates: VerifiedStableManifest[]): string {
+  if (candidates.length < 2) return '';
+  let newest: VerifiedStableManifest = candidates[0];
+  candidates.slice(1).forEach((candidate: VerifiedStableManifest) => {
+    if (candidate.manifest.publishedAtUtc > newest.manifest.publishedAtUtc) newest = candidate;
+  });
+  const publishedAtUtc = newest.manifest.publishedAtUtc;
+  const decision = canonicalStableDecision(newest.manifest);
+  for (const candidate of candidates) {
+    if (candidate.manifest.publishedAtUtc === publishedAtUtc &&
+      canonicalStableDecision(candidate.manifest) !== decision) return publishedAtUtc;
+  }
+  return '';
+}
+
+/**
+ * Canonical signed release decision. Artifact download URLs are mirror
+ * locations and are deliberately excluded; installerUrl remains part of the
+ * decision because it is the action exposed to the user. Artifact order is not
+ * significant in the signed schema, so it is normalized by platform.
+ */
+export function canonicalStableDecision(manifest: StableManifest): string {
+  const artifacts = manifest.artifacts.slice().sort((left: StableArtifact, right: StableArtifact): number =>
+    left.platform === right.platform ? 0 : left.platform < right.platform ? -1 : 1);
+  return JSON.stringify([
+    1,
+    'stable',
+    manifest.releaseId,
+    manifest.publishedAtUtc,
+    manifest.rolloutPercentage,
+    manifest.minimumProtocolVersion,
+    artifacts.map((artifact: StableArtifact) => [
+      artifact.platform,
+      artifact.version.text,
+      artifact.build,
+      artifact.size,
+      artifact.sha256.toUpperCase(),
+      artifact.installerUrl ?? null,
+      artifact.notes ?? null
+    ])
+  ]);
+}
+
+export function parseStoredDecisionFloor(value: unknown): StableDecisionFloor {
+  if (typeof value !== 'string' || value.length < 2 || value.length > 1024) throw new Error('更新防回退记录损坏');
+  try {
+    rejectDuplicateObjectKeys(value);
+    const parsed = JSON.parse(value) as unknown;
+    if (!isRecord(parsed)) throw new Error('更新防回退记录损坏');
+    requireExactKeys(parsed, ['schema', 'publishedAtUtc', 'decisionSha256'], ['blocked']);
+    if (requireInteger(parsed.schema, 'schema') !== 1) throw new Error('更新防回退记录损坏');
+    const publishedAtUtc = requireString(parsed.publishedAtUtc, 'publishedAtUtc');
+    parseStrictUtcTimestamp(publishedAtUtc);
+    const decisionSha256 = requireString(parsed.decisionSha256, 'decisionSha256').toUpperCase();
+    if (!/^[0-9A-F]{64}$/.test(decisionSha256)) throw new Error('更新防回退记录损坏');
+    const blocked = Object.prototype.hasOwnProperty.call(parsed, 'blocked') ? parsed.blocked : false;
+    if (typeof blocked !== 'boolean') throw new Error('更新防回退记录损坏');
+    if (blocked && decisionSha256 !== BLOCKED_DECISION_SHA256) throw new Error('更新防回退记录损坏');
+    return { schema: 1, publishedAtUtc, decisionSha256, blocked };
+  } catch (_error) { throw new Error('更新防回退记录损坏'); }
+}
+
+export function serializeDecisionFloor(publishedAtUtc: string, decisionSha256: string): string {
+  parseStrictUtcTimestamp(publishedAtUtc);
+  const digest = decisionSha256.toUpperCase();
+  if (!/^[0-9A-F]{64}$/.test(digest)) throw new Error('更新决定摘要无效');
+  return JSON.stringify({ schema: 1, publishedAtUtc, decisionSha256: digest, blocked: false });
+}
+
+export function serializeConflictFloor(publishedAtUtc: string): string {
+  parseStrictUtcTimestamp(publishedAtUtc);
+  return JSON.stringify({ schema: 1, publishedAtUtc, decisionSha256: BLOCKED_DECISION_SHA256, blocked: true });
+}
+
+export function comparePublishedAtUtc(left: string, right: string): number {
+  const leftMs = parseStrictUtcTimestamp(left), rightMs = parseStrictUtcTimestamp(right);
+  return leftMs === rightMs ? 0 : leftMs < rightMs ? -1 : 1;
+}
+
+export function compareManifestWithFloor(manifest: StableManifest, decisionSha256: string, floor: StableDecisionFloor): number {
+  const digest = decisionSha256.toUpperCase();
+  if (!/^[0-9A-F]{64}$/.test(digest) || floor.schema !== 1 || typeof floor.blocked !== 'boolean' ||
+    !/^[0-9A-F]{64}$/.test(floor.decisionSha256) ||
+    (floor.blocked && floor.decisionSha256 !== BLOCKED_DECISION_SHA256)) {
+    throw new Error('更新防回退记录损坏');
+  }
+  let floorMs: number;
+  try { floorMs = parseStrictUtcTimestamp(floor.publishedAtUtc); }
+  catch (_error) { throw new Error('更新防回退记录损坏'); }
+  const manifestMs = parseStrictUtcTimestamp(manifest.publishedAtUtc);
+  if (floor.blocked) {
+    if (manifestMs <= floorMs) throw new Error('更新清单未晚于已记录的签名冲突');
+    return 1;
+  }
+  if (manifestMs < floorMs) throw new Error('拒绝早于已接受版本的更新清单');
+  if (manifestMs === floorMs && digest !== floor.decisionSha256) throw new Error('更新防回退记录与清单冲突');
+  return manifestMs === floorMs ? 0 : 1;
+}
+
+/** A one-way migration gate for the old timestamp/releaseId floor. */
+export function compareManifestWithLegacyFloor(manifest: StableManifest, floorPublishedAtUtc: string, floorReleaseId: string): number {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(floorReleaseId)) throw new Error('更新防回退记录损坏');
+  let floorMs: number;
+  try { floorMs = parseStrictUtcTimestamp(floorPublishedAtUtc); }
+  catch (_error) { throw new Error('更新防回退记录损坏'); }
+  const manifestMs = parseStrictUtcTimestamp(manifest.publishedAtUtc);
+  if (manifestMs < floorMs) throw new Error('拒绝早于已接受版本的更新清单');
+  if (manifestMs === floorMs) throw new Error('旧版更新防回退记录无法验证同一发布时间的完整决定');
+  return 1;
+}
+
+export function requiresNewerUpdateProtocol(manifest: StableManifest): boolean {
+  return manifest.minimumProtocolVersion > UPDATE_PROTOCOL_VERSION;
 }
 
 export function parseStableVersion(text: string): StableVersion {

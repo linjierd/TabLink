@@ -120,6 +120,138 @@ try
             Assert(File.ReadAllText(path) == json); // Loading must not rewrite the user's rules.
         }
     });
+    await Test("Missing update preferences preserve the automatic default without creating a file", () =>
+    {
+        var path = Path.Combine(temporary, "update-preferences-missing.json");
+        var store = new UpdatePreferencesStore(path);
+        var result = store.LoadWithStatus();
+        Assert(result.Preferences == UpdatePreferences.Default);
+        Assert(result.Preferences.Mode == UpdateMode.Automatic);
+        Assert(result.Status == UpdatePreferencesLoadStatus.MissingDefault && !result.HasError);
+        Assert(!File.Exists(path));
+    });
+    await Test("Update preferences roundtrip every mode as canonical JSON strings", () =>
+    {
+        var path = Path.Combine(temporary, "update-preferences-roundtrip.json");
+        var store = new UpdatePreferencesStore(path);
+        var cases = new[]
+        {
+            (UpdateMode.Automatic, "automatic"),
+            (UpdateMode.DownloadThenAsk, "downloadThenAsk"),
+            (UpdateMode.Never, "never")
+        };
+        foreach (var (mode, storedMode) in cases)
+        {
+            store.Save(new UpdatePreferences(mode));
+            var result = store.LoadWithStatus();
+            Assert(result.Preferences.Mode == mode);
+            Assert(result.Status == UpdatePreferencesLoadStatus.Loaded && !result.HasError);
+            using var document = JsonDocument.Parse(File.ReadAllText(path));
+            Assert(document.RootElement.EnumerateObject().Count() == 2);
+            Assert(document.RootElement.GetProperty("schemaVersion").GetInt32() == 1);
+            Assert(document.RootElement.GetProperty("mode").ValueKind == JsonValueKind.String);
+            Assert(document.RootElement.GetProperty("mode").GetString() == storedMode);
+            Assert(Directory.GetFiles(Path.GetDirectoryName(path)!,
+                "." + Path.GetFileName(path) + ".*.tmp").Length == 0);
+        }
+    });
+    await Test("Damaged update preferences fail closed without rewriting the evidence", () =>
+    {
+        var path = Path.Combine(temporary, "update-preferences-damaged.json");
+        var invalidFiles = new[]
+        {
+            "{",
+            "{}",
+            "null",
+            "{\"schemaVersion\":1}",
+            "{\"mode\":\"automatic\"}",
+            "{\"schemaVersion\":2,\"mode\":\"automatic\"}",
+            "{\"schemaVersion\":\"1\",\"mode\":\"automatic\"}",
+            "{\"schemaVersion\":1,\"mode\":0}",
+            "{\"schemaVersion\":1,\"mode\":\"Automatic\"}",
+            "{\"schemaVersion\":1,\"mode\":\"futureMode\"}",
+            "{\"schemaVersion\":1,\"schemaVersion\":1,\"mode\":\"automatic\"}",
+            "{\"schemaVersion\":1,\"mode\":\"automatic\",\"Mode\":\"never\"}",
+            "{\"schemaVersion\":1,\"mode\":\"automatic\",\"extra\":true}"
+        };
+        foreach (var json in invalidFiles)
+        {
+            File.WriteAllText(path, json);
+            var store = new UpdatePreferencesStore(path);
+            var result = store.LoadWithStatus();
+            Assert(result.Preferences.Mode == UpdateMode.Never);
+            Assert(result.Status == UpdatePreferencesLoadStatus.InvalidFailClosed && result.HasError);
+            Assert(store.Load().Mode == UpdateMode.Never);
+            Assert(File.ReadAllText(path) == json);
+        }
+
+        byte[] invalidUtf8 = [0x7B, 0x22, 0xFF, 0x22, 0x7D];
+        File.WriteAllBytes(path, invalidUtf8);
+        Assert(new UpdatePreferencesStore(path).LoadWithStatus().Status ==
+            UpdatePreferencesLoadStatus.InvalidFailClosed);
+        Assert(File.ReadAllBytes(path).SequenceEqual(invalidUtf8));
+    });
+    await Test("Update preferences remain separate from USB device policy settings", () =>
+    {
+        var settingsPath = Path.Combine(temporary, "update-separation-settings.json");
+        const string settingsJson = "{\"SchemaVersion\":1,\"AdbPath\":null,\"ExcludedDevices\":[]}";
+        File.WriteAllText(settingsPath, settingsJson);
+        var updatePath = Path.Combine(temporary, "update-separation-preferences.json");
+        new UpdatePreferencesStore(updatePath).Save(new(UpdateMode.DownloadThenAsk));
+
+        Assert(File.ReadAllText(settingsPath) == settingsJson);
+        Assert(new SettingsStore(settingsPath).Load().ExcludedDevices.Count == 0);
+        var updateJson = File.ReadAllText(updatePath);
+        Assert(!updateJson.Contains(nameof(DevicePolicySettings.ExcludedDevices), StringComparison.Ordinal));
+        Assert(!updateJson.Contains(nameof(DevicePolicySettings.AdbPath), StringComparison.Ordinal));
+        Assert(new UpdatePreferencesStore(updatePath).Load().Mode == UpdateMode.DownloadThenAsk);
+    });
+    await Test("Invalid in-memory update modes cannot replace a committed preference", () =>
+    {
+        var path = Path.Combine(temporary, "update-preferences-invalid-save.json");
+        var store = new UpdatePreferencesStore(path);
+        store.Save(new(UpdateMode.Automatic));
+        var original = File.ReadAllBytes(path);
+        Throws<ArgumentOutOfRangeException>(() => store.Save(new((UpdateMode)999)));
+        Assert(File.ReadAllBytes(path).SequenceEqual(original));
+        Assert(store.Load().Mode == UpdateMode.Automatic);
+        Assert(Directory.GetFiles(Path.GetDirectoryName(path)!,
+            "." + Path.GetFileName(path) + ".*.tmp").Length == 0);
+    });
+    await Test("Unreadable update preferences fail closed without changing the file", () =>
+    {
+        var path = Path.Combine(temporary, "update-preferences-unreadable.json");
+        var store = new UpdatePreferencesStore(path);
+        store.Save(new(UpdateMode.Automatic));
+        var original = File.ReadAllBytes(path);
+        using (var locked = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            var result = store.LoadWithStatus();
+            Assert(result.Preferences.Mode == UpdateMode.Never);
+            Assert(result.Status == UpdatePreferencesLoadStatus.InvalidFailClosed && result.HasError);
+        }
+        Assert(File.ReadAllBytes(path).SequenceEqual(original));
+    });
+    await Test("Failed update preference replacement preserves the committed file", () =>
+    {
+        var path = Path.Combine(temporary, "update-preferences-locked-save.json");
+        var store = new UpdatePreferencesStore(path);
+        store.Save(new(UpdateMode.Automatic));
+        var original = File.ReadAllBytes(path);
+        using (var locked = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            try
+            {
+                store.Save(new(UpdateMode.Never));
+                throw new Exception("Expected the locked destination to reject replacement.");
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+        }
+        Assert(File.ReadAllBytes(path).SequenceEqual(original));
+        Assert(store.Load().Mode == UpdateMode.Automatic);
+        Assert(Directory.GetFiles(Path.GetDirectoryName(path)!,
+            "." + Path.GetFileName(path) + ".*.tmp").Length == 0);
+    });
     await Test("Author footer defaults reproduce the public attribution", () =>
     {
         var path = Path.Combine(temporary, "author-footer-default.json");

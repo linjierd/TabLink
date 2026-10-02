@@ -3,6 +3,7 @@ param(
     [string]$AndroidSdk,
     [string]$Gradle,
     [string]$UpdateManifestUrl,
+    [string]$UpdateManifestFallbackUrl,
     [switch]$Offline,
     [switch]$ReleasePreview
 )
@@ -119,7 +120,11 @@ try {
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\PairingLink.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\PinnedTls.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\ReleaseManifest.java'),
+        (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\UpdateDecisionPolicy.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\ArtifactIntegrity.java'),
+        (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\UpdateModePreference.java'),
+        (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\UpdateInstallAttempt.java'),
+        (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\UpdateInstallerUiGate.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\UpdateStateMachine.java'),
         (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\QrCodeDecoder.java'),
         (Join-Path $projectDirectory 'tests\ProtocolSmokeTest.java'),
@@ -133,6 +138,7 @@ try {
         (Join-Path $projectDirectory 'tests\DisplayUiPolicyTest.java'),
         (Join-Path $projectDirectory 'tests\PairingSecurityTest.java'),
         (Join-Path $projectDirectory 'tests\StableUpdateSecurityTest.java'),
+        (Join-Path $projectDirectory 'tests\UpdateInstallAttemptTest.java'),
         (Join-Path $projectDirectory 'tests\TrustedDeviceProtocolTest.java'),
         (Join-Path $projectDirectory 'tests\TrustedComputerTest.java'),
         (Join-Path $projectDirectory 'tests\PairingIntentPolicyTest.java'),
@@ -163,6 +169,28 @@ try {
     }
     & (Join-Path $JavaHome 'bin\javac.exe') -encoding UTF-8 -cp $zxingJar -d $testDirectory @sources
     if ($LASTEXITCODE -ne 0) { throw 'Protocol test compilation failed.' }
+    $installReceiverSource = Get-Content -LiteralPath (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\UpdateInstallReceiver.java') -Raw
+    if (-not $installReceiverSource.Contains('PackageInstaller.EXTRA_SESSION_ID') -or
+        -not $installReceiverSource.Contains('validatedCallback')) {
+        throw 'PackageInstaller callback must bind the system session id to the private attempt tuple.'
+    }
+    $updateControllerSource = Get-Content -LiteralPath (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\AndroidUpdateController.java') -Raw
+    if (-not $updateControllerSource.Contains('getMySessions()') -or
+        -not $updateControllerSource.Contains('session.isSealed()') -or
+        -not $updateControllerSource.Contains('replaceBlockedFloorAndClear') -or
+        -not $updateControllerSource.Contains('blockConflictFloorAndClear')) {
+        throw 'Installer restart recovery and atomic conflict-floor cleanup are required.'
+    }
+    $attemptStoreSource = Get-Content -LiteralPath (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\UpdateInstallAttemptStore.java') -Raw
+    if (-not $attemptStoreSource.Contains('clearAttemptState(preferences)') -or
+        -not $attemptStoreSource.Contains('restoreBlockedFloorAndClear') -or
+        -not $attemptStoreSource.Contains('persistFloorAndClear') -or
+        -not $attemptStoreSource.Contains('UpdateInstallerUiGate.installerTransactionFinished(attempt)')) {
+        throw 'SharedPreferences write failures must revoke stale attempts and release only the matching gate.'
+    }
+    if (Test-Path -LiteralPath (Join-Path $projectDirectory 'app\src\main\java\com\tablink\client\UpdateApkProvider.java')) {
+        throw 'The untracked ACTION_VIEW/FileProvider update fallback must remain removed.'
+    }
     & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.ProtocolSmokeTest
     if ($LASTEXITCODE -ne 0) { throw 'Protocol or coordinate test failed.' }
     & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.AvcConfigurationTest
@@ -190,6 +218,8 @@ try {
     }
     & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.StableUpdateSecurityTest $updatePayloadFixture $updateEnvelopeFixture
     if ($LASTEXITCODE -ne 0) { throw 'Stable update security or state test failed.' }
+    & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.UpdateInstallAttemptTest
+    if ($LASTEXITCODE -ne 0) { throw 'Installer attempt state test failed.' }
     & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.TrustedDeviceProtocolTest
     if ($LASTEXITCODE -ne 0) { throw 'Trusted device protocol test failed.' }
     & (Join-Path $JavaHome 'bin\java.exe') -cp $testDirectory com.tablink.client.TrustedComputerTest
@@ -210,6 +240,12 @@ try {
             throw 'UpdateManifestUrl must use HTTPS.'
         }
         $gradleArguments += "-PtablinkUpdateManifestUrl=$UpdateManifestUrl"
+    }
+    if ($UpdateManifestFallbackUrl) {
+        if (-not $UpdateManifestFallbackUrl.StartsWith('https://', [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'UpdateManifestFallbackUrl must use HTTPS.'
+        }
+        $gradleArguments += "-PtablinkUpdateManifestFallbackUrl=$UpdateManifestFallbackUrl"
     }
     if ($Offline) { $gradleArguments += '--offline' }
     & $Gradle @gradleArguments

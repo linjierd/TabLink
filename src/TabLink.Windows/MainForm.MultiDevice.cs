@@ -256,6 +256,7 @@ internal sealed partial class MainForm
             metrics.Text=$"原生连接 {additionalSessions.Count(x=>!x.IsStopped)} · 全局最多一块虚拟屏{encoding}";
         }
         UpdateBrowserButtons(ready);
+        UpdateAutomaticPackageDownloadPolicy();
         EvaluateAutomaticUpdateApplication();
     }
     sealed record NativeSessionRow(NativeNetworkSession Session)

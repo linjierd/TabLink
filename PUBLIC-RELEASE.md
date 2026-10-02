@@ -121,8 +121,27 @@ The Windows public ZIP is self-contained for Windows x64 and does not require
 a separate .NET installation.
 
 The signed `stable` update channel remains at 0.8.0. Publishing 0.8.9 Preview
-1 assets on GitHub must not move the stable manifest or cause installed stable
-clients to update automatically.
+1 assets on GitHub must not move either stable manifest or cause installed stable
+clients to update automatically. The author's blog is the primary manifest
+source, and
+`https://github.com/linjierd/TabLink/releases/latest/download/manifest.json`
+is the fallback. That GitHub asset belongs only on a non-prerelease stable
+Release; a Preview must not contain it, become `latest`, or be relabelled to
+enter the stable channel. A manifest from either source still requires the same
+pinned ECDSA signature, and every downloaded package still requires the signed
+size and SHA-256 checks.
+
+Windows, Android, iOS/iPadOS, and HarmonyOS NEXT expose the same three user
+policies. `Automatic` checks in the background and uses the installation flow
+the platform permits; `DownloadThenAsk` checks automatically but waits for an
+explicit install or store action; and `Never` performs no background update
+request or install. Windows and Android may pre-download a verified package;
+Apple and HarmonyOS clients only prepare verified store metadata because their
+ordinary applications cannot pre-download or replace a store installation.
+Android always keeps the operating system's installation-confirmation step. On Windows, protected installation is
+allowed only from the exact `%ProgramFiles%\TabLink` directory. Portable copies
+on `E:`, Desktop, OneDrive, or elsewhere may check and download according to
+policy but must not replace themselves.
 
 TabLink-authored source remains MIT licensed. Every third-party component in
 the binary keeps its own license and notice. `THIRD_PARTY_NOTICES.md` and the

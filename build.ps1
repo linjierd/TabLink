@@ -550,6 +550,7 @@ if (-not $SkipAndroid) {
     $androidArguments = @{
         Offline = $true
         UpdateManifestUrl = 'https://linjie.space/download/api/download?path=TabLink%2Fstable%2Fmanifest.json'
+        UpdateManifestFallbackUrl = 'https://github.com/linjierd/TabLink/releases/latest/download/manifest.json'
     }
     if ($PublicRelease) { $androidArguments['ReleasePreview'] = $true }
     & (Join-Path $projectRoot 'android\build.ps1') @androidArguments
@@ -653,9 +654,12 @@ if ($PublicRelease) {
 & dotnet (Join-Path $publishRoot 'TabLink.dll') --self-test
 if ($LASTEXITCODE -ne 0) { throw 'Windows transport tests failed.' }
 Get-Content -LiteralPath (Join-Path $publishRoot 'selftest-result.txt')
-Get-ChildItem -LiteralPath $publishRoot -File -Recurse | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } | Sort-Object FullName | ForEach-Object {
+$rootChecksumPath = Join-Path $publishRoot 'SHA256SUMS.txt'
+Get-ChildItem -LiteralPath $publishRoot -File -Recurse | Where-Object {
+    -not $_.FullName.Equals($rootChecksumPath, [StringComparison]::OrdinalIgnoreCase)
+} | Sort-Object FullName | ForEach-Object {
     $relative = [IO.Path]::GetRelativePath($publishRoot, $_.FullName)
     $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
     "$hash  $relative"
-} | Set-Content -LiteralPath (Join-Path $publishRoot 'SHA256SUMS.txt') -Encoding UTF8
+} | Set-Content -LiteralPath $rootChecksumPath -Encoding UTF8
 Write-Output ('Ready: ' + (Join-Path $publishRoot 'TabLink.exe'))

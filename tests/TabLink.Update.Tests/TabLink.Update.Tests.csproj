@@ -10,7 +10,9 @@
     <Compile Include="../../src/TabLink.Windows/StableSemanticVersion.cs" Link="Production/StableSemanticVersion.cs" />
     <Compile Include="../../src/TabLink.Windows/UpdateVersionPolicy.cs" Link="Production/UpdateVersionPolicy.cs" />
     <Compile Include="../../src/TabLink.Windows/UpdateManifest.cs" Link="Production/UpdateManifest.cs" />
+    <Compile Include="../../src/TabLink.Windows/UpdateChannelConfiguration.cs" Link="Production/UpdateChannelConfiguration.cs" />
     <Compile Include="../../src/TabLink.Windows/UpdateClient.cs" Link="Production/UpdateClient.cs" />
+    <Compile Include="../../src/TabLink.Windows/WindowsUpdateCoordinator.cs" Link="Production/WindowsUpdateCoordinator.cs" />
     <Compile Include="../../src/TabLink.Windows/UpdateTrust.cs" Link="Production/UpdateTrust.cs" />
     <Compile Include="../../src/TabLink.Windows/AutomaticUpdateApplyPolicy.cs" Link="Production/AutomaticUpdateApplyPolicy.cs" />
     <Compile Include="../../src/TabLink.Windows/ProtectedUpdaterStager.cs" Link="Production/ProtectedUpdaterStager.cs" />

@@ -105,7 +105,6 @@ public final class ReleaseManifest {
             throw invalid("更新清单发布时间异常");
         int rollout = integer(root, "rolloutPercentage", 0, 100);
         int protocol = integer(root, "minimumProtocolVersion", 1, Integer.MAX_VALUE);
-        if (protocol > UPDATE_PROTOCOL) throw invalid("客户端更新协议版本过低");
         List<Object> values = array(root.get("artifacts"), "artifacts");
         if (values.isEmpty() || values.size() > PLATFORMS.size()) throw invalid("更新包列表数量无效");
         ArrayList<Artifact> artifacts = new ArrayList<>();
@@ -126,7 +125,7 @@ public final class ReleaseManifest {
             if (!SHA256.matcher(sha).matches()) throw invalid("更新包 SHA-256 无效");
             String installerUrl = null;
             if (item.containsKey("installerUrl")) installerUrl = https(string(item, "installerUrl", 8, 2048), "安装地址");
-            String notes = item.containsKey("notes") ? string(item, "notes", 0, 2000) : "";
+            String notes = item.containsKey("notes") ? string(item, "notes", 0, 4096) : "";
             artifacts.add(new Artifact(platform, version, build, url, size, sha, installerUrl, notes));
         }
         return new ReleaseManifest(releaseId, published, rollout, protocol, artifacts);

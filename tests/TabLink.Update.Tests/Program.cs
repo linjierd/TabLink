@@ -49,12 +49,21 @@ try
 
     Run("automatic apply waits for every active display session", () =>
     {
-        Check(AutomaticUpdateApplyPolicy.Evaluate(true, false, false, false, false) == AutomaticUpdateApplyDisposition.ScheduleWhenIdle, "idle app schedules automatic install");
-        Check(AutomaticUpdateApplyPolicy.Evaluate(true, true, false, false, false) == AutomaticUpdateApplyDisposition.DeferredForActivity, "active display defers install");
-        Check(AutomaticUpdateApplyPolicy.Evaluate(true, false, true, false, false) == AutomaticUpdateApplyDisposition.DeferredForActivity, "in-progress operation defers install");
-        Check(AutomaticUpdateApplyPolicy.Evaluate(true, false, false, true, false) == AutomaticUpdateApplyDisposition.DeferredForActivity, "display cleanup defers install");
-        Check(AutomaticUpdateApplyPolicy.Evaluate(false, false, false, false, false) == AutomaticUpdateApplyDisposition.None, "no update does nothing");
-        Check(AutomaticUpdateApplyPolicy.Evaluate(true, false, false, false, true) == AutomaticUpdateApplyDisposition.None, "closing app does not schedule twice");
+        Check(AutomaticUpdateApplyPolicy.ShouldAllowPackageDownload(false, false, false, false), "idle app permits package download");
+        Check(!AutomaticUpdateApplyPolicy.ShouldAllowPackageDownload(true, false, false, false), "active display pauses package download");
+        Check(!AutomaticUpdateApplyPolicy.ShouldAllowPackageDownload(false, true, false, false), "busy app pauses package download");
+        Check(!AutomaticUpdateApplyPolicy.ShouldAllowPackageDownload(false, false, true, false), "display cleanup pauses package download");
+        Check(!AutomaticUpdateApplyPolicy.ShouldAllowPackageDownload(false, false, false, true), "connection startup pauses package download");
+        Check(AutomaticUpdateApplyPolicy.Evaluate(true, true, false, false, false, false) == AutomaticUpdateApplyDisposition.ScheduleWhenIdle, "idle app schedules automatic install");
+        Check(AutomaticUpdateApplyPolicy.Evaluate(true, true, true, false, false, false) == AutomaticUpdateApplyDisposition.DeferredForActivity, "active display defers install");
+        Check(AutomaticUpdateApplyPolicy.Evaluate(true, true, false, true, false, false) == AutomaticUpdateApplyDisposition.DeferredForActivity, "in-progress operation defers install");
+        Check(AutomaticUpdateApplyPolicy.Evaluate(true, true, false, false, true, false) == AutomaticUpdateApplyDisposition.DeferredForActivity, "display cleanup defers install");
+        Check(AutomaticUpdateApplyPolicy.Evaluate(true, false, false, false, false, false) == AutomaticUpdateApplyDisposition.None, "no update does nothing");
+        Check(AutomaticUpdateApplyPolicy.Evaluate(true, true, false, false, false, true) == AutomaticUpdateApplyDisposition.None, "closing app does not schedule twice");
+        Check(AutomaticUpdateApplyPolicy.Evaluate(false, true, false, false, false, false) == AutomaticUpdateApplyDisposition.None, "manual-install policy never schedules automatic install");
+        Check(AutomaticUpdateApplyPolicy.ShouldLaunchOnNormalExit(true, true), "automatic policy installs a ready update during normal exit");
+        Check(!AutomaticUpdateApplyPolicy.ShouldLaunchOnNormalExit(false, true), "manual-install policy does not install during normal exit");
+        Check(!AutomaticUpdateApplyPolicy.ShouldLaunchOnNormalExit(true, false), "normal exit does not launch without a ready update");
     });
 
     Run("protected updater bundle identity requires the complete helper set", () =>
@@ -266,8 +275,9 @@ try
     {
         var package = CreateZip(("TabLink.exe", Encoding.UTF8.GetBytes("fixture")));
         var hash = Convert.ToHexString(SHA256.HashData(package));
-        var available = Sign(Payload([Artifact("windows-x64", "0.8.0", 17, "https://updates.example.test/windows.zip", package.Length, hash)]));
-        var withdrawn = Sign(Payload([Artifact("android", "0.8.0", 17, "https://updates.example.test/android.apk", 7, new string('4', 64))], releaseId: "stable-0.8.0-withdrawn"));
+        var published = DateTimeOffset.UtcNow.AddMinutes(-2);
+        var available = Sign(Payload([Artifact("windows-x64", "0.8.0", 17, "https://updates.example.test/windows.zip", package.Length, hash)], published));
+        var withdrawn = Sign(Payload([Artifact("android", "0.8.0", 17, "https://updates.example.test/android.apk", 7, new string('4', 64))], published.AddMinutes(1), "stable-0.8.0-withdrawn"));
         var handler = new FixtureHandler { Manifest = available, Package = package };
         using var http = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
         var cache = Path.Combine(root, "client-cache");
@@ -299,13 +309,14 @@ try
         var package = CreateZip(("TabLink.exe", Encoding.UTF8.GetBytes("trusted")));
         var hash = Convert.ToHexString(SHA256.HashData(package));
         var artifact = Artifact("windows-x64", "0.8.0", 19, "https://updates.example.test/windows.zip", package.Length, hash);
-        var handler = new FixtureHandler { Manifest = Sign(Payload([artifact], releaseId: "stable-pause-test")), Package = package };
+        var published = DateTimeOffset.UtcNow.AddMinutes(-2);
+        var handler = new FixtureHandler { Manifest = Sign(Payload([artifact], published, "stable-pause-test")), Package = package };
         using var http = new HttpClient(handler);
         var cache = Path.Combine(root, "paused-cache");
         var client = new UpdateClient(http, publicKey, cache, StableSemanticVersion.Parse("0.7.3"), "0123456789abcdef0123456789abcdef");
         Check(await client.CheckAndDownloadAsync(new Uri("https://updates.example.test/stable.json"), CancellationToken.None) is not null, "active rollout downloads once");
         var requestsBeforePause = handler.PackageRequests;
-        handler.Manifest = Sign(Payload([artifact], releaseId: "stable-pause-test", rolloutPercentage: 0));
+        handler.Manifest = Sign(Payload([artifact], published.AddMinutes(1), "stable-pause-test", rolloutPercentage: 0));
         Check(await client.CheckAndDownloadAsync(new Uri("https://updates.example.test/stable.json"), CancellationToken.None) is null, "paused rollout returns no update");
         Check(handler.PackageRequests == requestsBeforePause, "paused rollout makes no package request");
         Check(!File.Exists(Path.Combine(cache, "pending-windows.json")), "paused rollout clears pending metadata");
@@ -409,6 +420,383 @@ try
         Check(!UpdateSignalSecurity.ValidateHealth(health, 404, 505, executable, otherNonce), "health rejects wrong nonce");
     });
 
+    Run("update channel configuration keeps legacy manifestUrl and adds an ordered HTTPS fallback", () =>
+    {
+        var applicationDirectory = Path.Combine(root, "channel-configuration");
+        var localDataDirectory = Path.Combine(root, "channel-configuration-data");
+        Directory.CreateDirectory(applicationDirectory);
+        var channelPath = Path.Combine(applicationDirectory, "update-channel.json");
+        File.WriteAllText(channelPath, """
+            {
+              "enabled": true,
+              "manifestUrl": "https://linjie.space/download/api/download?path=TabLink%2Fstable%2Fmanifest.json",
+              "checkIntervalMinutes": 360
+            }
+            """);
+        var legacy = UpdateChannelConfiguration.Load(applicationDirectory, localDataDirectory);
+        Check(legacy.ManifestUri?.Host == "linjie.space", "legacy manifestUrl remains the primary source");
+        Check(legacy.FallbackManifestUri is null && legacy.ManifestUris.Count == 1, "legacy configuration remains valid without a fallback");
+
+        File.WriteAllText(channelPath, """
+            {
+              "enabled": true,
+              "manifestUrl": "https://linjie.space/download/api/download?path=TabLink%2Fstable%2Fmanifest.json",
+              "fallbackManifestUrl": "https://github.com/linjierd/TabLink/releases/latest/download/manifest.json",
+              "checkIntervalMinutes": 360
+            }
+            """);
+        var dual = UpdateChannelConfiguration.Load(applicationDirectory, localDataDirectory);
+        Check(dual.ManifestUris.Count == 2 && dual.ManifestUris[0].Host == "linjie.space" && dual.ManifestUris[1].Host == "github.com", "primary and fallback sources keep their configured order");
+
+        File.WriteAllText(channelPath, """
+            {
+              "enabled": true,
+              "manifestUrl": "https://updates.example.test/manifest.json",
+              "fallbackManifestUrl": "https://updates.example.test/manifest.json",
+              "checkIntervalMinutes": 360
+            }
+            """);
+        Reject<InvalidDataException>(() => UpdateChannelConfiguration.Load(applicationDirectory, localDataDirectory), "duplicate sources are rejected");
+    });
+
+    await RunAsync("a bad primary signature or HTTP response falls back to a valid signed manifest", async () =>
+    {
+        const string primaryManifestUrl = "https://linjie.space/TabLink/stable/manifest.json";
+        const string fallbackManifestUrl = "https://github.com/linjierd/TabLink/releases/latest/download/manifest.json";
+        const string packageUrl = "https://github.com/linjierd/TabLink/releases/download/0.9.0/TabLink-windows-x64.zip";
+        var package = CreateZip(("TabLink.exe", Encoding.UTF8.GetBytes("signed fallback")));
+        var hash = Convert.ToHexString(SHA256.HashData(package));
+        var payload = Payload([Artifact("windows-x64", "0.9.0", 21, packageUrl, package.Length, hash)], releaseId: "stable-0.9.0-signature-fallback");
+        var validEnvelope = Sign(payload);
+        var decoded = JsonSerializer.Deserialize<SignedUpdateEnvelope>(validEnvelope) ?? throw new Exception("signed fixture envelope missing");
+        var alteredPayload = Encoding.UTF8.GetString(payload).Replace("\"build\":21", "\"build\":22", StringComparison.Ordinal);
+        var invalidEnvelope = JsonSerializer.SerializeToUtf8Bytes(new SignedUpdateEnvelope(Convert.ToBase64String(Encoding.UTF8.GetBytes(alteredPayload)), decoded.Signature));
+        var handler = new MultiSourceFixtureHandler();
+        handler.Add(primaryManifestUrl, invalidEnvelope);
+        handler.Add(fallbackManifestUrl, validEnvelope);
+        handler.Add(packageUrl, package);
+        using var http = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
+        var client = new UpdateClient(http, publicKey, Path.Combine(root, "signature-fallback-cache"), StableSemanticVersion.Parse("0.7.3"), "0123456789abcdef0123456789abcdef");
+        var ready = await client.CheckAndDownloadAsync([new Uri(primaryManifestUrl), new Uri(fallbackManifestUrl)], CancellationToken.None);
+        Check(ready?.Version == "0.9.0", "valid fallback source authorizes the package after primary signature failure");
+        Check(handler.Requests.Contains(primaryManifestUrl) && handler.Requests.Contains(fallbackManifestUrl), "both manifest sources were attempted");
+
+        var httpFailureHandler = new MultiSourceFixtureHandler();
+        httpFailureHandler.Add(primaryManifestUrl, [], HttpStatusCode.ServiceUnavailable);
+        httpFailureHandler.Add(fallbackManifestUrl, validEnvelope);
+        httpFailureHandler.Add(packageUrl, package);
+        using var httpFailureClient = new HttpClient(httpFailureHandler) { Timeout = Timeout.InfiniteTimeSpan };
+        var httpFallbackClient = new UpdateClient(httpFailureClient, publicKey, Path.Combine(root, "http-fallback-cache"), StableSemanticVersion.Parse("0.7.3"), "0123456789abcdef0123456789abcdef");
+        Check(await httpFallbackClient.CheckAndDownloadAsync([new Uri(primaryManifestUrl), new Uri(fallbackManifestUrl)], CancellationToken.None) is not null, "HTTP failure on the primary source advances to the valid fallback");
+    });
+
+    await RunAsync("a stalled primary manifest has an independent timeout and cannot starve the fallback", async () =>
+    {
+        const string primaryManifestUrl = "https://linjie.space/TabLink/stable/manifest.json";
+        const string fallbackManifestUrl = "https://github.com/linjierd/TabLink/releases/latest/download/manifest.json";
+        const string packageUrl = "https://github.com/linjierd/TabLink/releases/download/0.9.0/TabLink-windows-x64.zip";
+        var package = CreateZip(("TabLink.exe", Encoding.UTF8.GetBytes("bounded source timeout")));
+        var envelope = Sign(Payload(
+            [Artifact("windows-x64", "0.9.0", 21, packageUrl, package.Length, Convert.ToHexString(SHA256.HashData(package)))],
+            releaseId: "stable-0.9.0-source-timeout"));
+        var handler = new StalledPrimaryFixtureHandler(primaryManifestUrl, fallbackManifestUrl, envelope, packageUrl, package);
+        using var http = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
+        var client = new UpdateClient(http, publicKey, Path.Combine(root, "source-timeout-cache"),
+            StableSemanticVersion.Parse("0.7.3"), "0123456789abcdef0123456789abcdef", TimeSpan.FromMilliseconds(50));
+        var ready = await client.CheckAndDownloadAsync(
+            [new Uri(primaryManifestUrl), new Uri(fallbackManifestUrl)], CancellationToken.None);
+        Check(ready?.Version == "0.9.0", "fallback remains usable after the primary source-specific timeout");
+        Check(handler.Requests.SequenceEqual([primaryManifestUrl, fallbackManifestUrl, packageUrl]),
+            "the stalled primary is cancelled before the fallback manifest and package are requested");
+    });
+
+    await RunAsync("cancelling an in-flight package before commit leaves no ready update", async () =>
+    {
+        const string manifestUrl = "https://updates.example.test/cancel/manifest.json";
+        const string packageUrl = "https://updates.example.test/cancel/windows.zip";
+        var package = CreateZip(("TabLink.exe", Encoding.UTF8.GetBytes("must not commit after cancellation")));
+        var envelope = Sign(Payload(
+            [Artifact("windows-x64", "0.9.0", 21, packageUrl, package.Length, Convert.ToHexString(SHA256.HashData(package)))],
+            releaseId: "stable-0.9.0-cancel-before-commit"));
+        using var cancellation = new CancellationTokenSource();
+        var handler = new CancelAtPackageEndFixtureHandler(manifestUrl, envelope, packageUrl, package, cancellation);
+        using var http = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
+        var cache = Path.Combine(root, "cancel-before-commit-cache");
+        var client = new UpdateClient(http, publicKey, cache, StableSemanticVersion.Parse("0.7.3"),
+            "0123456789abcdef0123456789abcdef");
+        await RejectAsync<OperationCanceledException>(() => client.CheckAndDownloadAsync(
+            [new Uri(manifestUrl)], cancellation.Token), "policy cancellation must win before package commit");
+        Check(!File.Exists(Path.Combine(cache, "pending-windows.json")),
+            "cancelled download cannot publish pending update metadata");
+        Check(!Directory.Exists(cache) || !Directory.EnumerateFiles(cache, "TabLink-windows-x64.zip", SearchOption.AllDirectories).Any(),
+            "cancelled download cannot publish a final package");
+    });
+
+    await RunAsync("display activity cancels an in-flight package without cancelling manifest policy", async () =>
+    {
+        const string manifestUrl = "https://updates.example.test/display-started/manifest.json";
+        const string packageUrl = "https://updates.example.test/display-started/windows.zip";
+        var package = CreateZip(("TabLink.exe", Encoding.UTF8.GetBytes("display started during package transfer")));
+        var envelope = Sign(Payload(
+            [Artifact("windows-x64", "0.9.0", 21, packageUrl, package.Length, Convert.ToHexString(SHA256.HashData(package)))],
+            releaseId: "stable-0.9.0-display-started"));
+        using var packagePolicy = new CancellationTokenSource();
+        var handler = new CancelAtPackageEndFixtureHandler(manifestUrl, envelope, packageUrl, package, packagePolicy);
+        using var http = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
+        var cache = Path.Combine(root, "display-started-download-cache");
+        var client = new UpdateClient(http, publicKey, cache, StableSemanticVersion.Parse("0.7.3"),
+            "0123456789abcdef0123456789abcdef");
+        await RejectAsync<OperationCanceledException>(() => client.CheckAndDownloadAsync(
+            [new Uri(manifestUrl)], CancellationToken.None, packagePolicy.Token),
+            "display policy cancellation stops the package before it becomes ready");
+        Check(File.Exists(Path.Combine(cache, "manifest-floor.json")),
+            "package-only cancellation preserves the verified anti-replay decision");
+        Check(!File.Exists(Path.Combine(cache, "pending-windows.json")),
+            "package-only cancellation cannot publish pending metadata");
+        Check(!Directory.EnumerateFiles(cache, "TabLink-windows-x64.zip", SearchOption.AllDirectories).Any(),
+            "package-only cancellation cannot publish a final package");
+    });
+
+    await RunAsync("an active display can verify the manifest without starting the package download and resumes later", async () =>
+    {
+        const string manifestUrl = "https://updates.example.test/display-active/manifest.json";
+        const string packageUrl = "https://updates.example.test/display-active/windows.zip";
+        var package = CreateZip(("TabLink.exe", Encoding.UTF8.GetBytes("deferred while display is active")));
+        var envelope = Sign(Payload(
+            [Artifact("windows-x64", "0.9.0", 21, packageUrl, package.Length, Convert.ToHexString(SHA256.HashData(package)))],
+            releaseId: "stable-0.9.0-display-active"));
+        var handler = new MultiSourceFixtureHandler();
+        handler.Add(manifestUrl, envelope);
+        handler.Add(packageUrl, package);
+        using var http = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
+        var cache = Path.Combine(root, "display-active-download-cache");
+        var client = new UpdateClient(http, publicKey, cache, StableSemanticVersion.Parse("0.7.3"),
+            "0123456789abcdef0123456789abcdef");
+        using var packagePolicy = new CancellationTokenSource();
+        packagePolicy.Cancel();
+        await RejectAsync<OperationCanceledException>(() => client.CheckAndDownloadAsync(
+            [new Uri(manifestUrl)], CancellationToken.None, packagePolicy.Token),
+            "active display policy defers package work after manifest verification");
+        Check(handler.Requests.SequenceEqual([manifestUrl]), "active display makes no package HTTP request");
+        Check(File.Exists(Path.Combine(cache, "manifest-floor.json")), "signed manifest still advances the anti-replay floor while download is deferred");
+        Check(!File.Exists(Path.Combine(cache, "pending-windows.json")), "deferred package cannot publish a ready update");
+
+        var resumed = await client.CheckAndDownloadAsync([new Uri(manifestUrl)], CancellationToken.None,
+            CancellationToken.None);
+        Check(resumed?.Version == "0.9.0", "package download resumes when the display becomes idle");
+        Check(handler.Requests.SequenceEqual([manifestUrl, manifestUrl, packageUrl]),
+            "idle retry rechecks the signed manifest before requesting the package");
+    });
+
+    await RunAsync("coordinator drain waits for cancelled package temp cleanup before Never completes", async () =>
+    {
+        const string manifestUrl = "https://updates.example.test/never-drain/manifest.json";
+        const string packageUrl = "https://updates.example.test/never-drain/windows.zip";
+        var package = CreateZip(("TabLink.exe", Encoding.UTF8.GetBytes(new string('N', 512 * 1024))));
+        var envelope = Sign(Payload(
+            [Artifact("windows-x64", "0.9.0", 21, packageUrl, package.Length, Convert.ToHexString(SHA256.HashData(package)))],
+            releaseId: "stable-0.9.0-never-drain"));
+        var handler = new BlockingPackageFixtureHandler(manifestUrl, envelope, packageUrl, package);
+        using var http = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
+        var cache = Path.Combine(root, "never-drain-cache");
+        var configuration = new UpdateChannelConfiguration(true, new Uri(manifestUrl), null,
+            TimeSpan.FromHours(6), "0123456789abcdef0123456789abcdef");
+        var client = new UpdateClient(http, publicKey, cache, StableSemanticVersion.Parse("0.7.3"),
+            configuration.CohortId);
+        using var lifetime = new CancellationTokenSource();
+        using var coordinator = new WindowsUpdateCoordinator(configuration, client, http, root, cache, _ => { });
+        coordinator.Start(lifetime.Token);
+        await handler.SecondReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Check(Directory.EnumerateFiles(cache, "*.download", SearchOption.AllDirectories).Any(),
+            "fixture reaches an in-flight package temp file before Never cancellation");
+        lifetime.Cancel();
+        await coordinator.WaitForWorkerAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        Check(handler.CancellationObserved.Task.IsCompleted,
+            "worker observes cancellation before the drain task completes");
+        Check(!Directory.EnumerateFiles(cache, "*.download", SearchOption.AllDirectories).Any(),
+            "drained worker leaves no package download temp file");
+        Check(!Directory.EnumerateFiles(cache, "*.tmp", SearchOption.AllDirectories).Any(),
+            "drained worker leaves no metadata temp file");
+        Check(!Directory.EnumerateFiles(cache, "TabLink-windows-x64.zip", SearchOption.AllDirectories).Any(),
+            "drained worker cannot publish a final package");
+        Check(!File.Exists(Path.Combine(cache, "pending-windows.json")),
+            "drained worker cannot publish pending metadata");
+    });
+
+    await RunAsync("the newest valid signed pause is authoritative over an older active source", async () =>
+    {
+        const string primaryManifestUrl = "https://linjie.space/TabLink/stable/manifest.json";
+        const string fallbackManifestUrl = "https://github.com/linjierd/TabLink/releases/latest/download/manifest.json";
+        const string packageUrl = "https://updates.example.test/paused.zip";
+        var package = CreateZip(("TabLink.exe", Encoding.UTF8.GetBytes("must not download")));
+        var hash = Convert.ToHexString(SHA256.HashData(package));
+        var artifact = Artifact("windows-x64", "0.9.1", 22, packageUrl, package.Length, hash);
+        var newer = DateTimeOffset.UtcNow.AddMinutes(-1);
+        var handler = new MultiSourceFixtureHandler();
+        handler.Add(primaryManifestUrl, Sign(Payload([artifact], newer, "stable-0.9.1-paused", rolloutPercentage: 0)));
+        handler.Add(fallbackManifestUrl, Sign(Payload([artifact], newer.AddMinutes(-1), "stable-0.9.1-paused")));
+        handler.Add(packageUrl, package);
+        using var http = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
+        var cache = Path.Combine(root, "authoritative-pause-cache");
+        Directory.CreateDirectory(cache);
+        File.WriteAllText(Path.Combine(cache, "pending-windows.json"), "stale pending marker");
+        var client = new UpdateClient(http, publicKey, cache, StableSemanticVersion.Parse("0.7.3"), "0123456789abcdef0123456789abcdef");
+        Check(await client.CheckAndDownloadAsync([new Uri(primaryManifestUrl), new Uri(fallbackManifestUrl)], CancellationToken.None) is null, "newest pause returns no update");
+        Check(!handler.Requests.Contains(packageUrl), "older active source cannot trigger a package request");
+        Check(!File.Exists(Path.Combine(cache, "pending-windows.json")), "authoritative pause clears pending metadata");
+
+        var replayHandler = new MultiSourceFixtureHandler();
+        replayHandler.Add(fallbackManifestUrl,
+            Sign(Payload([artifact], newer.AddMinutes(-1), "stable-0.9.1-paused")));
+        replayHandler.Add(packageUrl, package);
+        using var replayHttp = new HttpClient(replayHandler) { Timeout = Timeout.InfiniteTimeSpan };
+        var recreated = new UpdateClient(replayHttp, publicKey, cache,
+            StableSemanticVersion.Parse("0.7.3"), "0123456789abcdef0123456789abcdef");
+        await RejectAsync<UpdatePolicyBlockedException>(() => recreated.CheckAndDownloadAsync(
+            [new Uri(fallbackManifestUrl)], CancellationToken.None),
+            "a recreated client rejects an older signed replay after accepting a newer pause");
+        Check(!replayHandler.Requests.Contains(packageUrl),
+            "persisted manifest floor blocks package download from an older replay");
+    });
+
+    await RunAsync("failure to persist a newer signed decision is a fatal policy result", async () =>
+    {
+        const string oldManifestUrl = "https://updates.example.test/floor-write/old-manifest.json";
+        const string oldPackageUrl = "https://updates.example.test/floor-write/old-windows.zip";
+        const string newerManifestUrl = "https://updates.example.test/floor-write/new-manifest.json";
+        var package = CreateZip(("TabLink.exe", Encoding.UTF8.GetBytes("floor persistence fixture")));
+        var artifact = Artifact("windows-x64", "0.9.0", 21, oldPackageUrl, package.Length,
+            Convert.ToHexString(SHA256.HashData(package)));
+        var oldPublished = DateTimeOffset.UtcNow.AddMinutes(-3);
+        var cache = Path.Combine(root, "floor-write-failure-cache");
+        var initialHandler = new MultiSourceFixtureHandler();
+        initialHandler.Add(oldManifestUrl, Sign(Payload([artifact], oldPublished, "stable-0.9.0-floor-write")));
+        initialHandler.Add(oldPackageUrl, package);
+        using (var initialHttp = new HttpClient(initialHandler) { Timeout = Timeout.InfiniteTimeSpan })
+        {
+            var initialClient = new UpdateClient(initialHttp, publicKey, cache,
+                StableSemanticVersion.Parse("0.7.3"), "0123456789abcdef0123456789abcdef");
+            Check(await initialClient.CheckAndDownloadAsync([new Uri(oldManifestUrl)], CancellationToken.None) is not null,
+                "fixture creates the accepted floor that will be locked");
+        }
+
+        var newerHandler = new MultiSourceFixtureHandler();
+        newerHandler.Add(newerManifestUrl, Sign(Payload([artifact], oldPublished.AddMinutes(1),
+            "stable-0.9.0-newer-pause", rolloutPercentage: 0)));
+        using var newerHttp = new HttpClient(newerHandler) { Timeout = Timeout.InfiniteTimeSpan };
+        var newerClient = new UpdateClient(newerHttp, publicKey, cache,
+            StableSemanticVersion.Parse("0.7.3"), "0123456789abcdef0123456789abcdef");
+        var floorPath = Path.Combine(cache, "manifest-floor.json");
+        using (var floorLock = new FileStream(floorPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            await RejectAsync<UpdatePolicyBlockedException>(() => newerClient.CheckAndDownloadAsync(
+                [new Uri(newerManifestUrl)], CancellationToken.None),
+                "a verified decision that cannot advance the anti-replay floor cannot reuse an older pending update");
+        }
+    });
+
+    await RunAsync("same-time conflicting signed manifests fail closed", async () =>
+    {
+        const string primaryManifestUrl = "https://linjie.space/TabLink/stable/manifest.json";
+        const string fallbackManifestUrl = "https://github.com/linjierd/TabLink/releases/latest/download/manifest.json";
+        var published = DateTimeOffset.UtcNow.AddMinutes(-1);
+        var first = Artifact("windows-x64", "0.9.2", 23, "https://linjie.space/TabLink/stable/0.9.2.zip", 10, new string('A', 64));
+        var second = Artifact("windows-x64", "0.9.2", 23, "https://github.com/linjierd/TabLink/releases/download/0.9.2/TabLink.zip", 10, new string('B', 64));
+        var handler = new MultiSourceFixtureHandler();
+        handler.Add(primaryManifestUrl, Sign(Payload([first], published, "stable-0.9.2-conflict")));
+        handler.Add(fallbackManifestUrl, Sign(Payload([second], published, "stable-0.9.2-conflict")));
+        using var http = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
+        var cache = Path.Combine(root, "conflict-cache");
+        Directory.CreateDirectory(cache);
+        File.WriteAllText(Path.Combine(cache, "pending-windows.json"), "stale pending marker");
+        var client = new UpdateClient(http, publicKey, cache, StableSemanticVersion.Parse("0.7.3"), "0123456789abcdef0123456789abcdef");
+        await RejectAsync<UpdatePolicyBlockedException>(() => client.CheckAndDownloadAsync([new Uri(primaryManifestUrl), new Uri(fallbackManifestUrl)], CancellationToken.None), "same-time hash conflict must not select either source");
+        Check(handler.Requests.All(url => !url.EndsWith(".zip", StringComparison.Ordinal)), "conflicting manifests make no package request");
+        Check(!File.Exists(Path.Combine(cache, "pending-windows.json")), "conflict clears cached authorization so callers cannot reuse an older pending update");
+    });
+
+    await RunAsync("a signed source conflict persists a blocking floor when old pending metadata cannot be deleted", async () =>
+    {
+        const string oldManifestUrl = "https://updates.example.test/conflict-floor/old-manifest.json";
+        const string oldPackageUrl = "https://updates.example.test/conflict-floor/old-windows.zip";
+        const string primaryManifestUrl = "https://linjie.space/TabLink/stable/manifest.json";
+        const string fallbackManifestUrl = "https://github.com/linjierd/TabLink/releases/latest/download/manifest.json";
+        var oldPackage = CreateZip(("TabLink.exe", Encoding.UTF8.GetBytes("previously authorized update")));
+        var oldPublished = DateTimeOffset.UtcNow.AddMinutes(-3);
+        var oldArtifact = Artifact("windows-x64", "0.9.0", 21, oldPackageUrl, oldPackage.Length,
+            Convert.ToHexString(SHA256.HashData(oldPackage)));
+        var cache = Path.Combine(root, "persistent-conflict-floor-cache");
+        var initialHandler = new MultiSourceFixtureHandler();
+        initialHandler.Add(oldManifestUrl, Sign(Payload([oldArtifact], oldPublished, "stable-0.9.0-old-pending")));
+        initialHandler.Add(oldPackageUrl, oldPackage);
+        using (var initialHttp = new HttpClient(initialHandler) { Timeout = Timeout.InfiniteTimeSpan })
+        {
+            var initialClient = new UpdateClient(initialHttp, publicKey, cache,
+                StableSemanticVersion.Parse("0.7.3"), "0123456789abcdef0123456789abcdef");
+            Check(await initialClient.CheckAndDownloadAsync([new Uri(oldManifestUrl)], CancellationToken.None) is not null,
+                "fixture creates an older valid cached pending update");
+        }
+
+        var pendingPath = Path.Combine(cache, "pending-windows.json");
+        File.SetAttributes(pendingPath, File.GetAttributes(pendingPath) | FileAttributes.ReadOnly);
+        try
+        {
+            var conflictPublished = oldPublished.AddMinutes(1);
+            var first = Artifact("windows-x64", "0.9.1", 22,
+                "https://linjie.space/TabLink/stable/0.9.1.zip", 10, new string('A', 64));
+            var second = Artifact("windows-x64", "0.9.1", 22,
+                "https://github.com/linjierd/TabLink/releases/download/0.9.1/TabLink.zip", 10, new string('B', 64));
+            var conflictHandler = new MultiSourceFixtureHandler();
+            conflictHandler.Add(primaryManifestUrl, Sign(Payload([first], conflictPublished, "stable-0.9.1-conflict-floor")));
+            conflictHandler.Add(fallbackManifestUrl, Sign(Payload([second], conflictPublished, "stable-0.9.1-conflict-floor")));
+            using var conflictHttp = new HttpClient(conflictHandler) { Timeout = Timeout.InfiniteTimeSpan };
+            var conflictClient = new UpdateClient(conflictHttp, publicKey, cache,
+                StableSemanticVersion.Parse("0.7.3"), "0123456789abcdef0123456789abcdef");
+            await RejectAsync<UpdatePolicyBlockedException>(() => conflictClient.CheckAndDownloadAsync(
+                [new Uri(primaryManifestUrl), new Uri(fallbackManifestUrl)], CancellationToken.None),
+                "same-time signed conflict is a fatal policy result");
+            Check(File.Exists(pendingPath), "read-only fixture proves pending deletion was unavailable");
+            Check(await conflictClient.TryLoadPendingAsync(CancellationToken.None) is null,
+                "persisted conflict floor rejects the otherwise valid older pending update");
+            var floor = JsonSerializer.Deserialize<AcceptedManifestFloor>(File.ReadAllBytes(Path.Combine(cache, "manifest-floor.json")))
+                ?? throw new Exception("conflict floor was not persisted");
+            Check(floor.PublishedAtUtc == conflictPublished.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture),
+                "conflict floor advances to the conflicting signed publication time");
+        }
+        finally
+        {
+            if (File.Exists(pendingPath)) File.SetAttributes(pendingPath, FileAttributes.Normal);
+        }
+    });
+
+    await RunAsync("equivalent signed manifests provide hash-checked package mirrors and cached packages are revalidated", async () =>
+    {
+        const string primaryManifestUrl = "https://linjie.space/TabLink/stable/manifest.json";
+        const string fallbackManifestUrl = "https://github.com/linjierd/TabLink/releases/latest/download/manifest.json";
+        const string primaryPackageUrl = "https://linjie.space/TabLink/stable/0.9.3.zip";
+        const string fallbackPackageUrl = "https://github.com/linjierd/TabLink/releases/download/0.9.3/TabLink-windows-x64.zip";
+        var package = CreateZip(("TabLink.exe", Encoding.UTF8.GetBytes("verified mirror")));
+        var corruptPackage = package.ToArray();
+        corruptPackage[^1] ^= 0x5A;
+        var hash = Convert.ToHexString(SHA256.HashData(package));
+        var published = DateTimeOffset.UtcNow.AddMinutes(-1);
+        var primaryArtifact = Artifact("windows-x64", "0.9.3", 24, primaryPackageUrl, package.Length, hash) with { Notes = "same signed release" };
+        var fallbackArtifact = Artifact("windows-x64", "0.9.3", 24, fallbackPackageUrl, package.Length, hash) with { Notes = "same signed release" };
+        var handler = new MultiSourceFixtureHandler();
+        handler.Add(primaryManifestUrl, Sign(Payload([primaryArtifact], published, "stable-0.9.3-mirrors")));
+        handler.Add(fallbackManifestUrl, Sign(Payload([fallbackArtifact], published, "stable-0.9.3-mirrors")));
+        handler.Add(primaryPackageUrl, corruptPackage);
+        handler.Add(fallbackPackageUrl, package);
+        using var http = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
+        var cache = Path.Combine(root, "mirror-cache");
+        var client = new UpdateClient(http, publicKey, cache, StableSemanticVersion.Parse("0.7.3"), "0123456789abcdef0123456789abcdef");
+        var ready = await client.CheckAndDownloadAsync([new Uri(primaryManifestUrl), new Uri(fallbackManifestUrl)], CancellationToken.None) ?? throw new Exception("mirror fixture did not download");
+        Check(handler.Requests.Contains(primaryPackageUrl) && handler.Requests.Contains(fallbackPackageUrl), "hash failure on the primary package advances to the signed mirror");
+        Check(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(ready.PackagePath))) == hash, "downloaded mirror still matches signed size and SHA-256");
+        File.WriteAllBytes(ready.PackagePath, corruptPackage);
+        Check(await client.TryLoadPendingAsync(CancellationToken.None) is null, "cached pending package is revalidated before reuse");
+    });
+
     Console.WriteLine($"TabLink update tests passed: {scenarios} scenarios, {assertions} assertions.");
     return 0;
 }
@@ -451,6 +839,7 @@ void Run(string name, Action action) { scenarios++; action(); Console.WriteLine(
 async Task RunAsync(string name, Func<Task> action) { scenarios++; await action(); Console.WriteLine("PASS " + name); }
 void Check(bool condition, string message) { assertions++; if (!condition) throw new Exception("Assertion failed: " + message); }
 void Reject<T>(Action action, string message) where T : Exception { assertions++; try { action(); } catch (T) { return; } throw new Exception("Expected " + typeof(T).Name + ": " + message); }
+async Task RejectAsync<T>(Func<Task> action, string message) where T : Exception { assertions++; try { await action(); } catch (T) { return; } throw new Exception("Expected " + typeof(T).Name + ": " + message); }
 
 sealed class FixtureHandler : HttpMessageHandler
 {
@@ -466,4 +855,185 @@ sealed class FixtureHandler : HttpMessageHandler
         response.Content.Headers.ContentLength = body.Length;
         return Task.FromResult(response);
     }
+}
+
+sealed class MultiSourceFixtureHandler : HttpMessageHandler
+{
+    readonly Dictionary<string, (HttpStatusCode StatusCode, byte[] Body)> responses = new(StringComparer.Ordinal);
+    public List<string> Requests { get; } = [];
+
+    public void Add(string url, byte[] body, HttpStatusCode statusCode = HttpStatusCode.OK)
+        => responses.Add(url, (statusCode, body));
+
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        var url = request.RequestUri!.AbsoluteUri;
+        Requests.Add(url);
+        if (!responses.TryGetValue(url, out var fixture)) fixture = (HttpStatusCode.NotFound, []);
+        var response = new HttpResponseMessage(fixture.StatusCode) { Content = new ByteArrayContent(fixture.Body), RequestMessage = request };
+        response.Content.Headers.ContentLength = fixture.Body.Length;
+        return Task.FromResult(response);
+    }
+}
+
+sealed class StalledPrimaryFixtureHandler(
+    string primaryManifestUrl,
+    string fallbackManifestUrl,
+    byte[] fallbackManifest,
+    string packageUrl,
+    byte[] package) : HttpMessageHandler
+{
+    public List<string> Requests { get; } = [];
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        var url = request.RequestUri!.AbsoluteUri;
+        Requests.Add(url);
+        if (url == primaryManifestUrl)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            throw new InvalidOperationException("The stalled source unexpectedly completed.");
+        }
+        var body = url == fallbackManifestUrl ? fallbackManifest : url == packageUrl ? package : [];
+        var status = url == fallbackManifestUrl || url == packageUrl ? HttpStatusCode.OK : HttpStatusCode.NotFound;
+        var response = new HttpResponseMessage(status) { Content = new ByteArrayContent(body), RequestMessage = request };
+        response.Content.Headers.ContentLength = body.Length;
+        return response;
+    }
+}
+
+sealed class CancelAtPackageEndFixtureHandler(
+    string manifestUrl,
+    byte[] manifest,
+    string packageUrl,
+    byte[] package,
+    CancellationTokenSource cancellation) : HttpMessageHandler
+{
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        var url = request.RequestUri!.AbsoluteUri;
+        HttpContent content = url == manifestUrl
+            ? new ByteArrayContent(manifest)
+            : url == packageUrl
+                ? new StreamContent(new CancelAtEndStream(package, cancellation))
+                : new ByteArrayContent([]);
+        content.Headers.ContentLength = url == manifestUrl ? manifest.Length : url == packageUrl ? package.Length : 0;
+        return Task.FromResult(new HttpResponseMessage(url == manifestUrl || url == packageUrl ? HttpStatusCode.OK : HttpStatusCode.NotFound)
+        { Content = content, RequestMessage = request });
+    }
+}
+
+sealed class CancelAtEndStream(byte[] content, CancellationTokenSource cancellation) : Stream
+{
+    int offset;
+    bool cancellationSent;
+    public override bool CanRead => true;
+    public override bool CanSeek => false;
+    public override bool CanWrite => false;
+    public override long Length => content.Length;
+    public override long Position { get => offset; set => throw new NotSupportedException(); }
+
+    public override int Read(byte[] buffer, int bufferOffset, int count)
+    {
+        if (offset < content.Length)
+        {
+            var copied = Math.Min(count, content.Length - offset);
+            Array.Copy(content, offset, buffer, bufferOffset, copied);
+            offset += copied;
+            return copied;
+        }
+        CancelOnce();
+        return 0;
+    }
+
+    public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+    {
+        if (offset < content.Length)
+        {
+            var copied = Math.Min(buffer.Length, content.Length - offset);
+            content.AsMemory(offset, copied).CopyTo(buffer);
+            offset += copied;
+            return ValueTask.FromResult(copied);
+        }
+        CancelOnce();
+        return ValueTask.FromResult(0);
+    }
+
+    void CancelOnce()
+    {
+        if (cancellationSent) return;
+        cancellationSent = true;
+        cancellation.Cancel();
+    }
+
+    public override void Flush() { }
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+}
+
+sealed class BlockingPackageFixtureHandler(
+    string manifestUrl,
+    byte[] manifest,
+    string packageUrl,
+    byte[] package) : HttpMessageHandler
+{
+    public TaskCompletionSource SecondReadStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public TaskCompletionSource CancellationObserved { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        var url = request.RequestUri!.AbsoluteUri;
+        HttpContent content = url == manifestUrl
+            ? new ByteArrayContent(manifest)
+            : url == packageUrl
+                ? new StreamContent(new BlockAfterFirstReadStream(package, SecondReadStarted, CancellationObserved))
+                : new ByteArrayContent([]);
+        content.Headers.ContentLength = url == manifestUrl ? manifest.Length : url == packageUrl ? package.Length : 0;
+        return Task.FromResult(new HttpResponseMessage(url == manifestUrl || url == packageUrl ? HttpStatusCode.OK : HttpStatusCode.NotFound)
+        { Content = content, RequestMessage = request });
+    }
+}
+
+sealed class BlockAfterFirstReadStream(
+    byte[] content,
+    TaskCompletionSource secondReadStarted,
+    TaskCompletionSource cancellationObserved) : Stream
+{
+    int offset;
+    public override bool CanRead => true;
+    public override bool CanSeek => false;
+    public override bool CanWrite => false;
+    public override long Length => content.Length;
+    public override long Position { get => offset; set => throw new NotSupportedException(); }
+
+    public override int Read(byte[] buffer, int bufferOffset, int count) =>
+        throw new NotSupportedException("The fixture requires asynchronous reads.");
+
+    public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+    {
+        if (offset == 0)
+        {
+            var copied = Math.Min(buffer.Length, Math.Min(content.Length, 128 * 1024));
+            content.AsMemory(0, copied).CopyTo(buffer);
+            offset = copied;
+            return copied;
+        }
+        secondReadStarted.TrySetResult();
+        try
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return 0;
+        }
+        catch (OperationCanceledException)
+        {
+            cancellationObserved.TrySetResult();
+            throw;
+        }
+    }
+
+    public override void Flush() { }
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 }

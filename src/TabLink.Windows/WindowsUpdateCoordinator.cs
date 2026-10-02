@@ -7,6 +7,8 @@ namespace TabLink.Windows;
 
 internal sealed class WindowsUpdateCoordinator : IDisposable
 {
+    static readonly TimeSpan ManifestSourceTimeout = TimeSpan.FromSeconds(30);
+    static readonly TimeSpan UpdateOperationTimeout = TimeSpan.FromMinutes(3);
     readonly UpdateChannelConfiguration configuration;
     readonly UpdateClient client;
     readonly HttpClient http;
@@ -14,11 +16,16 @@ internal sealed class WindowsUpdateCoordinator : IDisposable
     readonly string cacheDirectory;
     readonly Action<string> log;
     readonly object sync = new();
+    readonly object downloadSync = new();
+    readonly SemaphoreSlim checkWake = new(0, 1);
     Task? worker;
     PendingWindowsUpdate? ready;
     bool updaterStarted;
+    bool policyBlocked;
+    bool packageDownloadsAllowed = true;
+    CancellationTokenSource? activePackagePolicy;
 
-    WindowsUpdateCoordinator(UpdateChannelConfiguration configuration, UpdateClient client, HttpClient http, string applicationDirectory, string cacheDirectory, Action<string> log)
+    internal WindowsUpdateCoordinator(UpdateChannelConfiguration configuration, UpdateClient client, HttpClient http, string applicationDirectory, string cacheDirectory, Action<string> log)
     {
         this.configuration = configuration;
         this.client = client;
@@ -41,7 +48,8 @@ internal sealed class WindowsUpdateCoordinator : IDisposable
         var publicKey = Convert.FromBase64String(UpdateTrust.ManifestSignerSpkiBase64);
         var currentText = typeof(WindowsUpdateCoordinator).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0]
             ?? throw new InvalidDataException("无法读取当前 TabLink 版本。");
-        var client = new UpdateClient(http, publicKey, localRoot, StableSemanticVersion.Parse(currentText), configuration.CohortId);
+        var client = new UpdateClient(http, publicKey, localRoot, StableSemanticVersion.Parse(currentText), configuration.CohortId,
+            ManifestSourceTimeout);
         return new(configuration, client, http, applicationDirectory, localRoot, log);
     }
 
@@ -50,25 +58,98 @@ internal sealed class WindowsUpdateCoordinator : IDisposable
         lock (sync) worker ??= RunAsync(lifetime);
     }
 
+    internal async Task WaitForWorkerAsync()
+    {
+        Task? running;
+        lock (sync) running = worker;
+        if (running is not null) await running.ConfigureAwait(false);
+    }
+
+    public void SetPackageDownloadsAllowed(bool allowed)
+    {
+        CancellationTokenSource? cancel = null;
+        var wake = false;
+        lock (downloadSync)
+        {
+            if (packageDownloadsAllowed == allowed) return;
+            packageDownloadsAllowed = allowed;
+            if (allowed) wake = true;
+            else cancel = activePackagePolicy;
+        }
+        if (cancel is not null)
+        {
+            try { cancel.Cancel(); }
+            catch (ObjectDisposedException) { }
+        }
+        if (wake)
+        {
+            try { checkWake.Release(); }
+            catch (SemaphoreFullException) { }
+        }
+    }
+
+    CancellationTokenSource BeginPackageAttempt()
+    {
+        lock (downloadSync)
+        {
+            var policy = new CancellationTokenSource();
+            if (!packageDownloadsAllowed) policy.Cancel();
+            activePackagePolicy = policy;
+            return policy;
+        }
+    }
+
+    void EndPackageAttempt(CancellationTokenSource policy)
+    {
+        lock (downloadSync)
+            if (ReferenceEquals(activePackagePolicy, policy)) activePackagePolicy = null;
+        policy.Dispose();
+    }
+
     async Task RunAsync(CancellationToken lifetime)
     {
-        if (!configuration.Enabled || configuration.ManifestUri is null) return;
+        if (!configuration.Enabled || configuration.ManifestUris.Count == 0) return;
         while (!lifetime.IsCancellationRequested)
         {
+            CancellationTokenSource? packagePolicy = null;
             try
             {
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(lifetime);
-                timeout.CancelAfter(TimeSpan.FromMinutes(3));
-                SetReady(await client.CheckAndDownloadAsync(configuration.ManifestUri, timeout.Token).ConfigureAwait(false));
+                timeout.CancelAfter(UpdateOperationTimeout);
+                packagePolicy = BeginPackageAttempt();
+                using var packageLifetime = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, packagePolicy.Token);
+                var checkedUpdate = await client.CheckAndDownloadAsync(configuration.ManifestUris, timeout.Token,
+                    packageLifetime.Token).ConfigureAwait(false);
+                policyBlocked = false;
+                SetReady(checkedUpdate);
             }
             catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { return; }
+            catch (OperationCanceledException) when (packagePolicy?.IsCancellationRequested == true)
+            {
+                SetReady(null);
+                log("副屏正在使用，已暂停正式版安装包下载；连接结束后自动继续。");
+            }
+            catch (UpdatePolicyBlockedException ex)
+            {
+                policyBlocked = true;
+                SetReady(null);
+                log("自动更新已安全阻止，旧缓存不会被复用：" + ex.Message);
+            }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or HttpRequestException or InvalidDataException or System.Text.Json.JsonException or System.Security.Cryptography.CryptographicException or OperationCanceledException)
             {
                 log("自动更新检查暂不可用：" + ex.Message);
-                try { SetReady(await client.TryLoadPendingAsync(lifetime).ConfigureAwait(false)); }
-                catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { return; }
+                if (policyBlocked) SetReady(null);
+                else
+                {
+                    try { SetReady(await client.TryLoadPendingAsync(lifetime).ConfigureAwait(false)); }
+                    catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { return; }
+                }
             }
-            try { await Task.Delay(configuration.CheckInterval, lifetime).ConfigureAwait(false); }
+            finally
+            {
+                if (packagePolicy is not null) EndPackageAttempt(packagePolicy);
+            }
+            try { await checkWake.WaitAsync(configuration.CheckInterval, lifetime).ConfigureAwait(false); }
             catch (OperationCanceledException) { return; }
         }
     }
@@ -183,5 +264,11 @@ internal sealed class WindowsUpdateCoordinator : IDisposable
         return false;
     }
 
-    public void Dispose() => http.Dispose();
+    public void Dispose()
+    {
+        CancellationTokenSource? active;
+        lock (downloadSync) active = activePackagePolicy;
+        try { active?.Cancel(); } catch (ObjectDisposedException) { }
+        http.Dispose();
+    }
 }

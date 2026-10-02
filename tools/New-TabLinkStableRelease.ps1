@@ -37,6 +37,7 @@ $ErrorActionPreference = 'Stop'
 
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $stableManifestUrl = 'https://linjie.space/download/api/download?path=TabLink%2Fstable%2Fmanifest.json'
+$stableFallbackManifestUrl = 'https://github.com/linjierd/TabLink/releases/latest/download/manifest.json'
 $expectedAndroidPackageName = 'com.tablink.client'
 if ([string]::IsNullOrWhiteSpace($WindowsSource)) {
     $WindowsSource = Join-Path $repositoryRoot 'dist\TabLink'
@@ -105,7 +106,11 @@ function Get-Sha256([string]$Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
-function Assert-StableWindowsSource([string]$SourceDirectory, [string]$ExpectedManifestUrl) {
+function Assert-StableWindowsSource(
+    [string]$SourceDirectory,
+    [string]$ExpectedManifestUrl,
+    [string]$ExpectedFallbackManifestUrl
+) {
     $source = Assert-ExistingDirectory $SourceDirectory 'Windows source directory'
     $requiredFiles = @(
         'TabLink.exe',
@@ -139,6 +144,10 @@ function Assert-StableWindowsSource([string]$SourceDirectory, [string]$ExpectedM
     if (-not $channel.Contains('manifestUrl') -or $channel.manifestUrl -isnot [string] -or
         $channel.manifestUrl -cne $ExpectedManifestUrl) {
         throw "update-channel.json manifestUrl must exactly equal the formal stable URL: $ExpectedManifestUrl"
+    }
+    if (-not $channel.Contains('fallbackManifestUrl') -or $channel.fallbackManifestUrl -isnot [string] -or
+        $channel.fallbackManifestUrl -cne $ExpectedFallbackManifestUrl) {
+        throw "update-channel.json fallbackManifestUrl must exactly equal the formal GitHub stable URL: $ExpectedFallbackManifestUrl"
     }
 
     $checksumPath = Join-Path $source 'SHA256SUMS.txt'
@@ -183,6 +192,13 @@ function Assert-StableWindowsSource([string]$SourceDirectory, [string]$ExpectedM
     foreach ($binary in @('TabLink.exe', 'TabLink.dll', 'TabLink.Updater.exe', 'TabLink.Updater.dll')) {
         if (-not $listed.Contains($binary)) {
             throw "SHA256SUMS.txt must include the release binary: $binary"
+        }
+    }
+    foreach ($file in Get-ChildItem -LiteralPath $source -Force -Recurse -File) {
+        $relative = [IO.Path]::GetRelativePath($source, $file.FullName)
+        if ($relative.Equals('SHA256SUMS.txt', [StringComparison]::OrdinalIgnoreCase)) { continue }
+        if (-not $listed.Contains($relative)) {
+            throw "SHA256SUMS.txt does not list package file: $relative"
         }
     }
 }
@@ -250,16 +266,121 @@ function Find-AndroidBuildTools {
         }
         foreach ($directory in Get-ChildItem -LiteralPath $root -Directory -Force) {
             if ([IO.File]::Exists((Join-Path $directory.FullName 'aapt.exe')) -and
-                [IO.File]::Exists((Join-Path $directory.FullName 'apksigner.bat'))) {
+                [IO.File]::Exists((Join-Path $directory.FullName 'apksigner.bat')) -and
+                [IO.File]::Exists((Join-Path $directory.FullName 'dexdump.exe'))) {
                 $candidates.Add($directory)
             }
         }
     }
     $selected = $candidates | Sort-Object LastWriteTimeUtc, FullName -Descending | Select-Object -First 1
     if ($null -eq $selected) {
-        throw 'Android APK staging requires Android build-tools containing aapt.exe and apksigner.bat.'
+        throw 'Android APK staging requires Android build-tools containing aapt.exe, apksigner.bat, and dexdump.exe.'
     }
     return $selected.FullName
+}
+
+function Get-AndroidBuildConfigBlock([string[]]$DexDumpLines) {
+    $descriptorIndexes = [Collections.Generic.List[int]]::new()
+    for ($index = 0; $index -lt $DexDumpLines.Count; $index++) {
+        if ($DexDumpLines[$index] -cmatch "^\s*Class descriptor\s+:\s+'Lcom/tablink/client/BuildConfig;'\s*$") {
+            $descriptorIndexes.Add($index)
+        }
+    }
+    if ($descriptorIndexes.Count -eq 0) { return $null }
+    if ($descriptorIndexes.Count -ne 1) {
+        throw 'Android APK DEX contains more than one com.tablink.client.BuildConfig class.'
+    }
+
+    $start = $descriptorIndexes[0]
+    $end = $DexDumpLines.Count
+    for ($index = $start + 1; $index -lt $DexDumpLines.Count; $index++) {
+        if ($DexDumpLines[$index] -cmatch '^Class #[0-9]+ header:\s*$') {
+            $end = $index
+            break
+        }
+    }
+    return [string]::Join([Environment]::NewLine, $DexDumpLines[$start..($end - 1)])
+}
+
+function Get-AndroidBuildConfigString([string]$BuildConfigBlock, [string]$FieldName) {
+    $escapedFieldName = [regex]::Escape($FieldName)
+    $pattern = "(?ms)^\s*name\s+:\s+'$escapedFieldName'\s*\r?\n" +
+        "\s*type\s+:\s+'Ljava/lang/String;'\s*\r?\n" +
+        "\s*access\s+:\s+0x0019 \(PUBLIC STATIC FINAL\)\s*\r?\n" +
+        '\s*value\s+:\s+"(?<value>[^"\r\n]*)"\s*$'
+    $matches = [regex]::Matches($BuildConfigBlock, $pattern, [Text.RegularExpressions.RegexOptions]::CultureInvariant)
+    if ($matches.Count -ne 1) {
+        throw "Android APK BuildConfig must declare exactly one public static final String $FieldName value."
+    }
+    return $matches[0].Groups['value'].Value
+}
+
+function Assert-AndroidUpdateContract(
+    [string]$ApkPath,
+    [string]$BuildTools,
+    [string]$InspectionRoot,
+    [string]$ExpectedManifestUrl,
+    [string]$ExpectedFallbackManifestUrl
+) {
+    $dexDump = Join-Path $BuildTools 'dexdump.exe'
+    $dexDirectory = Join-Path $InspectionRoot 'dex'
+    [IO.Directory]::CreateDirectory($dexDirectory) | Out-Null
+    $dexFiles = [Collections.Generic.List[string]]::new()
+
+    $archive = [IO.Compression.ZipFile]::OpenRead($ApkPath)
+    try {
+        $dexEntries = @($archive.Entries | Where-Object {
+            $_.FullName -cmatch '^classes(?:[2-9]|[1-9][0-9]+)?\.dex$'
+        } | Sort-Object FullName)
+        if ($dexEntries.Count -eq 0 -or $null -eq ($dexEntries | Where-Object { $_.FullName -ceq 'classes.dex' } | Select-Object -First 1)) {
+            throw 'Android APK does not contain classes.dex.'
+        }
+
+        $totalDexBytes = [long]0
+        foreach ($entry in $dexEntries) {
+            if ($entry.Length -le 0 -or $entry.Length -gt 268435456) {
+                throw "Android APK contains an invalid or oversized DEX entry: $($entry.FullName)"
+            }
+            $totalDexBytes += $entry.Length
+            if ($totalDexBytes -gt 536870912) {
+                throw 'Android APK contains more than 512 MiB of uncompressed DEX data.'
+            }
+            $dexPath = Join-Path $dexDirectory ('classes-' + $dexFiles.Count + '.dex')
+            $input = $entry.Open()
+            try {
+                $output = [IO.File]::Create($dexPath)
+                try { $input.CopyTo($output) }
+                finally { $output.Dispose() }
+            }
+            finally { $input.Dispose() }
+            $dexFiles.Add($dexPath)
+        }
+    }
+    finally {
+        $archive.Dispose()
+    }
+
+    $buildConfigBlocks = [Collections.Generic.List[string]]::new()
+    foreach ($dexPath in $dexFiles) {
+        $dumpOutput = @(& $dexDump -n $dexPath 2>&1 | ForEach-Object { [string]$_ })
+        if ($LASTEXITCODE -ne 0) {
+            throw "dexdump could not inspect Android APK DEX '$([IO.Path]::GetFileName($dexPath))': $($dumpOutput -join [Environment]::NewLine)"
+        }
+        $block = Get-AndroidBuildConfigBlock $dumpOutput
+        if ($null -ne $block) { $buildConfigBlocks.Add($block) }
+    }
+    if ($buildConfigBlocks.Count -ne 1) {
+        throw 'Android APK must contain exactly one com.tablink.client.BuildConfig class in DEX.'
+    }
+
+    $manifestUrl = Get-AndroidBuildConfigString $buildConfigBlocks[0] 'UPDATE_MANIFEST_URL'
+    if ($manifestUrl -cne $ExpectedManifestUrl) {
+        throw "Android APK BuildConfig.UPDATE_MANIFEST_URL is '$manifestUrl'; expected exact formal blog stable URL: $ExpectedManifestUrl"
+    }
+    $fallbackManifestUrl = Get-AndroidBuildConfigString $buildConfigBlocks[0] 'UPDATE_MANIFEST_FALLBACK_URL'
+    if ($fallbackManifestUrl -cne $ExpectedFallbackManifestUrl) {
+        throw "Android APK BuildConfig.UPDATE_MANIFEST_FALLBACK_URL is '$fallbackManifestUrl'; expected exact formal GitHub stable URL: $ExpectedFallbackManifestUrl"
+    }
 }
 
 function Find-JavaHome([string]$RequestedJavaHome) {
@@ -294,7 +415,9 @@ function Test-AndroidArtifact(
     [string]$ExpectedVersion,
     [long]$ExpectedBuild,
     [string]$ExpectedSignerSha256,
-    [string]$RequestedJavaHome
+    [string]$RequestedJavaHome,
+    [string]$ExpectedManifestUrl,
+    [string]$ExpectedFallbackManifestUrl
 ) {
     if ($ExpectedBuild -lt 1) {
         throw '-AndroidBuild must be positive when -AndroidApk is supplied.'
@@ -358,6 +481,7 @@ function Test-AndroidArtifact(
         if ($actualSigner -cne $normalizedSigner) {
             throw "Android APK signer digest does not match the explicitly pinned release signer."
         }
+        Assert-AndroidUpdateContract $inspectionApk $buildTools $inspectionRoot $ExpectedManifestUrl $ExpectedFallbackManifestUrl
         return $actualSigner
     }
     finally {
@@ -409,7 +533,7 @@ else {
 }
 
 $WindowsSource = Assert-ExistingDirectory $WindowsSource 'Windows source directory'
-$null = Assert-StableWindowsSource $WindowsSource $stableManifestUrl
+$null = Assert-StableWindowsSource $WindowsSource $stableManifestUrl $stableFallbackManifestUrl
 $PrivateKeyPath = Assert-ExistingFile $PrivateKeyPath 'Stable release private key'
 $PublicKeyPath = Assert-ExistingFile $PublicKeyPath 'Pinned stable release public key'
 $OutputRoot = Get-FullPath $OutputRoot
@@ -451,7 +575,8 @@ $resolvedAndroidApk = $null
 $actualAndroidSigner = $null
 if (-not [string]::IsNullOrWhiteSpace($AndroidApk)) {
     $resolvedAndroidApk = Assert-ExistingFile $AndroidApk 'Android APK'
-    $actualAndroidSigner = Test-AndroidArtifact $resolvedAndroidApk $Version $AndroidBuild $AndroidSignerSha256 $JavaHome
+    $actualAndroidSigner = Test-AndroidArtifact $resolvedAndroidApk $Version $AndroidBuild $AndroidSignerSha256 $JavaHome `
+        $stableManifestUrl $stableFallbackManifestUrl
 }
 elseif ($AndroidBuild -ne 0 -or -not [string]::IsNullOrWhiteSpace($AndroidSignerSha256)) {
     throw '-AndroidBuild and -AndroidSignerSha256 are only valid together with -AndroidApk.'
@@ -552,6 +677,7 @@ try {
         publishedAtUtc     = $publishedAtUtc
         baseUrl            = $normalizedBaseUrl
         manifestPublishUrl = $manifestPublishUrl
+        configuredManifestUrls = @($stableManifestUrl, $stableFallbackManifestUrl)
         immutableArtifacts = $artifacts.ToArray()
         manifest           = [ordered]@{
             path   = 'manifest.json'

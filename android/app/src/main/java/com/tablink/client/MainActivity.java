@@ -45,7 +45,6 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.Spinner;
-import android.widget.Switch;
 import android.widget.TextView;
 
 import org.json.JSONException;
@@ -141,7 +140,10 @@ public final class MainActivity extends Activity {
         getSharedPreferences("pairing", MODE_PRIVATE).edit().remove("lastLink").apply();
         updater = new AndroidUpdateController(this, new AndroidUpdateController.Host() {
             @Override public boolean isForeground() { return activityStarted; }
-            @Override public boolean hasActiveDisplaySession() { return session != null; }
+            @Override public boolean hasActiveDisplaySession() {
+                Session current = session;
+                return current != null && current.connected;
+            }
             @Override public void updateStatusChanged(String value) {
                 if (updateStatus != null) updateStatus.setText(value);
             }
@@ -718,19 +720,39 @@ public final class MainActivity extends Activity {
         });
         options.addView(forget, new LinearLayout.LayoutParams(-1, dp(48)));
         options.addView(text("正式版更新", 15, Color.WHITE));
-        @SuppressWarnings("deprecation") Switch automaticUpdates = new Switch(this);
-        automaticUpdates.setText("自动下载正式版更新");
-        automaticUpdates.setTextColor(Color.WHITE);
-        automaticUpdates.setChecked(updater.autoDownloadEnabled());
-        automaticUpdates.setOnCheckedChangeListener((button, checked) -> updater.setAutoDownloadEnabled(checked));
-        options.addView(automaticUpdates, new LinearLayout.LayoutParams(-1, dp(48)));
+        Spinner updateMode = new Spinner(this);
+        String[] updateModeNames = { "自动更新", "自动下载，手动安装", "从不更新" };
+        UpdateStateMachine.Mode[] updateModes = {
+                UpdateStateMachine.Mode.AUTOMATIC,
+                UpdateStateMachine.Mode.DOWNLOAD_THEN_ASK,
+                UpdateStateMachine.Mode.NEVER
+        };
+        ArrayAdapter<String> updateModeAdapter = new ArrayAdapter<>(this,
+                android.R.layout.simple_spinner_item, updateModeNames);
+        updateModeAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        updateMode.setAdapter(updateModeAdapter);
+        UpdateStateMachine.Mode initialUpdateMode = updater.updateMode();
+        updateMode.setSelection(initialUpdateMode.ordinal());
+        options.addView(updateMode, new LinearLayout.LayoutParams(-1, dp(48)));
         updateStatus = text(updater.status(), 13, ACCENT);
         updateStatus.setPadding(0, dp(4), 0, dp(6));
         options.addView(updateStatus);
         Button checkUpdate = button("检查 / 继续正式版更新");
+        checkUpdate.setEnabled(initialUpdateMode != UpdateStateMachine.Mode.NEVER);
         checkUpdate.setOnClickListener(v -> updater.requestDownloadOrInstall());
         options.addView(checkUpdate, new LinearLayout.LayoutParams(-1, dp(48)));
-        TextView updateExplanation = text("更新包会在后台下载并验证签名、大小和 SHA-256。副屏使用中不会自动更新；安装仍需在 Android 系统界面确认。", 12, Color.LTGRAY);
+        updateMode.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view, int index, long id) {
+                UpdateStateMachine.Mode selected = updateModes[index];
+                UpdateStateMachine.Mode applied = updater.updateMode() == selected
+                        ? selected : updater.setUpdateMode(selected);
+                checkUpdate.setEnabled(applied != UpdateStateMachine.Mode.NEVER);
+                if (applied != selected)
+                    updateMode.post(() -> updateMode.setSelection(applied.ordinal()));
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) { }
+        });
+        TextView updateExplanation = text("更新清单会从个人博客和 GitHub 获取，并验证签名；下载包还会核对大小和 SHA-256。“自动更新”会在副屏空闲时直接打开系统安装确认，“自动下载，手动安装”只准备更新包，“从不更新”不会联网检查。Android 安装仍需在系统界面确认。", 12, Color.LTGRAY);
         updateExplanation.setPadding(0, 0, 0, dp(12));
         options.addView(updateExplanation);
         options.addView(text("统计位置", 15, Color.WHITE));
@@ -1138,6 +1160,7 @@ public final class MainActivity extends Activity {
         void stop() {
             running = false;
             connected = false;
+            UpdateInstallerUiGate.deactivateDisplay(this);
             closeSocket();
             reader.interrupt();
             Thread activeWriter = writer;
@@ -1680,7 +1703,10 @@ public final class MainActivity extends Activity {
                     lastDisplayProfile = DisplayCapabilities.read(MainActivity.this).toString();
                     WireProtocol.write(output, WireProtocol.DISPLAY_PROFILE, lastDisplayProfile.getBytes(StandardCharsets.UTF_8));
                     outgoing.clear();
+                    if (!UpdateInstallerUiGate.tryActivateDisplay(this))
+                        throw new IOException("Android 安装界面正在处理更新；返回 TabLink 后将自动重连");
                     connected = true;
+                    if (updater != null) updater.onSessionChanged();
                     writer = new Thread(() -> writeLoop(local, output), "TabLink-input");
                     writer.start();
                     setStatus(this, connectionLabel() + " 已连接，等待桌面画面…", false);
@@ -1741,6 +1767,8 @@ public final class MainActivity extends Activity {
                     }
                 } finally {
                     connected = false;
+                    UpdateInstallerUiGate.deactivateDisplay(this);
+                    if (updater != null) updater.onSessionChanged();
                     submissionAckNegotiated = false;
                     decoderRefreshNegotiated = false;
                     receiverFeedbackNegotiated = false;

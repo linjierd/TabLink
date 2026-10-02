@@ -36,15 +36,26 @@ xcodebuild -project TabLink.xcodeproj -scheme TabLink \
 
 ## stable 正式版更新
 
-应用启动、回到前台以及应用内定时器会检查固定的 HTTPS 清单地址：
+连接面板中的“更新方式”会立即保存到 `UserDefaults`，提供三个与其他平台一致的选项：
+
+- **自动更新**（首次运行默认）：自动检查正式版。Apple 不允许普通应用静默下载或替换自身；实际下载、安装和以后的自动更新仍由 App Store 与用户的系统设置处理，TabLink 不会自动打开商店。
+- **自动下载后手动安装**：自动检查更新信息。iOS / iPadOS 没有供本应用预下载自身 App Store 安装包的 API，因此这里只预取并验证清单；只有用户点击按钮后才前往 App Store。
+- **从不更新**：取消正在进行的检查、停止定时器，并且不发起任何更新网络请求，也不显示 App Store 更新入口。已存在但无法识别或类型损坏的设置值会失败关闭到该模式；只有完全没有设置的首次运行才默认为“自动更新”。
+
+用户也可以在未选择“从不更新”时点击“立即检查正式版更新”。所有前往 App Store 的动作都必须由该页上的明确点击触发，不声称或尝试静默安装。
+
+应用从两个固定的 HTTPS 位置读取同一份正式版签名清单：
 
 ```text
 https://linjie.space/download/api/download?path=TabLink%2Fstable%2Fmanifest.json
+https://github.com/linjierd/TabLink/releases/latest/download/manifest.json
 ```
 
-外层只能是 `{payload,signature}`。`payload` 是原始 UTF-8 JSON 的标准 Base64，`signature` 是 P-256 / SHA-256 的 ASN.1 DER ECDSA 签名。CryptoKit 使用内置的 X.509 SPKI 公钥验证精确 payload 字节；签名不通过、字段重复、未知字段、非 `stable`、预发行 SemVer、非整秒 `yyyy-MM-ddTHH:mm:ssZ` 发布时间、平台重复、非 HTTPS 地址、越界大小等情况全部失败关闭。签名通过后才解析 artifact。设备会在 UserDefaults 中保存随机 cohort，按 `SHA-256(cohort + "\n" + releaseId)` 应用 0–100 灰度比例；`0` 是有效的暂停发布值且不会选择更新。
+两个站点都只是传输来源，不是信任来源。外层只能是 `{payload,signature}`。`payload` 是原始 UTF-8 JSON 的标准 Base64，`signature` 是 P-256 / SHA-256 的 ASN.1 DER ECDSA 签名。CryptoKit 对每个来源分别使用内置的 X.509 SPKI 公钥验证精确 payload 字节；签名不通过、字段重复、未知字段、非 `stable`、预发行 SemVer、非整秒 `yyyy-MM-ddTHH:mm:ssZ` 发布时间、平台重复、非 HTTPS 地址、越界大小等情况全部失败关闭。一个来源不可用或验签失败时可以使用另一个有效来源；若两个有效清单的发布时间不同，采用较新的决定。相同发布时间通过规范发布语义比较：artifact 按平台排序，包 URL 作为传输镜像地址忽略，版本、build、大小、SHA-256、市场安装入口、说明、灰度比例或协议要求不同则失败关闭。客户端会持久记录该冲突时间，后续检查与重启后仍拒绝该时间及更早决定，只有发布时间更晚的有效签名决定可以解除阻断。较新的 `rolloutPercentage: 0` 是权威暂停，不能被另一个站点上的旧更新绕过。
 
-清单没有 `ios` artifact 时，连接面板安静显示“尚未发布”；存在版本号和构建号都较新的正式版时，只接受同一签名负载中的 `apps.apple.com` URL，或正式 `https://linjie.space/download/api/download?path=TabLink%2Fstable%2F...` 跳转 URL。正式跳转必须是精确路径、恰好一个 `path` 参数、没有额外或重复参数。用户点击后由 `UIApplication.open` 前往 App Store。客户端**不下载 IPA、不侧载、不自行替换 App**；下载安装及以后自动更新由 App Store 和用户的系统自动更新设置负责。投屏期间不弹模态更新对话框，也不因检查或发现新版本中断连接；状态和按钮只在连接面板或用户主动打开连接设置时显示。
+每次接受有效决定后，应用会持久保存发布时间、release ID 和完整决定指纹作为防回退下限。后续只出现更旧的清单、同一发布时间出现不同决定，或该本地记录损坏时都会停止更新并显示无法完成安全检查，不会退回旧包。设备另外保存随机 cohort，按 `SHA-256(cohort + "\n" + releaseId)` 应用 0–100 灰度比例；`0` 是有效的暂停发布值且不会选择更新。
+
+连接面板会分别显示发布暂停、灰度尚未覆盖、更新协议高于当前客户端、iOS 尚未发布和当前已最新，避免把安全停止误报为“已最新”。存在版本号和构建号都较新的正式版时，只接受同一签名负载中的 `apps.apple.com` URL，或正式 `https://linjie.space/download/api/download?path=TabLink%2Fstable%2F...` 跳转 URL。正式跳转必须是精确路径、恰好一个 `path` 参数、没有额外或重复参数。用户点击更新按钮后，客户端会重新读取并验证两个来源；只有最新决定仍与页面所示决定一致且没有新暂停或冲突时，才由 `UIApplication.open` 前往 App Store。客户端**不下载 IPA、不侧载、不自行替换 App**；下载安装及以后自动更新由 App Store 和用户的系统自动更新设置负责。当前源码没有 App Store ID，也没有虚构一个 ID。投屏期间不弹模态更新对话框，也不因检查或发现新版本中断连接；状态和按钮只在连接面板或用户主动打开设置时显示。
 
 ## 与 Windows 的协议契约
 

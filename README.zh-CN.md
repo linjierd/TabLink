@@ -86,9 +86,28 @@ TabLink 自有源码采用 [MIT License](LICENSE)。公开仓库只跟踪源码�
 
 ### 正式版自动更新
 
-Windows 和 Android 在启动或回到前台时检查签名的 `stable` 清单，保持运行时每 6 小时复查。Windows 在后台下载并校验更新；有任意副屏会话时继续保持画面，最后一个会话停止后才自动重启安装。独立更新器会核对清单签名、版本、包大小和 SHA-256，目录切换或新版启动健康检查失败时恢复上一版本。Windows 自动替换只从 `%ProgramFiles%\TabLink` 正式目录执行；桌面与 OneDrive 中的完整交付目录作为离线镜像，并通过“启动 TabLink”快捷方式打开正式安装。Android 在投屏期间延期下载和安装，停止投屏后继续；系统允许时由 `PackageInstaller` 直接完成，Android 要求用户确认时会打开标准安装确认页。
+Windows、Android、iPhone / iPad 与 HarmonyOS NEXT 原生客户端都以内置的个人博客地址作为 `stable` 清单主来源，以 GitHub 最新非 prerelease 正式 Release 的 `manifest.json` 作为备用来源：
 
-浏览器客户端随 Windows 主机资源一起更新。iPhone、iPad 与 HarmonyOS NEXT 原生客户端只接受同一签名清单中的 App Store / AppGallery 地址，由各平台应用市场负责下载和安装。正式清单地址及发布流程见 [AUTO-UPDATE.md](AUTO-UPDATE.md)。更新缓存位于 `%LOCALAPPDATA%\TabLink\updates\`。
+```text
+https://linjie.space/download/api/download?path=TabLink%2Fstable%2Fmanifest.json
+https://github.com/linjierd/TabLink/releases/latest/download/manifest.json
+```
+
+两个地址只负责传输，不代表自动可信。客户端都用同一枚内置 ECDSA P-256 公钥验签，并核对下载包的签名保护大小与 SHA-256；两份清单都有效时采用 `publishedAtUtc` 较新的签名决定，同一时间的发布内容冲突会失败关闭，较新的已签名暂停也不能被旧镜像绕过。冲突时间会跨后续检查和重启持久保存：只有发布时间严格更晚的有效签名决定才能解除阻断，该时间及更早的普通决定仍会被拒绝。无效签名、篡改包、降级和预发布版本都会失败关闭。Preview / prerelease 不会推进 GitHub 的正式更新路径。
+
+Windows、Android、iPhone / iPad 与 HarmonyOS NEXT 原生客户端都会持久保存本机已经接受的最高发布时间和发布决定摘要。即使重启后暂时只能访问一个来源，也不会接受早于该高水位的旧签名清单；同一发布时间只有下载 URL 不同、其余版本与安全字段完全一致时才作为等价镜像。
+
+截至 2026-10-02，博客主地址返回 HTTP 530，GitHub 备用地址因公开 Release 仍全部是 Preview 而返回 404。在任一来源发布可用的已签名 stable 清单之前，端到端自动更新不可用；客户端会失败关闭，不会拿 Preview 资产或未签名内容顶替 stable 清单。任一来源恢复后，另一个来源不可达不会阻止客户端验证并使用可用来源。
+
+Windows 与 Android 的“设置”都有三个选项：
+
+| 选项 | 检查与下载 | 安装 |
+| --- | --- | --- |
+| **自动更新**（`Automatic`） | 启动或回到前台时检查，之后定时检查；Windows / Android 空闲时自动下载并校验，Apple / HarmonyOS 准备已验签的商店版本信息 | Windows 在副屏会话结束后安装；Android 再次确认最新签名决定后直接发起系统安装流程，不增加应用内确认，但仍保留 Android 系统确认；商店平台由 App Store / AppGallery 与系统设置管理下载和自动安装 |
+| **自动下载后手动安装**（`DownloadThenAsk`） | 自动检查；Windows / Android 后台下载，Apple / HarmonyOS 自动验证商店更新信息但不声称预下载商店安装包 | 用户须明确点击安装或打开应用市场，Android 随后仍要求系统确认 |
+| **从不更新**（`Never`） | 不发起后台更新请求，也不下载 | 不安装，并停用安装入口 |
+
+首次没有偏好文件时默认为“自动更新”；偏好文件损坏时失败关闭为“从不更新”。四个原生平台的设置中都有这三项，切换后立即生效，不会断开正在使用的副屏。Windows 自动或手动受保护替换都只允许从精确的 `%ProgramFiles%\TabLink` 正式目录执行；E 盘、Desktop、OneDrive 或其他便携副本可以按策略检查和下载，但不能替换自身。独立更新器会核对清单签名、版本、包大小和 SHA-256，目录切换或新版启动健康检查失败时恢复上一版本。浏览器客户端随 Windows 主机资源一起更新。iPhone、iPad 与 HarmonyOS NEXT 原生客户端只接受同一签名清单中的 App Store / AppGallery 地址，由各平台应用市场负责下载和安装；在“自动下载后手动安装”下，它们会自动验证信息并等待用户明确打开应用市场。完整信任与发布流程见 [AUTO-UPDATE.md](AUTO-UPDATE.md)。更新缓存位于 `%LOCALAPPDATA%\TabLink\updates\`。
 
 ### Wi-Fi 或 USB 网络共享（无需开发者模式）
 

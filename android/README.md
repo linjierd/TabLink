@@ -46,9 +46,9 @@ tablink://connect?host=<IPv4>&port=27184&token=<64 lowercase hex>&cert=<64 hex S
 
 ## 正式版自动更新
 
-自 0.8.0 起，Android 客户端在进入前台时立即读取电脑端同一套签名稳定版清单，应用保持打开期间每 6 小时复查。当前 0.8.9 Preview 1 候选保留此机制，但已签名的公网 stable 清单仍保持 0.8.0，不会因安装或发布预览版而自动推进。默认开启自动下载；设置面板可以关闭自动下载，或手动检查、继续和重试。投屏期间只检查，不下载或安装；停止投屏后继续。
+Android 客户端在进入前台时立即读取与电脑端相同的双源签名 stable 清单，应用保持打开期间每 6 小时复查。设置面板提供“自动更新”“自动下载后手动安装”“从不更新”三种策略，首次运行默认自动更新；损坏的偏好失败关闭为从不更新。投屏期间只检查，不下载或安装；停止投屏后继续。自动更新会在空闲下载、重新确认当前最新签名决定，然后直接交给 Android 系统安装器；没有额外的应用内确认，但 Android 系统确认仍然保留。自动下载后手动安装必须先由用户在应用内明确选择安装。
 
-发布构建必须通过 `-UpdateManifestUrl` 注入 HTTPS 清单地址。客户端先验证内置 P-256 公钥对应的签名，再核对 stable SemVer、versionCode、包名、APK 签名、大小和 SHA-256。安装使用 Android `PackageInstaller`：Android 12 及以上会请求无需用户操作，但系统仍可要求显示标准确认页。当前直接分发包继续使用既有开发签名，以便已安装的平板原地更新；切换到新的商店签名前必须单独安排签名迁移。
+发布构建必须同时通过 `-UpdateManifestUrl` 和 `-UpdateManifestFallbackUrl` 注入两个 HTTPS 清单地址。客户端独立验证每个来源的内置 P-256 公钥签名，选择最新权威决定，再核对 stable SemVer、versionCode、包名、APK 签名、大小和 SHA-256。同一发布时间出现两个有效签名但语义冲突的决定时，客户端会持久阻断该时间及更早的清单，直到收到发布时间更晚的有效签名决定；解除阻断与清除旧安装事务使用同一次持久化提交。安装只使用 Android `PackageInstaller`：每次提交都有独立随机尝试令牌，回调的系统 sessionId、私有 sessionId 和令牌必须同时匹配当前事务；进程重启时只恢复仍存在于 `PackageInstaller.getMySessions()` 且已 sealed 的 session，无法可靠读取 sealed 状态的 Android 6–7.1 会清理旧 session 并进入重试。Android 12 及以上会请求无需用户操作，但系统仍可要求显示标准确认页。安装会话失败时保留已验证的暂存 APK 供重试，不再通过 `ACTION_VIEW` 或应用 FileProvider 打开无法可靠跟踪的兼容安装界面。当前直接分发包继续使用既有开发签名，以便已安装的平板原地更新；切换到新的商店正式签名前必须单独安排签名迁移。
 
 ## 构建
 
@@ -58,7 +58,9 @@ tablink://connect?host=<IPv4>&port=27184&token=<64 lowercase hex>&cert=<64 hex S
 
 ```powershell
 Set-Location '<repository-root>\android'
-.\build.ps1 -UpdateManifestUrl 'https://linjie.space/download/api/download?path=TabLink%2Fstable%2Fmanifest.json'
+.\build.ps1 `
+  -UpdateManifestUrl 'https://linjie.space/download/api/download?path=TabLink%2Fstable%2Fmanifest.json' `
+  -UpdateManifestFallbackUrl 'https://github.com/linjierd/TabLink/releases/latest/download/manifest.json'
 ```
 
 本机构建采用的精确工具参数：
@@ -69,6 +71,7 @@ Set-Location '<repository-root>\android'
   -AndroidSdk '<path-to-android-sdk>' `
   -Gradle '<path-to-gradle-8.13>\bin\gradle.bat' `
   -UpdateManifestUrl 'https://linjie.space/download/api/download?path=TabLink%2Fstable%2Fmanifest.json' `
+  -UpdateManifestFallbackUrl 'https://github.com/linjierd/TabLink/releases/latest/download/manifest.json' `
   -Offline # 仅在 Gradle 与 Maven 依赖已经完整缓存时使用
 ```
 

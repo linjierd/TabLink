@@ -6,6 +6,28 @@ enum StableUpdateError: Error, Equatable {
     case invalid(String)
 }
 
+enum StableUpdateMode: String, CaseIterable, Equatable {
+    case automatic
+    case downloadThenAsk
+    case never
+
+    var title: String {
+        switch self {
+        case .automatic: return "自动更新"
+        case .downloadThenAsk: return "自动下载后手动安装"
+        case .never: return "从不更新"
+        }
+    }
+
+    // A missing preference is the first-run default. Any present value that is not
+    // one of the exact known strings fails closed so it cannot silently enable traffic.
+    static func decodePersisted(_ value: Any?) -> StableUpdateMode {
+        guard let value else { return .automatic }
+        guard let raw = value as? String, let mode = StableUpdateMode(rawValue: raw) else { return .never }
+        return mode
+    }
+}
+
 struct StableSemanticVersion: Comparable, Equatable, CustomStringConvertible {
     let major: UInt64
     let minor: UInt64
@@ -51,6 +73,20 @@ struct StableReleaseManifest: Equatable {
     let artifacts: [StableReleaseArtifact]
 
     func artifact(for platform: String) -> StableReleaseArtifact? { artifacts.first { $0.platform == platform } }
+}
+
+struct StableUpdateFloor: Equatable {
+    let publishedAt: Date
+    let releaseID: String
+    let fingerprint: String
+    let blocked: Bool
+
+    init(publishedAt: Date, releaseID: String, fingerprint: String, blocked: Bool = false) {
+        self.publishedAt = publishedAt
+        self.releaseID = releaseID
+        self.fingerprint = fingerprint
+        self.blocked = blocked
+    }
 }
 
 enum StableUpdateManifest {
@@ -140,6 +176,87 @@ enum StableUpdateManifest {
               artifact.build > currentBuild,
               artifact.version > (try StableSemanticVersion(currentVersion)) else { return nil }
         return artifact
+    }
+
+    static func selectNewest(_ manifests: [StableReleaseManifest], floor: StableUpdateFloor? = nil) throws -> StableReleaseManifest {
+        guard let newestDate = manifests.map(\.publishedAt).max() else {
+            throw StableUpdateError.invalid("没有可用的已签名更新清单")
+        }
+        let newest = manifests.filter { $0.publishedAt == newestDate }
+        guard let selected = newest.first else { throw StableUpdateError.invalid("没有可用的已签名更新清单") }
+        if try newestConflictPublishedAt(manifests) != nil {
+            throw StableUpdateError.invalid("同一发布时间的更新清单内容冲突")
+        }
+        if let floor {
+            guard floor.publishedAt.timeIntervalSince1970.isFinite,
+                  floor.publishedAt.timeIntervalSince1970.rounded() == floor.publishedAt.timeIntervalSince1970 else {
+                throw StableUpdateError.invalid("本地更新防回退记录损坏")
+            }
+            if floor.blocked {
+                guard floor.releaseID == "__conflict__", floor.fingerprint == String(repeating: "0", count: 64) else {
+                    throw StableUpdateError.invalid("本地更新冲突阻断记录损坏")
+                }
+                guard selected.publishedAt > floor.publishedAt else {
+                    throw StableUpdateError.invalid("更新清单未晚于已记录的签名冲突")
+                }
+                return selected
+            }
+            guard matches(floor.releaseID, "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"),
+                  matches(floor.fingerprint, "^[0-9A-F]{64}$") else {
+                throw StableUpdateError.invalid("本地更新防回退记录损坏")
+            }
+            guard selected.publishedAt >= floor.publishedAt else {
+                throw StableUpdateError.invalid("更新清单早于已经接受的正式版决定")
+            }
+            if selected.publishedAt == floor.publishedAt {
+                guard selected.releaseID == floor.releaseID,
+                      try decisionFingerprint(selected) == floor.fingerprint else {
+                    throw StableUpdateError.invalid("更新清单与已经接受的同一时刻决定冲突")
+                }
+            }
+        }
+        return selected
+    }
+
+    static func newestConflictPublishedAt(_ manifests: [StableReleaseManifest]) throws -> Date? {
+        guard let newestDate = manifests.map(\.publishedAt).max() else { return nil }
+        let newest = manifests.filter { $0.publishedAt == newestDate }
+        guard let first = newest.first else { return nil }
+        let fingerprint = try decisionFingerprint(first)
+        for candidate in newest.dropFirst() {
+            if try decisionFingerprint(candidate) != fingerprint { return newestDate }
+        }
+        return nil
+    }
+
+    static func floor(for manifest: StableReleaseManifest) throws -> StableUpdateFloor {
+        StableUpdateFloor(publishedAt: manifest.publishedAt, releaseID: manifest.releaseID,
+                          fingerprint: try decisionFingerprint(manifest), blocked: false)
+    }
+
+    static func conflictFloor(at publishedAt: Date) -> StableUpdateFloor {
+        StableUpdateFloor(publishedAt: publishedAt, releaseID: "__conflict__",
+                          fingerprint: String(repeating: "0", count: 64), blocked: true)
+    }
+
+    static func decisionFingerprint(_ manifest: StableReleaseManifest) throws -> String {
+        let artifacts: [[String: Any]] = manifest.artifacts.sorted { $0.platform < $1.platform }.map { artifact in
+            ["platform": artifact.platform, "version": artifact.version.description, "build": artifact.build,
+             // The package URL is a transport mirror. Size and SHA-256 identify
+             // the package, while installerUrl and notes remain release semantics.
+             "size": artifact.size, "sha256": artifact.sha256,
+             "installerUrl": (artifact.installerURL?.absoluteString as Any?) ?? NSNull(),
+             "notes": (artifact.notes as Any?) ?? NSNull()]
+        }
+        let record: [String: Any] = [
+            "releaseId": manifest.releaseID,
+            "publishedAtEpochSeconds": Int64(manifest.publishedAt.timeIntervalSince1970.rounded()),
+            "rolloutPercentage": manifest.rolloutPercentage,
+            "minimumProtocolVersion": manifest.minimumProtocolVersion,
+            "artifacts": artifacts
+        ]
+        let data = try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
+        return SHA256.hash(data: data).map { String(format: "%02X", $0) }.joined()
     }
 
     static func isAllowedIOSInstallerURL(_ url: URL) -> Bool {

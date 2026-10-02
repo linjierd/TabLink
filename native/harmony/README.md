@@ -16,13 +16,22 @@
 
 ## stable 正式版更新
 
-应用启动、回到前台以及应用内定时器会检查固定的 HTTPS 清单地址：
+首次运行默认选择“自动更新”。设置页提供三个会立即持久保存的选项：
+
+- **自动更新**：启动、回到前台和定时器会检查正式版；发现新版时显示应用市场入口，实际下载、确认和安装时机由 AppGallery / 系统的自动更新设置决定，客户端不声称能静默替换自己。
+- **自动下载后手动安装**：为保持各平台设置名称一致，Harmony 客户端使用这个名称；它会自动检查并准备已验签的应用市场入口，但不会下载或侧载 HAP，只有用户明确点击按钮后才打开 AppGallery。
+- **从不更新**：不向博客或 GitHub 发起更新请求，也不显示可安装入口。缺失的首次设置默认为“自动更新”；已保存但无法识别或损坏的值按“从不更新”处理并写回安全值。快速连续切换时，首选项写入按选择顺序串行，较早操作的迟到结果不能重新启用检查；写入失败时当前进程保持“从不更新”。
+
+启用检查时，客户端会读取博客主地址与 GitHub 正式 Release 回退地址：
 
 ```text
 https://linjie.space/download/api/download?path=TabLink%2Fstable%2Fmanifest.json
+https://github.com/linjierd/TabLink/releases/latest/download/manifest.json
 ```
 
-外层只能是 `{payload,signature}`，其中 `payload` 是原始 UTF-8 JSON 的标准 Base64，`signature` 是 P-256 / SHA-256 的 ASN.1 DER ECDSA 签名。客户端固定内置 `updates/stable-public-key.spki.base64` 对应的 X.509 SPKI 公钥；签名不通过、字段重复、未知字段、非 `stable`、预发行 SemVer、非整秒 `yyyy-MM-ddTHH:mm:ssZ` 发布时间、平台重复、非 HTTPS 地址、越界大小等情况全部失败关闭。签名通过后才解析 artifact。设备会持久保存随机 cohort，按 `SHA-256(cohort + "\n" + releaseId)` 应用 0–100 灰度比例；`0` 是有效的暂停发布值且不会选择更新。
+两个地址都只是非可信传输镜像。外层只能是 `{payload,signature}`，其中 `payload` 是原始 UTF-8 JSON 的标准 Base64，`signature` 是 P-256 / SHA-256 的 ASN.1 DER ECDSA 签名。客户端固定内置 `updates/stable-public-key.spki.base64` 对应的 X.509 SPKI 公钥；签名不通过、字段重复、未知字段、非 `stable`、预发行 SemVer、非整秒 `yyyy-MM-ddTHH:mm:ssZ` 发布时间、平台重复、非 HTTPS 地址、越界大小等情况全部失败关闭。每个来源均先独立验签，再从有效清单中选择 `publishedAtUtc` 最新的一份；同一发布时间按完整规范化决定比较，artifact 顺序和仅用于下载的 `artifact.url` 镜像差异可以不同，发布比例、最低协议、版本/构建、大小/哈希、市场入口或说明等差异仍会失败关闭。客户端会持久记录该冲突时间，后续检查与重启后仍拒绝该时间及更早决定，只有发布时间更晚的有效签名决定可以解除阻断。新版清单的 `rolloutPercentage: 0` 是有权威性的暂停决定，不会因另一个镜像仍提供旧版本而被绕过。
+
+设备以一个首选项记录原子保存最近接受的发布时间与完整规范化发布决定 SHA-256；摘要忽略 `artifact.url` 镜像位置，但包含 release/time/rollout/minimumProtocol 以及按平台排序后的版本、构建、大小、哈希、市场入口和说明。较旧清单、同一时间的决定摘要变化、损坏或不完整的记录都拒绝继续；旧版 timestamp/releaseId 记录只允许由严格更新的发布时间迁移。客户端还会持久保存随机 cohort，按 `SHA-256(cohort + "\n" + releaseId)` 应用 0–100 灰度比例；`0` 是有效的暂停发布值且不会选择更新。高于当前升级协议的更新仍先成为权威决定并推进防回退下限，随后显示“需要新版升级协议”的独立状态，不会被误报成“当前已是最新”。
 
 若签名清单没有 `harmony` artifact，连接面板安静显示“尚未发布”；存在版本号和构建号都较新的正式版时，只接受同一签名负载里的 AppGallery HTTPS URL，或正式 `https://linjie.space/download/api/download?path=TabLink%2Fstable%2F...` 跳转 URL。正式跳转必须是精确路径、恰好一个 `path` 参数、没有额外或重复参数。系统 `viewData` handler 负责打开应用市场。客户端**不下载、不侧载、不自行替换 HAP**，安装和应用市场自动更新由 AppGallery / 系统设置负责。投屏期间不弹模态更新对话框，不中断连接；更新状态只在未连接的连接面板显示。
 
@@ -52,7 +61,7 @@ node native/harmony/tests/project-check.mjs
 
 这分别检查纯 TypeScript 配对/分包/PTS 逻辑、与 Windows/Android 共用签名 fixture 的 P-256 互操作及严格更新策略、工程资源引用与关键协议约束；都不会连接电脑服务、改变显示器、打开 AppGallery 或执行 Harmony SDK 构建。
 
-2026-09-29 复核结果：**84 项实际纯 TypeScript 协议断言、43 项 stable 更新策略/签名断言、42 项工程/资源/关键源码路径静态检查通过**。更新断言用固定 P-256 SPKI 验证跨端 signed-envelope fixture，并覆盖篡改、严格版本/构建号、0–100 灰度边界和 bucket 20 固定向量、重复平台/JSON 字段、整秒 UTC 与小数秒拒绝、带 query 的正式下载 URL、userinfo/fragment 拒绝、应用市场/正式跳转严格 allowlist、时间及 cohort 策略。ArkTS SDK 类型检查、C++ 编译链接、Crypto Architecture Kit 真机验签和 AppGallery 行为仍未验证，详见 `VERIFICATION.md`。
+2026-10-02 复核结果：**84 项实际纯 TypeScript 协议断言、64 项 stable 更新策略/签名断言、54 项工程/资源/关键源码路径静态检查通过**。更新断言用固定 P-256 SPKI 验证跨端 signed-envelope fixture，并覆盖篡改、三种更新模式及串行写入竞态、博客/GitHub 来源、最新发布时间选择、URL-only/顺序镜像等价、同时间冲突拒绝与持久 blocked floor、暂停权威、完整决定摘要防回退、未来协议状态、严格版本/构建号、0–100 灰度边界和 bucket 20 固定向量、重复平台/JSON 字段、整秒 UTC 与小数秒拒绝、带 query 的正式 HTTPS 下载 URL、userinfo/fragment 拒绝、应用市场/正式跳转严格 allowlist、时间及 cohort 策略。ArkTS SDK 类型检查、C++ 编译链接、Crypto Architecture Kit 真机验签、GitHub 重定向和 AppGallery 行为仍未验证，详见 `VERIFICATION.md`。
 
 ## 文件结构
 
@@ -64,7 +73,7 @@ node native/harmony/tests/project-check.mjs
 | `entry/src/main/ets/protocol/DisplayProfile.ets` | 读取当前物理尺寸、方向和刷新率 |
 | `entry/src/main/ets/update/StableUpdatePolicy.ts` | 严格 signed-envelope / stable SemVer / cohort / artifact 策略 |
 | `entry/src/main/ets/update/StableUpdateCrypto.ets` | 固定 P-256 SPKI 验签和 cohort SHA-256 的 SDK 隔离层 |
-| `entry/src/main/ets/update/StableUpdateManager.ets` | 启动、前台和周期检查；只把签名市场链接交给系统 |
+| `entry/src/main/ets/update/StableUpdateManager.ets` | 三种持久更新模式、双来源选择、防回退记录；只把验签后的市场链接交给系统 |
 | `entry/src/main/cpp/Decoder.cpp` | NAPI、硬件 AVCodec、NativeWindow、缓冲区生命周期 |
 | `PROTOCOL.md` | 与 Windows 原生服务互通的数据合同 |
 
@@ -74,7 +83,7 @@ node native/harmony/tests/project-check.mjs
 - 在至少一台 HarmonyOS NEXT 手机/平板上验证 Surface 生命周期、H.264 SPS/PPS/PTS、硬解能力、清晰度和稳定运行；若硬解器不支持实际原生分辨率，应在 UI 显示错误，不能谎报已经播放。
 - 用实际设备测试旋转、后台/前台、网络断开、主机停止、错误证书拒绝、第二/第三设备并行和独立回收。
 - API 12 的 display 公开属性提供当前刷新率，本客户端只报告观测到的模式，不伪造完整硬件模式列表。高刷新率支持与实际提交/呈现需要另行测量。
-- 用 API 12 Crypto Architecture Kit 验证固定 X.509 SPKI 和 DER ECDSA fixture，并实测官方清单请求、稳定 cohort 持久化、无 `harmony` artifact、灰度未命中、市场链接打开以及应用市场自动更新设置；当前只有纯 Node/源代码证据。
+- 用 API 12 Crypto Architecture Kit 验证固定 X.509 SPKI 和 DER ECDSA fixture，并实测博客/GitHub 清单请求及 GitHub HTTPS 重定向、三种设置持久化、停止检查、稳定 cohort 与防回退下限、无 `harmony` artifact、灰度未命中、市场链接打开以及应用市场自动更新设置；当前只有纯 Node/源代码证据。
 - 触控回传、音频和扫码识别不在这个接收端源实现中；连接通过粘贴信息，画面通过真实原生解码路径。
 
 ## 核对过的官方资料

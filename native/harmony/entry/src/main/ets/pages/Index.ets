@@ -3,6 +3,9 @@ import { common } from '@kit.AbilityKit';
 import { Session } from '../protocol/Session';
 import { readDisplayProfile } from '../protocol/DisplayProfile';
 import { StableUpdateManager, StableUpdateStatus } from '../update/StableUpdateManager';
+import {
+  StableUpdateMode, UPDATE_MODE_AUTOMATIC, UPDATE_MODE_DOWNLOAD_THEN_ASK
+} from '../update/StableUpdatePolicy';
 
 class VideoSurfaceController extends XComponentController {
   created: (surface: string) => void = (_surface: string) => {};
@@ -20,6 +23,7 @@ struct Index {
   @State private surfaceReady: boolean = false;
   @State private updateText: string = '正式版更新：正在安全检查…';
   @State private updateInstallerUrl: string = '';
+  @State private updateModeIndex: number = 0;
   @StorageLink('foreground') @Watch('onForegroundChanged') private foreground: boolean = true;
   private controller: VideoSurfaceController = new VideoSurfaceController();
   private surfaceId: string = '';
@@ -29,6 +33,7 @@ struct Index {
   private rotationTimer: number = -1;
   private displayChanged: (id: number) => void = (_id: number) => this.onDisplayChanged();
   private updateManager: StableUpdateManager | undefined = undefined;
+  private updateModeSelectionRevision: number = 0;
 
   aboutToAppear(): void {
     this.controller.created = (id: string) => { this.surfaceId = id; this.surfaceReady = true; };
@@ -36,14 +41,43 @@ struct Index {
     display.on('change', this.displayChanged);
     this.updateManager = new StableUpdateManager(getContext(this) as common.UIAbilityContext, (status: StableUpdateStatus) => {
       this.updateText = status.text; this.updateInstallerUrl = status.installerUrl;
+      this.updateModeIndex = status.mode === UPDATE_MODE_AUTOMATIC ? 0 :
+        status.mode === UPDATE_MODE_DOWNLOAD_THEN_ASK ? 1 : 2;
     });
     this.updateManager.start();
   }
-  aboutToDisappear(): void { display.off('change', this.displayChanged); this.updateManager?.stop(); this.stop('已退出副屏'); }
+  aboutToDisappear(): void {
+    this.updateModeSelectionRevision++;
+    display.off('change', this.displayChanged); this.updateManager?.stop(); this.stop('已退出副屏');
+  }
   onBackPress(): boolean { if (this.active) { this.stop(); return true; } return false; }
   private onForegroundChanged(): void {
     if (this.foreground) this.updateManager?.checkIfNeeded();
     else this.stop('应用进入后台，已释放副屏连接');
+  }
+  private updateModeForIndex(index: number): StableUpdateMode {
+    if (index === 0) return 'automatic';
+    if (index === 1) return 'downloadThenAsk';
+    return 'never';
+  }
+  private updateModeHint(): string {
+    if (this.updateModeIndex === 0) return '自动检查；安装时机由应用市场的自动更新设置管理。';
+    if (this.updateModeIndex === 1) return '自动检查并准备可信入口；仅在你点按钮后打开应用市场。';
+    return '不连接博客或 GitHub 更新地址，也不检查新版本。';
+  }
+  private chooseUpdateMode(index: number): void {
+    const revision: number = ++this.updateModeSelectionRevision;
+    this.updateModeIndex = index;
+    this.updateManager?.setMode(this.updateModeForIndex(index)).then((applied: StableUpdateMode) => {
+      if (revision !== this.updateModeSelectionRevision) return;
+      this.updateModeIndex = applied === UPDATE_MODE_AUTOMATIC ? 0 :
+        applied === UPDATE_MODE_DOWNLOAD_THEN_ASK ? 1 : 2;
+    }).catch((_error: Error) => {
+      if (revision !== this.updateModeSelectionRevision) return;
+      this.updateModeIndex = 2;
+      this.updateText = '正式版更新：设置保存失败，已停止联网检查';
+      this.updateInstallerUrl = '';
+    });
   }
   private stop(message: string = '已停止连接'): void {
     this.activeUri = '';
@@ -102,7 +136,18 @@ struct Index {
           Button('连接电脑').enabled(this.surfaceReady && this.foreground)
             .onClick(() => { const uri = this.pairingText; this.pairingText = ''; this.connect(uri); })
           Text(this.statusText).fontSize(15).fontColor('#D4E3F3')
+          Row({ space: 12 }) {
+            Text('更新方式').fontSize(13).fontColor('#D4E3F3')
+            Select([
+              { value: '自动更新' },
+              { value: '自动下载后手动安装' },
+              { value: '从不更新' }
+            ]).selected(this.updateModeIndex).onSelect((index: number) => this.chooseUpdateMode(index))
+          }.width('100%')
+          Text(this.updateModeHint()).fontSize(12).fontColor('#A9BDD2')
           Text(this.updateText).fontSize(13).fontColor('#A9BDD2')
+          Button('立即检查更新').enabled(this.updateModeIndex !== 2)
+            .onClick(() => this.updateManager?.checkNow())
           if (this.updateInstallerUrl.length > 0) {
             Button('前往应用市场更新').onClick(() => {
               this.updateManager?.openInstaller().catch((_error: Error) => {

@@ -158,4 +158,76 @@ final class ProtocolTests: XCTestCase {
         XCTAssertNil(try StableUpdateManifest.availableIOSUpdate(iosManifest, currentVersion: "0.8.0", currentBuild: 3,
             cohortID: "0123456789abcdef0123456789abcdef"))
     }
+
+    func testUpdateModesMirrorSelectionPauseAndAntiReplay() throws {
+        XCTAssertEqual(StableUpdateMode.decodePersisted(nil), .automatic)
+        XCTAssertEqual(StableUpdateMode.decodePersisted("automatic"), .automatic)
+        XCTAssertEqual(StableUpdateMode.decodePersisted("downloadThenAsk"), .downloadThenAsk)
+        XCTAssertEqual(StableUpdateMode.decodePersisted("never"), .never)
+        XCTAssertEqual(StableUpdateMode.decodePersisted("future-mode"), .never)
+        XCTAssertEqual(StableUpdateMode.decodePersisted(NSNumber(value: 1)), .never)
+
+        let published = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-09-29T15:00:00Z"))
+        let newer = published.addingTimeInterval(60)
+        let ios = StableReleaseArtifact(platform: "ios", version: try StableSemanticVersion("0.9.0"), build: 3,
+            url: try XCTUnwrap(URL(string: "https://linjie.space/download/api/download?path=TabLink%2Fstable%2Fios")),
+            size: 123, sha256: String(repeating: "A", count: 64),
+            installerURL: try XCTUnwrap(URL(string: "https://apps.apple.com/cn/app/tablink/id123456789")), notes: nil)
+        let update = StableReleaseManifest(releaseID: "stable-0.9.0", publishedAt: published, rolloutPercentage: 100,
+            minimumProtocolVersion: 1, artifacts: [ios])
+        let pause = StableReleaseManifest(releaseID: "pause-0.9.0", publishedAt: newer, rolloutPercentage: 0,
+            minimumProtocolVersion: 1, artifacts: [ios])
+
+        XCTAssertEqual(try StableUpdateManifest.selectNewest([update, pause]), pause)
+        XCTAssertEqual(try StableUpdateManifest.selectNewest([pause, pause]), pause)
+        let floor = try StableUpdateManifest.floor(for: pause)
+        XCTAssertEqual(try StableUpdateManifest.selectNewest([pause], floor: floor), pause)
+        XCTAssertThrowsError(try StableUpdateManifest.selectNewest([update], floor: floor))
+
+        let conflict = StableReleaseManifest(releaseID: "other-decision", publishedAt: newer, rolloutPercentage: 100,
+            minimumProtocolVersion: 1, artifacts: [ios])
+        XCTAssertEqual(try StableUpdateManifest.newestConflictPublishedAt([pause, conflict]), newer)
+        XCTAssertThrowsError(try StableUpdateManifest.selectNewest([pause, conflict]))
+        let conflictFloor = StableUpdateManifest.conflictFloor(at: newer)
+        XCTAssertThrowsError(try StableUpdateManifest.selectNewest([pause], floor: conflictFloor))
+        XCTAssertThrowsError(try StableUpdateManifest.selectNewest([update], floor: conflictFloor))
+        let recovered = StableReleaseManifest(releaseID: "stable-after-conflict",
+            publishedAt: newer.addingTimeInterval(60), rolloutPercentage: 100,
+            minimumProtocolVersion: 1, artifacts: [ios])
+        XCTAssertEqual(try StableUpdateManifest.selectNewest([recovered], floor: conflictFloor), recovered)
+        let damagedFloor = StableUpdateFloor(publishedAt: newer, releaseID: pause.releaseID,
+                                              fingerprint: String(repeating: "0", count: 64))
+        XCTAssertThrowsError(try StableUpdateManifest.selectNewest([pause], floor: damagedFloor))
+
+        let android = StableReleaseArtifact(platform: "android", version: try StableSemanticVersion("0.9.0"), build: 900,
+            url: try XCTUnwrap(URL(string: "https://linjie.space/download/api/download?path=TabLink%2Fstable%2FTabLink.apk")),
+            size: 456, sha256: String(repeating: "B", count: 64), installerURL: nil, notes: "stable")
+        let iosWithNotes = StableReleaseArtifact(platform: ios.platform, version: ios.version, build: ios.build,
+            url: ios.url, size: ios.size, sha256: ios.sha256, installerURL: ios.installerURL, notes: "stable")
+        let mirrorIOS = StableReleaseArtifact(platform: ios.platform, version: ios.version, build: ios.build,
+            url: try XCTUnwrap(URL(string: "https://github.com/linjierd/TabLink/releases/download/v0.9.0/TabLink.ipa")),
+            size: ios.size, sha256: ios.sha256, installerURL: ios.installerURL, notes: "stable")
+        let mirrorAndroid = StableReleaseArtifact(platform: android.platform, version: android.version, build: android.build,
+            url: try XCTUnwrap(URL(string: "https://github.com/linjierd/TabLink/releases/download/v0.9.0/TabLink.apk")),
+            size: android.size, sha256: android.sha256, installerURL: android.installerURL, notes: android.notes)
+        let primaryMirrors = StableReleaseManifest(releaseID: update.releaseID, publishedAt: published,
+            rolloutPercentage: 100, minimumProtocolVersion: 1, artifacts: [iosWithNotes, android])
+        let reorderedURLOnlyMirrors = StableReleaseManifest(releaseID: update.releaseID, publishedAt: published,
+            rolloutPercentage: 100, minimumProtocolVersion: 1, artifacts: [mirrorAndroid, mirrorIOS])
+        XCTAssertEqual(try StableUpdateManifest.selectNewest([primaryMirrors, reorderedURLOnlyMirrors]), primaryMirrors)
+        XCTAssertEqual(try StableUpdateManifest.decisionFingerprint(primaryMirrors),
+                       try StableUpdateManifest.decisionFingerprint(reorderedURLOnlyMirrors))
+        XCTAssertEqual(try StableUpdateManifest.selectNewest([reorderedURLOnlyMirrors],
+            floor: StableUpdateManifest.floor(for: primaryMirrors)), reorderedURLOnlyMirrors)
+
+        let installerConflictArtifact = StableReleaseArtifact(platform: mirrorIOS.platform, version: mirrorIOS.version,
+            build: mirrorIOS.build, url: mirrorIOS.url, size: mirrorIOS.size, sha256: mirrorIOS.sha256,
+            installerURL: try XCTUnwrap(URL(string: "https://apps.apple.com/cn/app/tablink/id987654321")), notes: mirrorIOS.notes)
+        let installerConflict = StableReleaseManifest(releaseID: update.releaseID, publishedAt: published,
+            rolloutPercentage: 100, minimumProtocolVersion: 1, artifacts: [mirrorAndroid, installerConflictArtifact])
+        XCTAssertThrowsError(try StableUpdateManifest.selectNewest([primaryMirrors, installerConflict]))
+        let rolloutConflict = StableReleaseManifest(releaseID: update.releaseID, publishedAt: published,
+            rolloutPercentage: 99, minimumProtocolVersion: 1, artifacts: [mirrorAndroid, mirrorIOS])
+        XCTAssertThrowsError(try StableUpdateManifest.selectNewest([primaryMirrors, rolloutConflict]))
+    }
 }

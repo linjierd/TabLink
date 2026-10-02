@@ -99,15 +99,43 @@ def main():
     manager = (ROOT / "Sources/App/StableUpdateManager.swift").read_text(encoding="utf-8")
     delegate = (ROOT / "Sources/App/AppDelegate.swift").read_text(encoding="utf-8")
     main = (ROOT / "Sources/App/MainViewController.swift").read_text(encoding="utf-8")
+    protocol_tests = (ROOT / "Tests/Protocol/ProtocolTests.swift").read_text(encoding="utf-8")
     public_key = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEXlJPucXJJzRwjf1p/46Uuebom2dMFvSSiN4wdwxVVtbb9bdaIGnru39akKRRd7BaTlUaEk2Thmb/MpqNPYNu4A=="
     manifest_url = "https://linjie.space/download/api/download?path=TabLink%2Fstable%2Fmanifest.json"
+    fallback_manifest_url = "https://github.com/linjierd/TabLink/releases/latest/download/manifest.json"
     check(public_key in stable and "P256.Signing.PublicKey(derRepresentation: spki)" in stable, "pinned P-256 SPKI verifier")
     check("ECDSASignature(derRepresentation: signatureData)" in stable and "key.isValidSignature" in stable, "DER ECDSA signature verification")
     check("平台无效或重复" in stable and '== "stable"' in stable and "StrictJSONScanner.validate" in stable, "strict stable manifest policy")
-    check(manifest_url in manager and "apps.apple.com" in stable and "isAllowedIOSInstallerURL" in manager, "official manifest, App Store and DownloadSite allowlist")
+    check(manifest_url in manager and fallback_manifest_url in manager and "apps.apple.com" in stable and "isAllowedIOSInstallerURL" in manager,
+          "blog and GitHub signed-manifest sources, App Store and DownloadSite allowlist")
     check("UIApplication.shared.open" in manager and "URLSession.shared.bytes" in manager, "bounded background check and App Store handoff")
     check("StableUpdateManager.shared.start()" in delegate and "sceneDidBecomeActive" in delegate and "scheduledTimer" in manager, "launch foreground periodic checks")
     check("updateStatus" in main and "updateButton" in main and "UIAlert" not in manager + main, "nonblocking connection-panel update state")
+    check(all(name in stable for name in ("自动更新", "自动下载后手动安装", "从不更新")) and
+          "decodePersisted" in stable and "return .never" in stable, "three persisted update modes and fail-closed decoding")
+    check("guard updateMode != .never" in manager and "cancelActiveCheck()" in manager and
+          "timer?.invalidate()" in manager, "never mode cancels work and gates update network checks")
+    check("selectNewest(manifests" in manager and "decisionFingerprint" in stable and
+          "stableUpdateAcceptedFloorV1" in manager and "同一发布时间" in stable,
+          "newest signed decision, conflict rejection and persisted anti-replay floor")
+    check("newestConflictPublishedAt" in stable and "persistConflictFloor" in manager and
+          "runtimeConflictFloor" in manager and "conflictFloor" in stable and
+          "更新清单未晚于已记录的签名冲突" in stable,
+          "signed same-time conflicts persist a fail-closed floor until a newer decision")
+    fingerprint_body = stable.split("static func decisionFingerprint", 1)[1].split("static func isAllowedIOSInstallerURL", 1)[0]
+    check("manifest.artifacts.sorted" in fingerprint_body and '"url": artifact.url.absoluteString' not in fingerprint_body and
+          all(field in fingerprint_body for field in ('"size"', '"sha256"', '"installerUrl"', '"notes"')),
+          "canonical decision fingerprint sorts artifacts and excludes only package mirror URL")
+    check(all(state in manager for state in (".unsupportedProtocol", ".paused", ".cohortDeferred")),
+          "future protocol, pause and cohort states remain distinct")
+    check("InstallerExpectation" in manager and "already displayed link" in manager and
+          "expectation.fingerprint == acceptedFloor.fingerprint" in manager,
+          "explicit App Store tap revalidates the current signed decision")
+    check(all(name in protocol_tests for name in ("reorderedURLOnlyMirrors", "installerConflict", "rolloutConflict",
+          "conflictFloor", "stable-after-conflict")),
+          "semantic mirror equivalence and conflict XCTest fixtures exist")
+    check("showsMenuAsPrimaryAction" in main and "立即检查正式版更新" in main and
+          "StableUpdateMode.allCases" in main, "in-app update-mode settings and explicit check action")
     check(not re.search(r"replaceItem|moveItem|removeItem|\.ipa\b", manager, re.IGNORECASE), "no in-app package replacement")
     apple_update_fixture = json.loads((ROOT / "Tests/Protocol/Fixtures/stable-manifest-valid.json").read_text(encoding="utf-8"))
     shared_update_fixture = json.loads((ROOT.parents[1] / "android/tests/fixtures/stable-manifest-valid.json").read_text(encoding="utf-8"))

@@ -138,15 +138,28 @@ The health centre reports route/listener, authentication and screen parameters, 
 
 ## Signed stable updates
 
-Windows and Android check the signed `stable` manifest on launch or foreground entry, then every six hours:
+Every native client uses the author's blog as the primary signed `stable` manifest source and the latest non-prerelease GitHub Release as the fallback:
 
 ```text
 https://linjie.space/download/api/download?path=TabLink%2Fstable%2Fmanifest.json
+https://github.com/linjierd/TabLink/releases/latest/download/manifest.json
 ```
 
-The envelope is signed with ECDSA P-256 / SHA-256. Clients verify the public key in `updates/stable-public-key.spki.base64` before parsing a payload that fixes the platform, stable SemVer, build number, HTTPS URL, byte size, SHA-256, and rollout percentage. The private signing key is not stored in the repository or release packages. Invalid signatures, altered packages, downgrade attempts, duplicate platforms, unknown fields, and prerelease versions fail closed.
+Both addresses are transport mirrors rather than trust anchors. Every manifest envelope must pass ECDSA P-256 / SHA-256 verification with the public key in `updates/stable-public-key.spki.base64` before the client parses a payload that fixes the platform, stable SemVer, build number, HTTPS URL, byte size, SHA-256, and rollout percentage. When both sources are valid, the newer signed `publishedAtUtc` decision wins; conflicting decisions at the same timestamp fail closed, and a newer signed pause cannot be bypassed by an older mirror. The conflict timestamp is persisted across checks and restarts: ordinary decisions at or before it remain blocked until a valid signed decision with a strictly later timestamp is accepted. The private signing key is not stored in the repository or release packages. Invalid signatures, altered packages, downgrade attempts, duplicate platforms, unknown fields, and prerelease versions fail closed. Preview and prerelease GitHub Releases never advance this stable route.
 
-Windows downloads and verifies in the background but defers installation while the display is active. Automatic replacement runs only from the exact `%ProgramFiles%\TabLink` installation. Relevant protected state is kept under:
+Windows, Android, iOS/iPadOS, and HarmonyOS NEXT persist the highest accepted publication time together with a canonical decision digest that excludes only package download URLs. A later process restart or one-source outage therefore cannot replay an older still-signed manifest after the device has seen a newer pause. At the same timestamp, only URL-different packages with identical platform, version, build, size, hash, rollout, protocol, installer destination, and notes qualify as mirrors.
+
+As at 2 October 2026, the blog endpoint returns HTTP 530 and the GitHub fallback returns 404 because every public Release is still a Preview. End-to-end automatic updating therefore remains unavailable until either source publishes a valid signed stable manifest. Clients fail closed and never substitute a Preview asset or unsigned content. Once either source is available, an outage at the other source does not prevent verification and use of the valid source.
+
+The **Settings** page provides the same three policies on all four native clients:
+
+| Policy | Check and download | Install |
+| --- | --- | --- |
+| **Automatic** | Check on launch or foreground entry and then periodically; Windows/Android download a verified stable build while idle, while store clients prepare verified store metadata | Windows installs after the display session has stopped; Android rechecks the latest signed decision and starts the system installer without another in-app confirmation, while retaining Android's system confirmation; App Store/AppGallery and system settings control store download and automatic installation |
+| **Download, then ask** (`DownloadThenAsk`) | Check automatically; Windows/Android download the verified package, while Apple/Harmony verify the store update without pretending to pre-download a store package | The user must explicitly choose **Install** or open the store; Android still requires its system confirmation |
+| **Never** | Make no background update request and download nothing | Do not install; the install action stays disabled while this policy is selected |
+
+The default for a new preference file is **Automatic**; a damaged preference file fails closed to **Never**. These three choices are present in the Windows, Android, unpublished iOS/iPadOS, and unpublished HarmonyOS NEXT clients. Changing the selection takes effect immediately and does not disconnect the display. Windows defers update work while the display is active. Protected replacement, whether automatic or explicitly requested, runs only from the exact `%ProgramFiles%\TabLink` installation. Portable copies on `E:`, Desktop, OneDrive, or another folder may check and download according to policy, but they cannot replace themselves. Relevant protected state is kept under:
 
 | Path | Purpose |
 | --- | --- |
@@ -154,7 +167,7 @@ Windows downloads and verifies in the background but defers installation while t
 | `%ProgramData%\TabLink\Updater\sha256-<package-hash>\` | Content-addressed protected updater |
 | `%ProgramData%\TabLink\Transactions\<transaction-id>\` | Same-volume staging, backup, failed version, and update log |
 
-The updater verifies the signed manifest, package size and hash, protected ACLs, extracted staging tree, and old-tree snapshot before swapping directories. A new build must produce a challenge-bound health signal; otherwise, the updater restores the verified old tree. Android rechecks the manifest, APK size, hash, package name, version, build, and installed signing identity before handing the APK to `PackageInstaller`. Android may still require the user to confirm installation.
+The updater verifies the signed manifest, package size and hash, protected ACLs, extracted staging tree, and old-tree snapshot before swapping directories. A new build must produce a challenge-bound health signal; otherwise, the updater restores the verified old tree. Android rechecks the manifest, APK size, hash, package name, version, build, and installed signing identity before handing the APK to `PackageInstaller`; Android always retains the system installation-confirmation step.
 
 Browser assets update with the Windows host. The unpublished Apple and HarmonyOS adapters accept only a store URL carried by the same signed manifest, while App Store or AppGallery remains responsible for installation. No iOS/iPadOS or HarmonyOS package is currently present in the stable manifest.
 

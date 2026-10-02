@@ -61,9 +61,14 @@ TabLink 的稳定更新清单使用 ECDSA P-256 / SHA-256 签名。`stable-publi
 
 Windows 正式包在签名前必须通过完整性预检：四个 `TabLink.Updater` 文件、`selftest-result.txt`、
 `SHA256SUMS.txt` 和 `update-channel.json` 都必须存在；更新频道必须启用且精确指向
-`https://linjie.space/download/api/download?path=TabLink%2Fstable%2Fmanifest.json`。暂存脚本逐项重新计算
+博客主地址 `https://linjie.space/download/api/download?path=TabLink%2Fstable%2Fmanifest.json`，并把
+`https://github.com/linjierd/TabLink/releases/latest/download/manifest.json` 配置为备用地址。暂存脚本逐项重新计算
 `SHA256SUMS.txt` 中列出的文件，不接受缺失文件、越界路径、重复路径或哈希不一致。构建正式候选时，显式
 `-OutputDirectory` 必须是尚不存在或完全为空的目录，避免旧版本文件进入签名 ZIP。
+
+客户端可以从个人博客主地址或 GitHub 备用地址取得清单，但来源域名本身不授予信任。每份清单都必须由同一枚固定公钥验签，包仍必须匹配清单内签名保护的大小与 SHA-256。两个来源都有效时采用 `publishedAtUtc` 较新的签名决定；同一发布时间的发布内容冲突会失败关闭并持久记录该时间，后续检查和重启后都只能由时间严格更晚的有效签名决定解除阻断。较新的已签名暂停不能被旧镜像绕过。GitHub 的 `/releases/latest/` 只用于非 prerelease 的正式版；Preview / prerelease 不能附带正式 `manifest.json`，不能推进 stable，也不能被重新标记成 latest 来规避正式发布检查。
+
+Windows、Android、iPhone / iPad 与 HarmonyOS NEXT 原生客户端都提供 `Automatic`、`DownloadThenAsk` 与 `Never` 三种偏好。Windows / Android 在前两种模式下可下载经过验证的包；Apple / HarmonyOS 客户端只准备经过验证的应用市场信息，并由用户设置的商店策略管理下载与自动安装。`DownloadThenAsk` 始终等待明确的安装或打开商店操作，`Never` 不检查、不下载、不安装。Android 真正覆盖 APK 时仍必须经过系统安装确认。Windows 只有从精确的 `%ProgramFiles%\TabLink` 正式目录运行时才能执行受保护替换；E 盘、Desktop、OneDrive 等便携副本可检查和下载，但不能安装到自身目录。
 
 若同时暂存 Android APK，必须提供 APK 内的 `versionCode` 和正式签名证书 SHA-256 指纹：
 
@@ -96,7 +101,7 @@ Windows 正式包在签名前必须通过完整性预检：四个 `TabLink.Updat
 版本目录一次性创建。目标版本已存在时脚本直接失败；全部校验成功后才把临时目录原子移动到最终目录。Windows ZIP 内文件顺序和时间戳固定，同一组输入会得到相同 ZIP 字节。`release-summary.json` 明确记录 `uploaded=false` 和
 `uploadPerformedByTool=false`。
 
-实际发布时，先把 `release` 内不可变制品上传到清单列出的版本 URL，并从 HTTPS 端重新核对大小和 SHA-256；最后才把验签通过的 `manifest.json` 原子发布到 `stable/manifest.json`。这一步由部署流程执行，不属于暂存脚本。
+实际发布时，先把 `release` 内不可变制品上传到清单列出的版本 URL，并从 HTTPS 端重新核对大小和 SHA-256；最后才把验签通过的 `manifest.json` 原子发布到博客的 `stable/manifest.json`，并作为名为 `manifest.json` 的 asset 附加到 GitHub 的非 prerelease 正式 Release。若 GitHub 同时作为包镜像，可单独签署只改变制品 `url` 的 GitHub 清单；两个清单的 `releaseId`、`publishedAtUtc`、发布比例、最低协议及各平台版本、构建号、大小、SHA-256、安装器 URL 和说明必须一致，否则客户端会把同一时间的冲突视为错误。分别从两个正式 URL 下载、验签并复核包后，才可记录双来源发布完成。暂存脚本不连接服务器、不创建 GitHub Release；`release-summary.json` 只记录打包时验证过的两个配置 URL。
 
 ## 工具命令与测试
 

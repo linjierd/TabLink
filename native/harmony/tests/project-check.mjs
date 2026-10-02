@@ -48,14 +48,34 @@ const crypto = text('entry/src/main/ets/update/StableUpdateCrypto.ets');
 const updates = text('entry/src/main/ets/update/StableUpdateManager.ets');
 const page = text('entry/src/main/ets/pages/Index.ets');
 check(policy.includes('https://linjie.space/download/api/download?path=TabLink%2Fstable%2Fmanifest.json'), 'official HTTPS stable manifest endpoint');
+check(policy.includes('https://github.com/linjierd/TabLink/releases/latest/download/manifest.json'), 'GitHub stable release manifest fallback');
 check(policy.includes('MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEXlJPucXJJzRwjf1p/46Uuebom2dMFvSSiN4wdwxVVtbb9bdaIGnru39akKRRd7BaTlUaEk2Thmb/MpqNPYNu4A=='), 'pinned stable P-256 SPKI');
 check(policy.includes('平台无效或重复') && policy.includes("root.channel !== 'stable'"), 'stable-only and one artifact per platform');
+check(policy.includes("if (!exists) return 'automatic'") && policy.includes("return 'never'"), 'first run defaults automatic and damaged mode fails closed');
+check(policy.includes('selectNewestVerifiedManifest') && policy.includes('canonicalStableDecision') &&
+  policy.includes('同一发布时间存在冲突') && policy.includes('compareManifestWithFloor'),
+  'newest canonical signed decision, conflict rejection and anti-replay floor');
+check(policy.includes('newestConflictPublishedAt') && policy.includes('serializeConflictFloor') &&
+  policy.includes('更新清单未晚于已记录的签名冲突') && updates.includes('acceptConflictFloor') &&
+  updates.includes('runtimeConflictFloorUtc'),
+  'same-time signed conflicts persist across checks and restart until a newer decision');
 check(crypto.includes("createAsyKeyGenerator('ECC256')") && crypto.includes("createVerify('ECC256|SHA256')"), 'isolated P-256 SHA-256 verifier');
 check(crypto.includes('if (!valid) throw') && !crypto.includes('return true'), 'signature verification fails closed');
+check(crypto.includes('stableDecisionDigest') && crypto.includes("createMd('SHA256')") && policy.includes('serializeDecisionFloor'),
+  'complete canonical release decision is persisted as a SHA-256 floor');
 check(updates.indexOf('await verifyStableEnvelope(envelope)') < updates.indexOf('parseVerifiedPayload(verifiedPayloadText)'), 'signature before payload parsing');
 check(updates.includes("platform === 'harmony'") && updates.includes('includedByDigest'), 'Harmony artifact and stable cohort selection');
+check(updates.includes('STABLE_MANIFEST_FALLBACK_URL') && updates.includes('selectNewestVerifiedManifest(candidates)'), 'both signed manifest transports participate in newest selection');
+check(updates.includes("this.mode === UPDATE_MODE_NEVER") && updates.includes('不会请求更新服务器'), 'Never mode blocks update requests');
+check(updates.includes('StableUpdatePreferenceQueue') && updates.includes('modeRequestRevision') && page.includes('updateModeSelectionRevision'),
+  'mode writes are serialized and stale UI completions are ignored');
+check(updates.includes('manifest-floor-v1') && updates.includes('stableDecisionDigest(candidate.manifest)'),
+  'accepted publication and canonical decision digest share one persisted floor record');
+check(updates.includes('requiresNewerUpdateProtocol(manifest)') && updates.includes('新版需要升级协议'),
+  'future update protocol has an explicit status after floor acceptance');
 check(updates.includes("action: 'ohos.want.action.viewData'") && updates.includes('isAllowedHarmonyInstallerUrl') && policy.includes("host === 'linjie.space'"), 'signed AppGallery or official redirect link uses system handler');
 check(!/installHap|bundleInstaller|BundleInstaller|requestPermissionsFromUser/.test(updates + crypto + policy), 'no self-install or invented market-update API');
 check(page.includes('前往应用市场更新') && page.includes('this.updateManager?.checkIfNeeded()'), 'nonblocking panel state and foreground check');
+check(page.includes('自动更新') && page.includes('自动下载后手动安装') && page.includes('从不更新') && page.includes('setMode('), 'three persisted update choices are exposed');
 check(!page.includes('AlertDialog'), 'active projection has no update dialog');
 console.log(`PASS ${count} project/resource/protocol source checks; not an SDK build, signature, or device validation.`);

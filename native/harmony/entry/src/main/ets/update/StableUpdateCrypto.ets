@@ -1,6 +1,8 @@
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { util } from '@kit.ArkTS';
-import { SignedEnvelopeText, STABLE_SIGNER_SPKI_BASE64 } from './StableUpdatePolicy';
+import {
+  canonicalStableDecision, SignedEnvelopeText, StableManifest, STABLE_SIGNER_SPKI_BASE64
+} from './StableUpdatePolicy';
 
 const MAX_PAYLOAD_BYTES: number = 256 * 1024;
 
@@ -39,6 +41,17 @@ export async function stableCohortDigest(cohortId: string, releaseId: string): P
   const digest = cryptoFramework.createMd('SHA256');
   await digest.update({ data: encoder.encodeInto(cohortId + '\n' + releaseId) });
   return (await digest.digest()).data;
+}
+
+export async function stableDecisionDigest(manifest: StableManifest): Promise<string> {
+  const encoder: util.TextEncoder = new util.TextEncoder();
+  const digest = cryptoFramework.createMd('SHA256');
+  await digest.update({ data: encoder.encodeInto(canonicalStableDecision(manifest)) });
+  const bytes: Uint8Array = (await digest.digest()).data;
+  if (bytes.length !== 32) throw new Error('更新决定摘要长度无效');
+  let value: string = '';
+  for (const byte of bytes) value += byte.toString(16).padStart(2, '0');
+  return value.toUpperCase();
 }
 
 export function createStableCohortId(): string {

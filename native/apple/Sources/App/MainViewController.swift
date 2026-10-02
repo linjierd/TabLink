@@ -14,6 +14,9 @@ final class MainViewController: UIViewController {
     private let hud = UILabel()
     private let updateStatus = UILabel()
     private let updateButton = UIButton(type: .system)
+    private let updateModeButton = UIButton(type: .system)
+    private let updateModeDetail = UILabel()
+    private let checkUpdateButton = UIButton(type: .system)
     private let settings = UIButton(type: .system)
     private var settingsOpen = false
     private var isShowingFrames = false
@@ -79,10 +82,20 @@ final class MainViewController: UIViewController {
         status.textColor = .white; status.font = .preferredFont(forTextStyle: .subheadline); status.numberOfLines = 0
         if status.text == nil { status.text = "尚未连接 · 需要 iOS / iPadOS 17 或更高版本" }
         updateStatus.textColor = .lightGray; updateStatus.font = .preferredFont(forTextStyle: .footnote); updateStatus.numberOfLines = 0
-        updateButton.setTitle("前往 App Store 更新", for: .normal); updateButton.titleLabel?.font = .preferredFont(forTextStyle: .headline)
+        updateModeButton.showsMenuAsPrimaryAction = true; updateModeButton.contentHorizontalAlignment = .leading
+        updateModeButton.titleLabel?.font = .preferredFont(forTextStyle: .headline)
+        updateModeButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 40).isActive = true
+        updateModeDetail.textColor = .lightGray; updateModeDetail.font = .preferredFont(forTextStyle: .footnote)
+        updateModeDetail.numberOfLines = 0
+        checkUpdateButton.setTitle("立即检查正式版更新", for: .normal)
+        checkUpdateButton.titleLabel?.font = .preferredFont(forTextStyle: .headline)
+        checkUpdateButton.contentHorizontalAlignment = .leading
+        checkUpdateButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 40).isActive = true
+        checkUpdateButton.addTarget(self, action: #selector(checkStableUpdate), for: .touchUpInside)
+        updateButton.setTitle("手动前往 App Store 更新", for: .normal); updateButton.titleLabel?.font = .preferredFont(forTextStyle: .headline)
         updateButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 40).isActive = true
         updateButton.addTarget(self, action: #selector(openStableUpdate), for: .touchUpInside)
-        [title, detail, status, updateStatus, updateButton].forEach(panel.addArrangedSubview)
+        [title, detail, status, updateModeButton, updateModeDetail, updateStatus, checkUpdateButton, updateButton].forEach(panel.addArrangedSubview)
         panel.addArrangedSubview(button("扫描电脑二维码", action: #selector(scan)))
         panel.addArrangedSubview(button("粘贴连接链接", action: #selector(paste)))
         panel.addArrangedSubview(button("重新连接本次配对", action: #selector(reconnect)))
@@ -112,7 +125,7 @@ final class MainViewController: UIViewController {
         hud.textColor = .white; hud.backgroundColor = UIColor(white: 0, alpha: 0.6)
         hud.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular); hud.numberOfLines = 2
         hud.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(hud)
-        settings.setTitle("连接", for: .normal); settings.tintColor = .white
+        settings.setTitle("设置", for: .normal); settings.tintColor = .white
         settings.backgroundColor = UIColor(white: 0.15, alpha: 0.8); settings.layer.cornerRadius = 12
         settings.translatesAutoresizingMaskIntoConstraints = false; settings.addTarget(self, action: #selector(toggleSettings), for: .touchUpInside)
         view.addSubview(settings)
@@ -206,9 +219,28 @@ final class MainViewController: UIViewController {
     }
     @objc private func updateStateChanged() { refreshUpdateState() }
     private func refreshUpdateState() {
-        let update = StableUpdateManager.shared.state
-        updateStatus.text = update.text; updateButton.isHidden = update.installerURL == nil
+        let manager = StableUpdateManager.shared
+        let update = manager.state
+        updateStatus.text = update.text
+        updateButton.isHidden = update.installerURL == nil || manager.updateMode == .never
+        checkUpdateButton.isEnabled = manager.updateMode != .never
+        updateModeButton.setTitle("更新方式：\(manager.updateMode.title)", for: .normal)
+        updateModeButton.menu = UIMenu(title: "正式版更新方式", children: StableUpdateMode.allCases.map { mode in
+            UIAction(title: mode.title, state: mode == manager.updateMode ? .on : .off) { [weak self] _ in
+                StableUpdateManager.shared.setUpdateMode(mode)
+                self?.refreshUpdateState()
+            }
+        })
+        switch manager.updateMode {
+        case .automatic:
+            updateModeDetail.text = "自动检查正式版；下载与安装由 App Store 和系统的自动更新设置处理，TabLink 不会静默打开商店或自行安装。"
+        case .downloadThenAsk:
+            updateModeDetail.text = "自动检查更新信息；iOS 不允许应用预下载或替换自身，只有你点击按钮后才会打开 App Store。"
+        case .never:
+            updateModeDetail.text = "不发起更新网络请求，也不打开 App Store 更新入口。"
+        }
     }
+    @objc private func checkStableUpdate() { StableUpdateManager.shared.checkNow() }
     @objc private func openStableUpdate() { StableUpdateManager.shared.openInstaller() }
     @objc private func backgrounded() {
         if presentedViewController != nil { dismiss(animated: false) }

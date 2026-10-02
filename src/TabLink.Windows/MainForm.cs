@@ -106,6 +106,9 @@ internal sealed partial class MainForm : Form
             selectedQuality=videoPreferences.Quality;selectedEncoder=videoPreferences.Encoder;
             allowSoftwareFallback=videoPreferences.AllowSoftwareFallback;
             authorFooterPreferences=authorFooterStore.Load();
+            var loadedUpdatePreferences=updatePreferencesStore.LoadWithStatus();
+            updatePreferences=loadedUpdatePreferences.Preferences;
+            updatePreferencesLoadStatus=loadedUpdatePreferences.Status;
         }
         BuildUi();
         ConfigureWindowSizing();
@@ -181,7 +184,7 @@ internal sealed partial class MainForm : Form
             }
             e.Cancel=true;await ExitAsync();
         };
-        FormClosed+=(_,_)=>{idleUpdateDelay?.Cancel();idleUpdateDelay?.Dispose();activationTimer.Dispose();monitor.Dispose();tray.Visible=false;tray.Dispose();trayMenu.Dispose();updateCoordinator?.Dispose();nativeTrust?.Dispose();lifetime.Dispose();};
+        FormClosed+=(_,_)=>{DisposeAutomaticUpdates();activationTimer.Dispose();monitor.Dispose();tray.Visible=false;tray.Dispose();trayMenu.Dispose();nativeTrust?.Dispose();lifetime.Dispose();};
         UpdateButtons();
     }
 
@@ -226,7 +229,14 @@ internal sealed partial class MainForm : Form
         if(networkStartTask is {} opening)try{await opening;}catch(Exception ex){Log("网络启动已结束："+SafeError(ex));}
         if(additionalStartTask is {} extraOpening)try{await extraOpening;}catch(Exception ex){Log("设备启动已结束："+SafeError(ex));}
         if(browserStartTask is {} browserOpening)try{await browserOpening;}catch(Exception ex){Log("浏览器启动已结束："+SafeError(ex));}
-        try{await StopAllAsync();if(!requireReadyUpdater&&updateCoordinator is not null)await updateCoordinator.TryLaunchReadyUpdaterAsync();}
+        try
+        {
+            await StopAllAsync();
+            if(!requireReadyUpdater&&updateCoordinator is not null&&
+                AutomaticUpdateApplyPolicy.ShouldLaunchOnNormalExit(CurrentUpdateMode==UpdateMode.Automatic&&
+                    CanInstallReadyUpdateFromCurrentLocation,updateCoordinator.Ready is not null))
+                await updateCoordinator.TryLaunchReadyUpdaterAsync();
+        }
         finally{tray.Visible=false;Close();}
     }
 
@@ -291,19 +301,20 @@ internal sealed partial class MainForm : Form
             var width=Math.Max(280,connectionPage.ClientSize.Width-connectionPage.Padding.Horizontal-28);
             modeRow.MaximumSize=encoderRow.MaximumSize=connectionModeHint.MaximumSize=help.MaximumSize=new Size(width,0);
         };
-        var settingsLayout=new TableLayoutPanel{Dock=DockStyle.Top,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,ColumnCount=1,RowCount=2,Margin=Padding.Empty};
-        settingsLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));settingsLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));exclusions.Controls.Add(settingsLayout);
+        var settingsLayout=new TableLayoutPanel{Dock=DockStyle.Top,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,ColumnCount=1,RowCount=3,Margin=Padding.Empty};
+        settingsLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));settingsLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));settingsLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));exclusions.Controls.Add(settingsLayout);
         settingsLayout.Controls.Add(BuildAuthorFooterSettingsPanel(),0,0);
+        settingsLayout.Controls.Add(BuildUpdateSettingsPanel(),0,1);
         var protectionGroup=new GroupBox{Text="设备保护",Dock=DockStyle.Top,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,Padding=new Padding(12),Margin=Padding.Empty};
         var exclusionLayout=new TableLayoutPanel{Dock=DockStyle.Top,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,ColumnCount=1,RowCount=4,Margin=Padding.Empty};
-        for(var i=0;i<exclusionLayout.RowCount;i++)exclusionLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));protectionGroup.Controls.Add(exclusionLayout);settingsLayout.Controls.Add(protectionGroup,0,1);
+        for(var i=0;i<exclusionLayout.RowCount;i++)exclusionLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));protectionGroup.Controls.Add(exclusionLayout);settingsLayout.Controls.Add(protectionGroup,0,2);
         var exclusionHelp=new Label{Text="序列号或 VID/PID 任一匹配都会阻止 USB 连接与安装 APK。已默认保护你的 F50 Pro。\n新增规则命中正在使用的 USB 设备时，会先停止该连接。",AutoSize=true,MaximumSize=new Size(820,0),ForeColor=muted,Margin=new Padding(0,0,0,12)};
         exclusionLayout.Controls.Add(exclusionHelp,0,0);
         exclusionLayout.Controls.Add(rules,0,1);exclusionLayout.Controls.Add(Flow(LabeledField("设备序列号",serial),LabeledField("USB VID",vid),LabeledField("USB PID",pid)),0,2);exclusionLayout.Controls.Add(Flow(LabeledField("备注名称",label),addRule,removeRule),0,3);
         exclusions.SizeChanged+=(_,_)=>
         {
             var width=Math.Max(280,exclusions.ClientSize.Width-exclusions.Padding.Horizontal-SystemInformation.VerticalScrollBarWidth-32);
-            exclusionHelp.MaximumSize=new Size(width,0);ResizeAuthorFooterSettings(width);
+            exclusionHelp.MaximumSize=new Size(width,0);ResizeAuthorFooterSettings(width);ResizeUpdateSettings(width);
         };
 
         var supportLayout=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=1,RowCount=2};
@@ -1289,6 +1300,7 @@ internal sealed partial class MainForm : Form
         UpdateNetworkButtons(idle);
         UpdateAdditionalButtons();
         UpdateHealthRepairButton();
+        RefreshUpdatePreferenceUi();
     }
     sealed record DeviceChoice(AdbDevice Device,DevicePolicyDecision Decision){public override string ToString()=>$"{Device.Model?.Replace('_',' ')??"Android"} · {Device.Serial}  {(Decision.Allowed?"USB 已验证":"[已阻止] "+Decision.Reason)}";}
     sealed record DisplayChoice(VirtualDisplayInfo Info){public override string ToString()=>$"{Info.FriendlyName} · {Info.Bounds.Width} × {Info.Bounds.Height} · {Info.DeviceName}";}

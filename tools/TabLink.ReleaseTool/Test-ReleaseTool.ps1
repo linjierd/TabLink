@@ -48,10 +48,11 @@ function New-TestWindowsSource([string]$Path, [string]$ToolDirectory) {
     Copy-Item -LiteralPath (Join-Path $ToolDirectory 'TabLink.ReleaseTool.dll') -Destination (Join-Path $Path 'TabLink.Updater.dll')
     Copy-Item -LiteralPath (Join-Path $ToolDirectory 'TabLink.ReleaseTool.deps.json') -Destination (Join-Path $Path 'TabLink.Updater.deps.json')
     Copy-Item -LiteralPath (Join-Path $ToolDirectory 'TabLink.ReleaseTool.runtimeconfig.json') -Destination (Join-Path $Path 'TabLink.Updater.runtimeconfig.json')
-    Write-Utf8NoBom (Join-Path $Path 'update-channel.json') '{"enabled":true,"manifestUrl":"https://linjie.space/download/api/download?path=TabLink%2Fstable%2Fmanifest.json","checkIntervalMinutes":360}'
+    Write-Utf8NoBom (Join-Path $Path 'update-channel.json') '{"enabled":true,"manifestUrl":"https://linjie.space/download/api/download?path=TabLink%2Fstable%2Fmanifest.json","fallbackManifestUrl":"https://github.com/linjierd/TabLink/releases/latest/download/manifest.json","checkIntervalMinutes":360}'
     Write-Utf8NoBom (Join-Path $Path 'selftest-result.txt') 'stable publisher fixture passed'
-    $checksums = foreach ($name in @('TabLink.exe', 'TabLink.dll', 'TabLink.Updater.exe', 'TabLink.Updater.dll')) {
-        $hash = (Get-FileHash -LiteralPath (Join-Path $Path $name) -Algorithm SHA256).Hash
+    $checksums = foreach ($file in Get-ChildItem -LiteralPath $Path -Force -Recurse -File | Sort-Object FullName) {
+        $name = [IO.Path]::GetRelativePath($Path, $file.FullName)
+        $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
         "$hash  $name"
     }
     Write-Utf8NoBom (Join-Path $Path 'SHA256SUMS.txt') (($checksums -join "`n") + "`n")
@@ -81,6 +82,140 @@ function New-TestAndroidApkWithWrongPackage([string]$Path, [string]$RepositoryRo
     if ($LASTEXITCODE -ne 0 -or -not [IO.File]::Exists($Path)) {
         throw 'Could not build the isolated wrong-package Android fixture.'
     }
+}
+
+function Find-TestJavaHome {
+    $candidates = [Collections.Generic.List[string]]::new()
+    if (-not [string]::IsNullOrWhiteSpace($env:JAVA_HOME)) { $candidates.Add($env:JAVA_HOME) }
+    foreach ($pattern in @(
+        'C:\Program Files\Android\openjdk\*',
+        'C:\Program Files\Android\Android Studio*\jbr',
+        'C:\Program Files\Java\*'
+    )) {
+        foreach ($directory in Get-Item -Path $pattern -ErrorAction SilentlyContinue) {
+            if ($directory.PSIsContainer) { $candidates.Add($directory.FullName) }
+        }
+    }
+
+    foreach ($candidate in $candidates | Select-Object -Unique) {
+        $java = Join-Path $candidate 'bin\java.exe'
+        $javac = Join-Path $candidate 'bin\javac.exe'
+        if (-not [IO.File]::Exists($java) -or -not [IO.File]::Exists($javac)) { continue }
+        $versionOutput = & $java -version 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch 'version\s+"(?<major>[0-9]+)(?:\.(?<minor>[0-9]+))?') { continue }
+        $major = [int]$Matches.major
+        if ($major -eq 1 -and $Matches.minor) { $major = [int]$Matches.minor }
+        if ($major -ge 17) { return [IO.Path]::GetFullPath($candidate) }
+    }
+    throw 'Android update-contract fixtures require a JDK 17 or newer with javac.'
+}
+
+function ConvertTo-JavaStringLiteral([string]$Value) {
+    return $Value.Replace('\', '\\').Replace('"', '\"')
+}
+
+function New-TestAndroidUpdateContractApk(
+    [string]$Path,
+    [string]$RepositoryRoot,
+    [string]$JavaHome,
+    [string]$ManifestUrl,
+    [string]$FallbackManifestUrl
+) {
+    $fixtureRoot = Join-Path ([IO.Path]::GetDirectoryName($Path)) ('android-update-contract-' + [Guid]::NewGuid().ToString('N'))
+    $sourceDirectory = Join-Path $fixtureRoot 'src\com\tablink\client'
+    $classesDirectory = Join-Path $fixtureRoot 'classes'
+    $dexDirectory = Join-Path $fixtureRoot 'dex'
+    [IO.Directory]::CreateDirectory($sourceDirectory) | Out-Null
+    [IO.Directory]::CreateDirectory($classesDirectory) | Out-Null
+    [IO.Directory]::CreateDirectory($dexDirectory) | Out-Null
+
+    $sourcePath = Join-Path $sourceDirectory 'BuildConfig.java'
+    $source = @"
+package com.tablink.client;
+public final class BuildConfig {
+    public static final String UPDATE_MANIFEST_URL = "$(ConvertTo-JavaStringLiteral $ManifestUrl)";
+    public static final String UPDATE_MANIFEST_FALLBACK_URL = "$(ConvertTo-JavaStringLiteral $FallbackManifestUrl)";
+}
+"@
+    Write-Utf8NoBom $sourcePath $source
+
+    $manifestPath = Join-Path $fixtureRoot 'AndroidManifest.xml'
+    Write-Utf8NoBom $manifestPath @'
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.tablink.client"
+    android:versionCode="100"
+    android:versionName="1.0.0">
+    <uses-sdk android:minSdkVersion="23" android:targetSdkVersion="35" />
+    <application android:label="TabLink release-contract fixture" />
+</manifest>
+'@
+
+    $buildTools = Join-Path $RepositoryRoot 'android\.tools\sdk\build-tools\35.0.0'
+    $androidJarSource = Join-Path $RepositoryRoot 'android\.tools\sdk\platforms\android-35\android.jar'
+    $debugKeySource = Join-Path $RepositoryRoot 'android\build\signing\debug.keystore'
+    foreach ($required in @(
+        (Join-Path $buildTools 'aapt.exe'),
+        (Join-Path $buildTools 'apksigner.bat'),
+        (Join-Path $buildTools 'd8.bat'),
+        $androidJarSource,
+        $debugKeySource,
+        (Join-Path $JavaHome 'bin\javac.exe')
+    )) {
+        if (-not [IO.File]::Exists($required)) {
+            throw "Android update-contract fixture dependency is missing: $required"
+        }
+    }
+
+    $androidJar = Join-Path $fixtureRoot 'android.jar'
+    $debugKey = Join-Path $fixtureRoot 'debug.keystore'
+    [IO.File]::Copy($androidJarSource, $androidJar, $false)
+    [IO.File]::Copy($debugKeySource, $debugKey, $false)
+    $unsignedApk = Join-Path $fixtureRoot 'fixture-unsigned.apk'
+    $classFile = Join-Path $classesDirectory 'com\tablink\client\BuildConfig.class'
+    $savedJavaHome = $env:JAVA_HOME
+    try {
+        $env:JAVA_HOME = $JavaHome
+        $compilerOutput = & (Join-Path $JavaHome 'bin\javac.exe') --release 8 -encoding UTF-8 `
+            -d $classesDirectory $sourcePath 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "javac could not build the Android update-contract fixture: $($compilerOutput -join [Environment]::NewLine)"
+        }
+        $d8Output = & (Join-Path $buildTools 'd8.bat') --min-api 23 --output $dexDirectory $classFile 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "d8 could not build the Android update-contract fixture: $($d8Output -join [Environment]::NewLine)"
+        }
+        $aaptOutput = & (Join-Path $buildTools 'aapt.exe') package -f -M $manifestPath -I $androidJar -F $unsignedApk 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "aapt could not package the Android update-contract fixture: $($aaptOutput -join [Environment]::NewLine)"
+        }
+        Push-Location $dexDirectory
+        try {
+            $aaptAddOutput = & (Join-Path $buildTools 'aapt.exe') add $unsignedApk 'classes.dex' 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                throw "aapt could not add DEX to the Android update-contract fixture: $($aaptAddOutput -join [Environment]::NewLine)"
+            }
+        }
+        finally { Pop-Location }
+
+        $signOutput = & (Join-Path $buildTools 'apksigner.bat') sign --ks $debugKey `
+            --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android `
+            --out $Path $unsignedApk 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "apksigner could not sign the Android update-contract fixture: $($signOutput -join [Environment]::NewLine)"
+        }
+        $verifyOutput = & (Join-Path $buildTools 'apksigner.bat') verify --verbose --print-certs $Path 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "apksigner could not verify the Android update-contract fixture: $($verifyOutput -join [Environment]::NewLine)"
+        }
+    }
+    finally { $env:JAVA_HOME = $savedJavaHome }
+
+    $signerMatch = [regex]::Match(($verifyOutput -join [Environment]::NewLine),
+        'Signer #1 certificate SHA-256 digest:\s*(?<digest>[0-9a-fA-F]{64})')
+    if (-not $signerMatch.Success) {
+        throw 'Could not read the Android update-contract fixture signer digest.'
+    }
+    return $signerMatch.Groups['digest'].Value.ToLowerInvariant()
 }
 
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('TabLink-ReleaseTool-Test-' + [Guid]::NewGuid().ToString('N'))
@@ -214,6 +349,50 @@ try {
     if (-not (Test-Path -LiteralPath (Join-Path $validOutput '1.0.0\manifest.json') -PathType Leaf)) {
         throw 'Valid stable publisher fixture did not produce a manifest.'
     }
+    $releaseSummary = Get-Content -LiteralPath (Join-Path $validOutput '1.0.0\release-summary.json') -Raw | ConvertFrom-Json
+    $configuredManifestUrls = @($releaseSummary.configuredManifestUrls)
+    if ($configuredManifestUrls.Count -ne 2 -or
+        $configuredManifestUrls[0] -cne 'https://linjie.space/download/api/download?path=TabLink%2Fstable%2Fmanifest.json' -or
+        $configuredManifestUrls[1] -cne 'https://github.com/linjierd/TabLink/releases/latest/download/manifest.json') {
+        throw 'Stable release summary does not record the exact blog-primary and GitHub-fallback manifest URLs.'
+    }
+
+    $stableManifestUrl = 'https://linjie.space/download/api/download?path=TabLink%2Fstable%2Fmanifest.json'
+    $stableFallbackManifestUrl = 'https://github.com/linjierd/TabLink/releases/latest/download/manifest.json'
+    $fixtureJavaHome = Find-TestJavaHome
+    $validAndroidApk = Join-Path $testRoot 'valid-android-update-contract.apk'
+    $androidSigner = New-TestAndroidUpdateContractApk $validAndroidApk $repositoryRoot $fixtureJavaHome `
+        $stableManifestUrl $stableFallbackManifestUrl
+    $validAndroidOutput = Join-Path $testRoot 'publisher-valid-android-output'
+    & $publisher -Version '1.0.0' -WindowsBuild 100 -WindowsSource $validSource `
+        -BaseUrl 'https://linjie.space/download/api/download?path={path}' -OutputRoot $validAndroidOutput `
+        -PrivateKeyPath $privateKey -PublicKeyPath $publicKey -AndroidApk $validAndroidApk -AndroidBuild 100 `
+        -AndroidSignerSha256 $androidSigner -JavaHome $fixtureJavaHome | Out-Null
+    $validAndroidSummary = Get-Content -LiteralPath (Join-Path $validAndroidOutput '1.0.0\release-summary.json') -Raw | ConvertFrom-Json
+    if ($validAndroidSummary.androidSignerSha256 -cne $androidSigner -or
+        -not (Test-Path -LiteralPath (Join-Path $validAndroidOutput '1.0.0\release\TabLink-android-1.0.0.apk') -PathType Leaf)) {
+        throw 'The stable publisher did not accept and stage the APK with the exact dual update-channel contract.'
+    }
+
+    $emptyFallbackApk = Join-Path $testRoot 'empty-fallback-android-update-contract.apk'
+    $emptyFallbackSigner = New-TestAndroidUpdateContractApk $emptyFallbackApk $repositoryRoot $fixtureJavaHome `
+        $stableManifestUrl ''
+    Assert-Throws {
+        & $publisher -Version '1.0.0' -WindowsBuild 100 -WindowsSource $validSource `
+            -BaseUrl 'https://linjie.space/download/api/download?path={path}' -OutputRoot (Join-Path $testRoot 'empty-fallback-android-output') `
+            -PrivateKeyPath $privateKey -PublicKeyPath $publicKey -AndroidApk $emptyFallbackApk -AndroidBuild 100 `
+            -AndroidSignerSha256 $emptyFallbackSigner -JavaHome $fixtureJavaHome
+    } "BuildConfig.UPDATE_MANIFEST_FALLBACK_URL is ''; expected exact formal GitHub stable URL"
+
+    $wrongFallbackApk = Join-Path $testRoot 'wrong-fallback-android-update-contract.apk'
+    $wrongFallbackSigner = New-TestAndroidUpdateContractApk $wrongFallbackApk $repositoryRoot $fixtureJavaHome `
+        $stableManifestUrl 'https://github.com/linjierd/TabLink/releases/download/v1.0.0-preview.1/manifest.json'
+    Assert-Throws {
+        & $publisher -Version '1.0.0' -WindowsBuild 100 -WindowsSource $validSource `
+            -BaseUrl 'https://linjie.space/download/api/download?path={path}' -OutputRoot (Join-Path $testRoot 'wrong-fallback-android-output') `
+            -PrivateKeyPath $privateKey -PublicKeyPath $publicKey -AndroidApk $wrongFallbackApk -AndroidBuild 100 `
+            -AndroidSignerSha256 $wrongFallbackSigner -JavaHome $fixtureJavaHome
+    } "BuildConfig.UPDATE_MANIFEST_FALLBACK_URL is 'https://github.com/linjierd/TabLink/releases/download/v1.0.0-preview.1/manifest.json'; expected exact formal GitHub stable URL"
 
     $wrongPackageApk = Join-Path $testRoot 'wrong-package.apk'
     New-TestAndroidApkWithWrongPackage $wrongPackageApk $repositoryRoot
@@ -242,6 +421,24 @@ try {
             -PrivateKeyPath $privateKey -PublicKeyPath $publicKey
     } 'manifestUrl must exactly equal the formal stable URL'
 
+    $missingFallbackSource = Join-Path $testRoot 'windows-missing-fallback-channel'
+    New-TestWindowsSource $missingFallbackSource $toolDirectory
+    Write-Utf8NoBom (Join-Path $missingFallbackSource 'update-channel.json') '{"enabled":true,"manifestUrl":"https://linjie.space/download/api/download?path=TabLink%2Fstable%2Fmanifest.json"}'
+    Assert-Throws {
+        & $publisher -Version '1.0.0' -WindowsBuild 100 -WindowsSource $missingFallbackSource `
+            -BaseUrl 'https://linjie.space/download/api/download?path={path}' -OutputRoot (Join-Path $testRoot 'missing-fallback-channel-output') `
+            -PrivateKeyPath $privateKey -PublicKeyPath $publicKey
+    } 'fallbackManifestUrl must exactly equal the formal GitHub stable URL'
+
+    $badFallbackSource = Join-Path $testRoot 'windows-bad-fallback-channel'
+    New-TestWindowsSource $badFallbackSource $toolDirectory
+    Write-Utf8NoBom (Join-Path $badFallbackSource 'update-channel.json') '{"enabled":true,"manifestUrl":"https://linjie.space/download/api/download?path=TabLink%2Fstable%2Fmanifest.json","fallbackManifestUrl":"https://github.com/linjierd/TabLink/releases/download/v0.8.9-preview.1/manifest.json"}'
+    Assert-Throws {
+        & $publisher -Version '1.0.0' -WindowsBuild 100 -WindowsSource $badFallbackSource `
+            -BaseUrl 'https://linjie.space/download/api/download?path={path}' -OutputRoot (Join-Path $testRoot 'bad-fallback-channel-output') `
+            -PrivateKeyPath $privateKey -PublicKeyPath $publicKey
+    } 'fallbackManifestUrl must exactly equal the formal GitHub stable URL'
+
     $tamperedChecksumSource = Join-Path $testRoot 'windows-tampered-checksum'
     New-TestWindowsSource $tamperedChecksumSource $toolDirectory
     [IO.File]::AppendAllText((Join-Path $tamperedChecksumSource 'TabLink.Updater.dll'), 'tampered')
@@ -250,6 +447,18 @@ try {
             -BaseUrl 'https://linjie.space/download/api/download?path={path}' -OutputRoot (Join-Path $testRoot 'tampered-checksum-output') `
             -PrivateKeyPath $privateKey -PublicKeyPath $publicKey
     } 'SHA256SUMS.txt hash mismatch'
+
+    $omittedChecksumSource = Join-Path $testRoot 'windows-omitted-checksum-entry'
+    New-TestWindowsSource $omittedChecksumSource $toolDirectory
+    $omittedChecksumPath = Join-Path $omittedChecksumSource 'SHA256SUMS.txt'
+    $omittedChecksumLines = Get-Content -LiteralPath $omittedChecksumPath |
+        Where-Object { $_ -cnotmatch '  TabLink\.Updater\.deps\.json$' }
+    Write-Utf8NoBom $omittedChecksumPath (($omittedChecksumLines -join "`n") + "`n")
+    Assert-Throws {
+        & $publisher -Version '1.0.0' -WindowsBuild 100 -WindowsSource $omittedChecksumSource `
+            -BaseUrl 'https://linjie.space/download/api/download?path={path}' -OutputRoot (Join-Path $testRoot 'omitted-checksum-output') `
+            -PrivateKeyPath $privateKey -PublicKeyPath $publicKey
+    } 'SHA256SUMS.txt does not list package file: TabLink.Updater.deps.json'
 
     [pscustomobject]@{
         Build = 'PASS'
@@ -266,10 +475,17 @@ try {
         OutOfRangeRolloutRejected = 'PASS'
         NonEmptyBuildOutputRejected = 'PASS'
         CompletePublisherPreflightAccepted = 'PASS'
+        DualManifestUrlsRecorded = 'PASS'
+        ExactAndroidUpdateContractAccepted = 'PASS'
+        EmptyAndroidFallbackRejected = 'PASS'
+        WrongAndroidFallbackRejected = 'PASS'
         WrongAndroidPackageRejected = 'PASS'
         MissingUpdaterRejected = 'PASS'
         WrongStableChannelRejected = 'PASS'
+        MissingFallbackChannelRejected = 'PASS'
+        WrongFallbackChannelRejected = 'PASS'
         TamperedChecksumRejected = 'PASS'
+        OmittedChecksumEntryRejected = 'PASS'
     } | Format-List
 }
 finally {
