@@ -16,6 +16,7 @@ public sealed class CompatibilityCatalogWorkspace
     private readonly string catalogPath;
     private readonly string schemaPath;
     private readonly string readmePath;
+    private readonly string readmeZhCnPath;
     private readonly ICompatibilityCatalogPathGuard pathGuard;
 
     public CompatibilityCatalogWorkspace(string repositoryRoot)
@@ -41,6 +42,7 @@ public sealed class CompatibilityCatalogWorkspace
         catalogPath = GetContainedPath(this.repositoryRoot, "compatibility", "catalog.json");
         schemaPath = GetContainedPath(this.repositoryRoot, "compatibility", "catalog.schema.json");
         readmePath = GetContainedPath(this.repositoryRoot, "compatibility", "README.md");
+        readmeZhCnPath = GetContainedPath(this.repositoryRoot, "compatibility", "README.zh-CN.md");
         this.pathGuard.RequireSafeDirectory(compatibilityDirectory, mustExist: false);
     }
 
@@ -59,7 +61,9 @@ public sealed class CompatibilityCatalogWorkspace
         RequireExact(schemaPath, CompatibilityCatalogGenerator.GenerateSchemaJson(),
             "compatibility/catalog.schema.json is missing or differs from the generated schema.");
         RequireExact(readmePath, CompatibilityCatalogGenerator.GenerateReadme(catalog),
-            "compatibility/README.md is missing or differs from the generated catalog.");
+            "compatibility/README.md is missing or differs from the generated English (Singapore) catalogue.");
+        RequireExact(readmeZhCnPath, CompatibilityCatalogGenerator.GenerateReadmeZhCn(catalog),
+            "compatibility/README.zh-CN.md is missing or differs from the generated Chinese catalogue.");
         RequireSafeBase(requireCatalog: true);
     }
 
@@ -68,15 +72,20 @@ public sealed class CompatibilityCatalogWorkspace
         var catalog = LoadAndValidate();
         var schema = CompatibilityCatalogGenerator.GenerateSchemaJson();
         var readme = CompatibilityCatalogGenerator.GenerateReadme(catalog);
+        var readmeZhCn = CompatibilityCatalogGenerator.GenerateReadmeZhCn(catalog);
         RequireSafeBase(requireCatalog: true);
         pathGuard.RequireSafeRegularFile(schemaPath, mustExist: false);
         pathGuard.RequireSafeRegularFile(readmePath, mustExist: false);
+        pathGuard.RequireSafeRegularFile(readmeZhCnPath, mustExist: false);
         AtomicTextFile.Write(schemaPath, schema, compatibilityDirectory, pathGuard);
         RequireSafeBase(requireCatalog: true);
         AtomicTextFile.Write(readmePath, readme, compatibilityDirectory, pathGuard);
         RequireSafeBase(requireCatalog: true);
+        AtomicTextFile.Write(readmeZhCnPath, readmeZhCn, compatibilityDirectory, pathGuard);
+        RequireSafeBase(requireCatalog: true);
         pathGuard.RequireSafeRegularFile(schemaPath, mustExist: true);
         pathGuard.RequireSafeRegularFile(readmePath, mustExist: true);
+        pathGuard.RequireSafeRegularFile(readmeZhCnPath, mustExist: true);
     }
 
     private void RequireSafeBase(bool requireCatalog)

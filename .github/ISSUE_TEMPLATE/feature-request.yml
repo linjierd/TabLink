@@ -1,5 +1,5 @@
-name: "功能建议 / Feature request"
-description: "说明希望 TabLink 解决的问题、使用场景和期望行为。"
+name: "Feature request / 功能建议"
+description: "Describe the problem you want TabLink to solve, the usage scenario and the expected behaviour. / 说明希望 TabLink 解决的问题、使用场景和期望行为。"
 title: "[Feature] "
 labels:
   - "enhancement"
@@ -7,64 +7,66 @@ body:
   - type: markdown
     attributes:
       value: |
+        Suggestions are welcome. This page is public. Do not enter or upload device serial numbers, USB/PnP IDs, IP or MAC addresses, local or network paths, pairing links, tokens, certificates, keys, raw logs, or diagnostic files that you have not reviewed. If a security-related suggestion would disclose a vulnerability, use a private Security Advisory instead.
+
         欢迎提出建议。这里是公开页面：请勿填写或上传设备序列号、USB/PnP ID、IP/MAC 地址、本机或网络路径、配对链接、token、证书、密钥、原始日志或未经检查的诊断文件。安全相关建议如会披露漏洞，请改用私密 Security Advisory。
 
   - type: textarea
     id: problem
     attributes:
-      label: "要解决的问题"
-      description: "请先描述使用场景、目前遇到的限制，以及谁会受益。"
+      label: "Problem to solve / 要解决的问题"
+      description: "Describe the usage scenario, the current limitation and who would benefit. / 请先描述使用场景、目前遇到的限制，以及谁会受益。"
     validations:
       required: true
 
   - type: textarea
     id: proposal
     attributes:
-      label: "期望行为"
-      description: "说明希望 TabLink 提供什么，以及完成后用户会看到怎样的结果。"
+      label: "Expected behaviour / 期望行为"
+      description: "Explain what you want TabLink to provide and what users should see when it is complete. / 说明希望 TabLink 提供什么，以及完成后用户会看到怎样的结果。"
     validations:
       required: true
 
   - type: checkboxes
     id: platforms
     attributes:
-      label: "涉及的平台或范围"
+      label: "Affected platforms or scope / 涉及的平台或范围"
       options:
-        - label: "Windows 主机"
-        - label: "Android 客户端"
-        - label: "浏览器接收端"
-        - label: "Wi-Fi / USB 网络共享"
-        - label: "ADB USB 兼容通道"
-        - label: "显示、编码或性能"
-        - label: "安装、更新或打包"
+        - label: "Windows host / Windows 主机"
+        - label: "Android client / Android 客户端"
+        - label: "Browser receiver / 浏览器接收端"
+        - label: "Wi-Fi or USB tethering / Wi-Fi / USB 网络共享"
+        - label: "ADB USB compatibility channel / ADB USB 兼容通道"
+        - label: "Display, encoding or performance / 显示、编码或性能"
+        - label: "Installation, updates or packaging / 安装、更新或打包"
 
   - type: textarea
     id: environment
     attributes:
-      label: "相关环境（如适用）"
-      description: "如果建议依赖现有行为，请填写 TabLink 版本、Windows/Android 版本和连接方式；不相关可写“不适用”。只写公开型号，不要写唯一标识。"
-      placeholder: "TabLink 版本；OS 版本；连接方式；公开设备型号，或“不适用”"
+      label: "Relevant environment, if applicable / 相关环境（如适用）"
+      description: "If the request depends on existing behaviour, enter the TabLink version, Windows/Android versions and connection method. Write 'Not applicable' if they are not relevant. Enter only public model names, never unique identifiers. / 如果建议依赖现有行为，请填写 TabLink 版本、Windows/Android 版本和连接方式；不相关可写“不适用”。只写公开型号，不要写唯一标识。"
+      placeholder: "TabLink version; OS versions; connection method; public device model; or Not applicable / TabLink 版本；OS 版本；连接方式；公开设备型号，或“不适用”"
     validations:
       required: true
 
   - type: textarea
     id: current_workflow
     attributes:
-      label: "当前操作步骤或替代方案"
-      description: "说明现在如何完成这件事，或列出能重现现有限制的简短步骤。"
+      label: "Current workflow or workaround / 当前操作步骤或替代方案"
+      description: "Explain how you do this now, or list short steps that demonstrate the current limitation. / 说明现在如何完成这件事，或列出能重现现有限制的简短步骤。"
     validations:
       required: true
 
   - type: textarea
     id: additional_context
     attributes:
-      label: "其他背景（可选）"
-      description: "可补充非敏感草图、公开资料或取舍。此表单通常不需要支持包；不要附加原始日志。"
+      label: "Additional context, optional / 其他背景（可选）"
+      description: "You may add non-sensitive sketches, public references or trade-offs. This form normally does not require a support bundle; do not attach raw logs. / 可补充非敏感草图、公开资料或取舍。此表单通常不需要支持包；不要附加原始日志。"
 
   - type: checkboxes
     id: privacy_confirmation
     attributes:
-      label: "公开信息确认"
+      label: "Public information confirmation / 公开信息确认"
       options:
-        - label: "我已确认本 Issue 及附件不含序列号、USB/PnP ID、IP/MAC、路径、配对链接、token、证书、密钥或原始日志；任何附件均由我主动检查并选择。"
+        - label: "I confirm that this Issue and its attachments contain no serial numbers, USB/PnP IDs, IP/MAC addresses, paths, pairing links, tokens, certificates, keys or raw logs. I deliberately reviewed and selected every attachment. / 我已确认本 Issue 及附件不含序列号、USB/PnP ID、IP/MAC、路径、配对链接、token、证书、密钥或原始日志；任何附件均由我主动检查并选择。"
           required: true

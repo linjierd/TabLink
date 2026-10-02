@@ -1,7 +1,9 @@
 # Contributing to TabLink
 
+**English (Singapore)** | [简体中文](CONTRIBUTING.zh-CN.md)
+
 Contributions are welcome. Keep changes focused, include a clear description
-of the behavior change, and add tests when the change affects security,
+of the behaviour change, and add tests when the change affects security,
 device identity, display ownership, transport framing or update validation.
 
 ## Development setup
@@ -39,24 +41,24 @@ personal data, or absolute paths from a contributor's computer. Use obvious
 test values such as `TEST-SERIAL-001` in code and tests. Raw device diagnostics
 belong outside the repository.
 
-## Compatibility catalog
+## Compatibility catalogue
 
-The public compatibility catalog is a curated evidence index, not telemetry and
+The public compatibility catalogue is a curated evidence index, not telemetry and
 not a direct export of an Issue or support bundle. Each report describes one
 specific TabLink version, host, receiver, transport and display configuration.
 Maintain the distinction between requested refresh rate, decoder-submitted
 frames, presentation callbacks and physical presentation measurements. Missing
-evidence must remain explicitly unverified; do not generalize one successful
+evidence must remain explicitly unverified; do not generalise one successful
 configuration to a whole device family.
 
 Only maintainers should transcribe reviewed, public, non-unique facts into
 `compatibility/catalog.json`. Never copy an Issue body, ZIP member, attachment
-name or raw diagnostic output into the catalog. The validator rejects unknown
+name or raw diagnostic output into the catalogue. The validator rejects unknown
 fields and common identity, address, path and token patterns, but automated
 checks cannot prove that a model label is public or that a test claim is true.
 Human review remains required.
 
-After editing the catalog, regenerate the schema and Markdown view, then verify
+After editing the catalogue, regenerate the schema and Markdown view, then verify
 that the committed outputs are byte-for-byte current:
 
 ```powershell
@@ -67,9 +69,21 @@ dotnet run --project .\tools\TabLink.CompatibilityCatalog\TabLink.CompatibilityC
 The tool is offline. It does not open Issues, unpack support bundles, inspect
 devices, or access the network. Review the resulting diff before committing.
 
+## GitHub languages
+
+English (Singapore) is the canonical GitHub language. Keep the matching
+Simplified Chinese mirror complete, and put English before Chinese in Issue and
+pull request templates. When a current version, download, hash, security rule,
+privacy boundary or unverified limitation changes, update both languages in the
+same commit. Run the contract before submitting:
+
+```powershell
+.\tools\Test-GitHubLanguageContract.ps1
+```
+
 ## Licensing
 
 By contributing, you agree that your TabLink-authored contribution is provided
-under the repository's MIT license. Third-party material must keep its original
-license and provenance and must not be copied into the repository merely to
+under the repository's MIT licence. Third-party material must keep its original
+licence and provenance and must not be copied into the repository merely to
 make a local build convenient.

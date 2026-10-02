@@ -11,14 +11,84 @@ public static class CompatibilityCatalogGenerator
     {
         ArgumentNullException.ThrowIfNull(catalog);
         var builder = new StringBuilder();
+        builder.Append("# TabLink Device Compatibility Catalogue\n\n");
+        builder.Append("**English (Singapore)** | [简体中文](README.zh-CN.md)\n\n");
+        builder.Append("This catalogue is generated from `compatibility/catalog.json`; do not edit it by hand. Schema v")
+            .Append(catalog.SchemaVersion).Append("; ").Append(catalog.Reports.Count)
+            .Append(catalog.Reports.Count == 1 ? " reviewed record.\n" : " reviewed records.\n");
+        builder.Append("It contains only manually reviewed, non-unique device model and capability information.\n");
+        builder.Append("Each record demonstrates only the exact software, hardware and connection configuration shown in the table. It does not establish compatibility for other operating-system versions or connection methods on the same model.\n\n");
+        builder.Append("A requested refresh rate is distinct from decode submission, presentation callback and physical presentation rates. An unmeasured physical presentation rate is shown as `—`.\n");
+        builder.Append("The catalogue does not accept automatically collected telemetry, automatic imports from issues or support bundles, device serial numbers, network addresses, USB identifiers or pairing credentials. Automated validation cannot replace a maintainer's review of the public model information and test conclusion.\n");
+        builder.Append("After changing the source data, run `dotnet run --project tools/TabLink.CompatibilityCatalog/TabLink.CompatibilityCatalog.csproj -c Release -- --root . --write`, then commit the source data, schema and both language versions of this page.\n\n");
+        builder.Append("## Reviewed records\n\n");
+        builder.Append("| Date | Result | Host | Receiver | Connection | Display | Refresh rates | Video | Evidence |\n");
+        builder.Append("| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
+        foreach (var report in catalog.Reports)
+        {
+            builder.Append("| ").Append(report.VerifiedOn.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
+            builder.Append(" | `").Append(report.Result).Append("` | ");
+            builder.Append(EscapeCell(report.Host.OperatingSystem)).Append(" / `")
+                .Append(report.Host.Architecture).Append("` / ")
+                .Append(EscapeCell(report.Host.GpuVendor)).Append(' ')
+                .Append(EscapeCell(report.Host.GpuModel));
+            builder.Append(" | `").Append(report.Receiver.Platform).Append("` / ")
+                .Append('`').Append(report.Receiver.Client).Append("` / ")
+                .Append(EscapeCell(report.Receiver.Manufacturer)).Append(' ')
+                .Append(EscapeCell(report.Receiver.Model)).Append(" / ")
+                .Append(EscapeCell(report.Receiver.OperatingSystem)).Append(" / ")
+                .Append(EscapeCell(report.Receiver.Decoder));
+            builder.Append(" | `").Append(report.Connection).Append("` | ")
+                .Append(report.Display.LogicalWidth).Append('×').Append(report.Display.LogicalHeight)
+                .Append(" (native ").Append(report.Display.NativeWidth).Append('×')
+                .Append(report.Display.NativeHeight).Append("; rotation ")
+                .Append(report.Display.RotationQuarterTurns).Append("/4 turn)");
+            builder.Append(" | ").Append(report.Display.ActiveRefreshHz).Append(" Hz (requested ")
+                .Append(report.Display.RequestedRefreshHz).Append(" Hz; supported ")
+                .Append(string.Join('/', report.Display.SupportedRefreshHz)).Append(" Hz)");
+            builder.Append(" | `").Append(report.Video.Codec).Append("` / `")
+                .Append(report.Video.Encoder).Append("` / `").Append(report.Video.Decoder)
+                .Append("`; presentation callback ").Append(FormatDecimal(report.Video.PresentationCallbackFps))
+                .Append(" fps; physical presentation ").Append(FormatPhysicalPresentation(report.Video));
+            builder.Append(" | [").Append(report.Evidence.Document).Append("](../")
+                .Append(report.Evidence.Document).Append(") |\n");
+        }
+
+        builder.Append("\n## Capabilities and limitations\n\n");
+        foreach (var report in catalog.Reports)
+        {
+            builder.Append("### `").Append(report.Id).Append("`\n\n");
+            builder.Append("- TabLink: `").Append(report.TabLink.Version).Append("` / `")
+                .Append(report.TabLink.Channel).Append("` / `").Append(report.TabLink.ReleaseTag).Append("`\n");
+            builder.Append("- Source: `").Append(report.Source).Append("`; commit `")
+                .Append(report.Evidence.SourceCommit).Append("`\n");
+            builder.Append("- Video measurements: requested ").Append(FormatDecimal(report.Video.RequestedFps))
+                .Append(" fps; effective ").Append(FormatDecimal(report.Video.EffectiveFps))
+                .Append(" fps; submitted ").Append(FormatDecimal(report.Video.SubmittedFps))
+                .Append(" fps; presentation callback ").Append(FormatDecimal(report.Video.PresentationCallbackFps))
+                .Append(" fps; physical presentation ").Append(FormatPhysicalPresentation(report.Video)).Append("\n");
+            builder.Append("- Verified: ").Append(InlineCodeList(report.VerifiedFeatures, ", ")).Append("\n");
+            builder.Append("- Limitations: ")
+                .Append(report.Limitations.Count == 0 ? "none recorded" : InlineCodeList(report.Limitations, ", "))
+                .Append("\n\n");
+        }
+
+        return NormalizeLf(builder.ToString()).TrimEnd('\n') + "\n";
+    }
+
+    public static string GenerateReadmeZhCn(CompatibilityCatalogDocument catalog)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        var builder = new StringBuilder();
         builder.Append("# TabLink 设备兼容性目录\n\n");
+        builder.Append("[English (Singapore)](README.md) | **简体中文**\n\n");
         builder.Append("此目录由 `compatibility/catalog.json` 自动生成，请勿手工编辑。Schema v")
             .Append(catalog.SchemaVersion).Append("，当前 ").Append(catalog.Reports.Count).Append(" 条记录。\n");
         builder.Append("只收录经过人工审查的非唯一设备型号和能力信息。\n");
         builder.Append("每条记录只证明表中完全相同的软件、硬件和连接配置；不能据此推断同型号的其他系统版本或连接方式。\n\n");
         builder.Append("请求刷新率不等于解码提交、呈现回调或物理呈现帧率；未测量的物理呈现显示为 `—`。\n");
         builder.Append("目录不接受自动遥测、Issue 或支持包自动导入、设备序列号、网络地址、USB 标识符或配对凭据。自动校验不能代替人工确认公开型号与测试结论。\n");
-        builder.Append("修改源数据后运行 `dotnet run --project tools/TabLink.CompatibilityCatalog/TabLink.CompatibilityCatalog.csproj -c Release -- --root . --write`，并提交源数据、Schema 和本页。\n\n");
+        builder.Append("修改源数据后运行 `dotnet run --project tools/TabLink.CompatibilityCatalog/TabLink.CompatibilityCatalog.csproj -c Release -- --root . --write`，并提交源数据、Schema 和本页的两个语言版本。\n\n");
         builder.Append("## 已审核记录\n\n");
         builder.Append("| 日期 | 结果 | 电脑 | 接收设备 | 连接 | 显示 | 刷新率 | 视频 | 证据 |\n");
         builder.Append("| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
@@ -65,9 +135,9 @@ public static class CompatibilityCatalogGenerator
                 .Append(" fps；提交 ").Append(FormatDecimal(report.Video.SubmittedFps))
                 .Append(" fps；呈现回调 ").Append(FormatDecimal(report.Video.PresentationCallbackFps))
                 .Append(" fps；物理呈现 ").Append(FormatPhysicalPresentation(report.Video)).Append("\n");
-            builder.Append("- 已验证：").Append(InlineCodeList(report.VerifiedFeatures)).Append("\n");
+            builder.Append("- 已验证：").Append(InlineCodeList(report.VerifiedFeatures, "、")).Append("\n");
             builder.Append("- 限制：")
-                .Append(report.Limitations.Count == 0 ? "无已记录限制" : InlineCodeList(report.Limitations))
+                .Append(report.Limitations.Count == 0 ? "无已记录限制" : InlineCodeList(report.Limitations, "、"))
                 .Append("\n\n");
         }
 
@@ -295,8 +365,8 @@ public static class CompatibilityCatalogGenerator
         return result;
     }
 
-    private static string InlineCodeList(IEnumerable<string> values) =>
-        string.Join("、", values.Select(static value => "`" + value + "`"));
+    private static string InlineCodeList(IEnumerable<string> values, string separator) =>
+        string.Join(separator, values.Select(static value => "`" + value + "`"));
 
     private static string EscapeCell(string value) => value
         .Replace("\\", "\\\\", StringComparison.Ordinal)

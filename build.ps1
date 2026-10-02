@@ -2,6 +2,7 @@ param([switch]$SkipAndroid,[string]$OutputDirectory,[switch]$PublicRelease)
 $ErrorActionPreference = 'Stop'
 $projectRoot = $PSScriptRoot
 & (Join-Path $projectRoot 'tools\Test-TabLinkVersionContract.ps1') -RepositoryRoot $projectRoot
+& (Join-Path $projectRoot 'tools\Test-GitHubLanguageContract.ps1') -RepositoryRoot $projectRoot
 & (Join-Path $projectRoot 'tools\Test-AndroidPresentationMeasurement.ps1') -RepositoryRoot $projectRoot
 $versionIdentity = Get-Content -LiteralPath (Join-Path $projectRoot 'eng\version.json') -Raw | ConvertFrom-Json
 $releaseVersion = [string]$versionIdentity.version
@@ -597,11 +598,15 @@ foreach ($legacy in @('LICENSE','README.txt','TABLINK-NOTICE.md')) {
     if (Test-Path -LiteralPath $legacyPath) { Remove-Item -LiteralPath $legacyPath }
 }
 Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md') -Destination $publishRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot 'README.zh-CN.md') -Destination $publishRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot 'AUTHORS.md') -Destination $publishRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot 'AUTHORS.zh-CN.md') -Destination $publishRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot 'LICENSE') -Destination $publishRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot 'THIRD_PARTY_NOTICES.md') -Destination $publishRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot ("RELEASE-$releaseVersion.md")) -Destination $publishRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot ("RELEASE-$releaseVersion.zh-CN.md")) -Destination $publishRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot ("VERIFICATION-$releaseVersion.md")) -Destination $publishRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot ("VERIFICATION-$releaseVersion.zh-CN.md")) -Destination $publishRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot 'eng\version.json') -Destination (Join-Path $publishRoot 'release-version.json')
 if ($PublicRelease) {
     Copy-Item -LiteralPath (Join-Path $projectRoot 'PUBLIC-RELEASE.md') -Destination $publishRoot

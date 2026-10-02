@@ -13,12 +13,12 @@ try
     if (options.Write)
     {
         workspace.WriteGeneratedFiles();
-        Console.WriteLine("Compatibility schema and public catalog were regenerated.");
+        Console.WriteLine("Compatibility schema and both public catalogue languages were regenerated.");
     }
     else
     {
         workspace.CheckGeneratedFiles();
-        Console.WriteLine("Compatibility catalog, schema and public catalog are valid and current.");
+        Console.WriteLine("Compatibility source, schema and both public catalogue languages are valid and current.");
     }
 
     return 0;
@@ -88,7 +88,7 @@ internal sealed record CommandLineOptions(string RepositoryRoot, bool Write, boo
     {
         writer.WriteLine("TabLink.CompatibilityCatalog [--root <repository-root>] [--check | --write]");
         writer.WriteLine("  --check  Validate compatibility/catalog.json and require generated files to match (default).");
-        writer.WriteLine("  --write  Validate the catalog, then atomically regenerate its schema and README.");
+        writer.WriteLine("  --write  Validate the catalogue, then atomically regenerate its schema and both README languages.");
     }
 }
 

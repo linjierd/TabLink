@@ -1,5 +1,7 @@
 # Security policy
 
+**English (Singapore)** | [简体中文](SECURITY.zh-CN.md)
+
 TabLink handles administrator elevation, a display driver, USB device identity,
 TLS pairing, input forwarding and signed software updates. Do not file a public
 issue that contains an exploit or any device serial, USB/PnP ID, IP/MAC address,

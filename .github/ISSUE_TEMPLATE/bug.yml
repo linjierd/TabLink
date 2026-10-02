@@ -1,5 +1,5 @@
-name: "缺陷报告 / Bug report"
-description: "报告可以稳定复现的功能错误、崩溃或异常行为。"
+name: "Bug report / 缺陷报告"
+description: "Report a consistently reproducible functional error, crash or unexpected behaviour. / 报告可以稳定复现的功能错误、崩溃或异常行为。"
 title: "[Bug] "
 labels:
   - "bug"
@@ -7,94 +7,107 @@ body:
   - type: markdown
     attributes:
       value: |
+        Thank you for reporting an issue. This page is public. Do not enter or upload device serial numbers, USB/PnP IDs, IP or MAC addresses, local or network paths, pairing links, tokens, certificates, keys, raw logs, or diagnostic files that you have not reviewed. Report security vulnerabilities through the repository's private Security Advisory instead.
+
         感谢报告问题。这里是公开页面。请勿填写或上传设备序列号、USB/PnP ID、IP/MAC 地址、本机或网络路径、配对链接、token、证书、密钥、原始日志或未经检查的诊断文件。安全漏洞请改用仓库的私密 Security Advisory。
 
   - type: input
     id: tablink_version
     attributes:
-      label: "TabLink 版本与构建"
-      description: "填写 Windows 端和 Android 端显示的版本；不知道的一端可写“不知道”。"
-      placeholder: "例如：Windows 0.8.9 Preview 1；Android 0.8.9 / build 21"
+      label: "TabLink version and build / TabLink 版本与构建"
+      description: "Enter the versions shown by the Windows and Android apps; write 'Unknown' for either one if needed. / 填写 Windows 端和 Android 端显示的版本；不知道的一端可写“不知道”。"
+      placeholder: "Example: Windows 0.8.9 Preview 1; Android 0.8.9 / build 21 / 例如：Windows 0.8.9 Preview 1；Android 0.8.9 / build 21"
     validations:
       required: true
 
   - type: input
     id: windows
     attributes:
-      label: "Windows 版本"
-      description: "填写版本、系统 build 和架构，不要包含用户名或路径。"
-      placeholder: "例如：Windows 11 24H2，build 26100，x64"
+      label: "Windows version / Windows 版本"
+      description: "Enter the version, OS build and architecture without including a user name or path. / 填写版本、系统 build 和架构，不要包含用户名或路径。"
+      placeholder: "Example: Windows 11 24H2, build 26100, x64 / 例如：Windows 11 24H2，build 26100，x64"
     validations:
       required: true
 
   - type: input
     id: android
     attributes:
-      label: "Android 设备与系统"
-      description: "只填写厂商、公开型号、Android 版本/API；不要填写序列号或 USB/PnP ID。没有使用 Android 客户端时写“不适用”。"
-      placeholder: "例如：某厂商公开型号，Android 14 / API 34"
+      label: "Android device and system / Android 设备与系统"
+      description: "Enter only the manufacturer, public model and Android version/API. Do not enter a serial number or USB/PnP ID. Write 'Not applicable' if the Android app was not used. / 只填写厂商、公开型号、Android 版本/API；不要填写序列号或 USB/PnP ID。没有使用 Android 客户端时写“不适用”。"
+      placeholder: "Example: public model from the manufacturer, Android 14 / API 34 / 例如：某厂商公开型号，Android 14 / API 34"
     validations:
       required: true
 
   - type: dropdown
     id: connection
     attributes:
-      label: "连接方式"
+      label: "Connection method / 连接方式"
       options:
-        - "Wi-Fi 局域网"
-        - "USB 网络共享（免调试）"
-        - "ADB USB 调试兼容通道"
-        - "浏览器接收端"
-        - "尚未建立连接 / 不适用"
-        - "其他"
+        - "Wi-Fi local network / Wi-Fi 局域网"
+        - "USB tethering (no debugging required) / USB 网络共享（免调试）"
+        - "ADB USB debugging compatibility channel / ADB USB 调试兼容通道"
+        - "Browser receiver / 浏览器接收端"
+        - "Connection not established or not applicable / 尚未建立连接 / 不适用"
+        - "Other / 其他"
     validations:
       required: true
 
   - type: textarea
     id: reproduction
     attributes:
-      label: "可复现步骤"
-      description: "从启动 TabLink 前的状态写起，列出最短、可重复的操作顺序。"
+      label: "Steps to reproduce / 可复现步骤"
+      description: "Start with the state before launching TabLink, then list the shortest repeatable sequence of actions. / 从启动 TabLink 前的状态写起，列出最短、可重复的操作顺序。"
       placeholder: |
-        1. …
-        2. …
-        3. …
+        1. First action
+        2. Next action
+        3. Observed result
+
+        1. 第一步操作
+        2. 后续操作
+        3. 观察到的结果
     validations:
       required: true
 
   - type: textarea
     id: expected_actual
     attributes:
-      label: "问题概述、预期结果与实际结果"
-      description: "说明哪个功能发生了什么、何时开始、你原本预期什么，以及界面上实际可见的结果。只写安全的错误摘要，不要粘贴原始日志、堆栈或完整命令输出。"
-      placeholder: "问题概述：…\n预期结果：…\n实际结果：…"
+      label: "Issue summary, expected result and actual result / 问题概述、预期结果与实际结果"
+      description: "Explain what happened, which feature was affected, when it started, what you expected, and what was visible in the interface. Include only a safe error summary; do not paste raw logs, stack traces or complete command output. / 说明哪个功能发生了什么、何时开始、你原本预期什么，以及界面上实际可见的结果。只写安全的错误摘要，不要粘贴原始日志、堆栈或完整命令输出。"
+      placeholder: |
+        Issue summary: …
+        Expected result: …
+        Actual result: …
+
+        问题概述：…
+        预期结果：…
+        实际结果：…
     validations:
       required: true
 
   - type: dropdown
     id: frequency
     attributes:
-      label: "复现频率"
+      label: "Reproduction frequency / 复现频率"
       options:
-        - "每次都发生"
-        - "经常发生"
-        - "偶尔发生"
-        - "只发生过一次"
-        - "无法再次复现"
+        - "Every time / 每次都发生"
+        - "Often / 经常发生"
+        - "Occasionally / 偶尔发生"
+        - "Only once / 只发生过一次"
+        - "Cannot reproduce again / 无法再次复现"
     validations:
       required: true
 
   - type: textarea
     id: support_bundle
     attributes:
-      label: "可选：用户主动附加的脱敏支持包"
-      description: "只有在你主动选择、已在 TabLink 中预览并再次检查内容后，才可把“导出脱敏支持包”生成的 ZIP 拖到这里。可以留空；TabLink 不会自动上传或附加文件。不要改为上传原始日志。"
-      placeholder: "可将已检查的脱敏支持包拖入此处，或留空。"
+      label: "Optional: user-selected redacted support bundle / 可选：用户主动附加的脱敏支持包"
+      description: "Attach the ZIP generated by 'Export redacted support bundle' only after you have deliberately selected it, previewed it in TabLink and reviewed its contents again. You may leave this blank; TabLink will not upload or attach files automatically. Do not upload raw logs instead. / 只有在你主动选择、已在 TabLink 中预览并再次检查内容后，才可把“导出脱敏支持包”生成的 ZIP 拖到这里。可以留空；TabLink 不会自动上传或附加文件。不要改为上传原始日志。"
+      placeholder: "Drop a reviewed, redacted support bundle here, or leave this blank. / 可将已检查的脱敏支持包拖入此处，或留空。"
 
   - type: checkboxes
     id: privacy_confirmation
     attributes:
-      label: "公开信息确认"
+      label: "Public information confirmation / 公开信息确认"
       options:
-        - label: "我已确认本 Issue 及附件不含序列号、USB/PnP ID、IP/MAC、路径、配对链接、token、证书、密钥或原始日志；支持包如有附加，是我主动检查并选择的。"
+        - label: "I confirm that this Issue and its attachments contain no serial numbers, USB/PnP IDs, IP/MAC addresses, paths, pairing links, tokens, certificates, keys or raw logs. If I attached a support bundle, I deliberately reviewed and selected it. / 我已确认本 Issue 及附件不含序列号、USB/PnP ID、IP/MAC、路径、配对链接、token、证书、密钥或原始日志；支持包如有附加，是我主动检查并选择的。"
           required: true

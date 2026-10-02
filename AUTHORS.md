@@ -1,8 +1,11 @@
-# TabLink 作者
+# TabLink authors
 
-TabLink 由 **张林杰（Jey）** 创建并维护。
+**English (Singapore)** | [简体中文](AUTHORS.zh-CN.md)
 
-- GitHub：[@linjierd](https://github.com/linjierd)
-- 博客：[Linjie / 开发笔记](https://linjie.space/)
+TabLink was created and is maintained by **张林杰 (Jey)**.
 
-其他贡献者保留其各自提交和贡献记录中的署名。
+- GitHub: [@linjierd](https://github.com/linjierd)
+- Blog: [Linjie / Development Notes](https://linjie.space/)
+
+Other contributors retain their attribution in their respective commits and
+contribution history.

@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
-  - name: "安全漏洞 / Security vulnerability"
+  - name: "Security vulnerability / 安全漏洞"
     url: "https://github.com/linjierd/TabLink/security/advisories/new"
-    about: "请通过私密 Security Advisory 报告漏洞，不要在公开 Issue 中披露利用方法、身份或配对材料。"
+    about: "Report vulnerabilities through a private Security Advisory. Do not disclose exploit details, identity information or pairing material in a public Issue. / 请通过私密 Security Advisory 报告漏洞，不要在公开 Issue 中披露利用方法、身份或配对材料。"

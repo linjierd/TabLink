@@ -202,9 +202,13 @@ try
         var report = Validate(ToBytes(measured)).Reports.Single();
         Check(report.Video.PhysicalPresentationFps == 89.7m, "physical presentation FPS parsed");
         Check(report.Video.PhysicalPresentationMethod == "external-camera", "physical method parsed");
-        var readme = CompatibilityCatalogGenerator.GenerateReadme(new CompatibilityCatalogDocument(1, [report]));
-        Check(readme.Contains("物理呈现 89.7 fps (`external-camera`)", StringComparison.Ordinal),
-            "physical measurement is labeled with its method");
+        var catalog = new CompatibilityCatalogDocument(1, [report]);
+        var readme = CompatibilityCatalogGenerator.GenerateReadme(catalog);
+        var readmeZhCn = CompatibilityCatalogGenerator.GenerateReadmeZhCn(catalog);
+        Check(readme.Contains("physical presentation 89.7 fps (`external-camera`)", StringComparison.Ordinal),
+            "English physical measurement is labelled with its method");
+        Check(readmeZhCn.Contains("物理呈现 89.7 fps (`external-camera`)", StringComparison.Ordinal),
+            "Chinese physical measurement is labelled with its method");
     });
 
     Run("feature and limitation claims match the measured session", () =>
@@ -359,23 +363,48 @@ try
             "token replay limitation requires registration");
     });
 
-    Run("README and JSON Schema generation is deterministic", () =>
+    Run("both README languages and JSON Schema generation are deterministic", () =>
     {
         var catalog = Validate(CreateCatalogBytes());
         var readmeOne = CompatibilityCatalogGenerator.GenerateReadme(catalog);
         var readmeTwo = CompatibilityCatalogGenerator.GenerateReadme(catalog);
-        Check(readmeOne == readmeTwo, "README output repeats byte-for-byte");
-        Check(readmeOne.EndsWith('\n') && !readmeOne.Contains('\r'), "README uses final LF and no CR");
-        Check(readmeOne.Contains("W202DS", StringComparison.Ordinal), "README contains reviewed public model");
-        Check(readmeOne.Contains("每条记录只证明", StringComparison.Ordinal), "README states evidence scope");
-        Check(readmeOne.Contains("Schema v1，当前 1 条记录", StringComparison.Ordinal),
-            "README reports its schema version and record count");
-        Check(readmeOne.Contains("请求刷新率不等于", StringComparison.Ordinal),
-            "README separates requested refresh from measured rates");
-        Check(readmeOne.Contains("呈现回调 90 fps", StringComparison.Ordinal),
-            "README names the callback measurement");
-        Check(readmeOne.Contains("物理呈现 —", StringComparison.Ordinal),
-            "README does not imply an unmeasured physical frame rate");
+        var readmeZhCnOne = CompatibilityCatalogGenerator.GenerateReadmeZhCn(catalog);
+        var readmeZhCnTwo = CompatibilityCatalogGenerator.GenerateReadmeZhCn(catalog);
+        Check(readmeOne == readmeTwo, "English README output repeats byte-for-byte");
+        Check(readmeZhCnOne == readmeZhCnTwo, "Chinese README output repeats byte-for-byte");
+        Check(readmeOne.EndsWith('\n') && !readmeOne.Contains('\r'), "English README uses final LF and no CR");
+        Check(readmeZhCnOne.EndsWith('\n') && !readmeZhCnOne.Contains('\r'),
+            "Chinese README uses final LF and no CR");
+        Check(readmeOne.Contains("W202DS", StringComparison.Ordinal) &&
+              readmeZhCnOne.Contains("W202DS", StringComparison.Ordinal),
+            "both README languages contain the reviewed public model");
+        Check(readmeOne.Contains("Each record demonstrates only the exact", StringComparison.Ordinal),
+            "English README states evidence scope");
+        Check(readmeZhCnOne.Contains("每条记录只证明", StringComparison.Ordinal),
+            "Chinese README states evidence scope");
+        Check(readmeOne.Contains("Schema v1; 1 reviewed record", StringComparison.Ordinal),
+            "English README reports its schema version and record count");
+        Check(readmeZhCnOne.Contains("Schema v1，当前 1 条记录", StringComparison.Ordinal),
+            "Chinese README reports its schema version and record count");
+        Check(readmeOne.Contains("A requested refresh rate is distinct", StringComparison.Ordinal),
+            "English README separates requested refresh from measured rates");
+        Check(readmeZhCnOne.Contains("请求刷新率不等于", StringComparison.Ordinal),
+            "Chinese README separates requested refresh from measured rates");
+        Check(readmeOne.Contains("presentation callback 90 fps", StringComparison.Ordinal),
+            "English README names the callback measurement");
+        Check(readmeZhCnOne.Contains("呈现回调 90 fps", StringComparison.Ordinal),
+            "Chinese README names the callback measurement");
+        Check(readmeOne.Contains("physical presentation —", StringComparison.Ordinal),
+            "English README does not imply an unmeasured physical frame rate");
+        Check(readmeZhCnOne.Contains("物理呈现 —", StringComparison.Ordinal),
+            "Chinese README does not imply an unmeasured physical frame rate");
+        Check(readmeOne.Contains("**English (Singapore)** | [简体中文](README.zh-CN.md)", StringComparison.Ordinal) &&
+              readmeZhCnOne.Contains("[English (Singapore)](README.md) | **简体中文**", StringComparison.Ordinal),
+            "both README languages provide a reciprocal language switch");
+        Check(readmeOne.Contains("device serial numbers, network addresses, USB identifiers or pairing credentials",
+                  StringComparison.Ordinal) &&
+              readmeZhCnOne.Contains("设备序列号、网络地址、USB 标识符或配对凭据", StringComparison.Ordinal),
+            "both README languages preserve the private-identifier exclusion");
 
         var schemaOne = CompatibilityCatalogGenerator.GenerateSchemaJson();
         var schemaTwo = CompatibilityCatalogGenerator.GenerateSchemaJson();
@@ -396,18 +425,22 @@ try
         var catalogPath = Path.Combine(root, "compatibility", "catalog.json");
         var schemaPath = Path.Combine(root, "compatibility", "catalog.schema.json");
         var readmePath = Path.Combine(root, "compatibility", "README.md");
+        var readmeZhCnPath = Path.Combine(root, "compatibility", "README.zh-CN.md");
         File.WriteAllBytes(catalogPath, CreateCatalogBytes());
         var workspace = new CompatibilityCatalogWorkspace(root);
         Reject<InvalidDataException>(workspace.CheckGeneratedFiles, "missing generated files rejected");
 
         File.WriteAllText(schemaPath, "old schema", new UTF8Encoding(false));
         File.WriteAllText(readmePath, "old readme", new UTF8Encoding(false));
+        File.WriteAllText(readmeZhCnPath, "old Chinese readme", new UTF8Encoding(false));
         workspace.WriteGeneratedFiles();
         workspace.CheckGeneratedFiles();
         Check(!File.ReadAllBytes(schemaPath).AsSpan().StartsWith(new byte[] { 0xEF, 0xBB, 0xBF }),
             "schema is UTF-8 without BOM");
         Check(!File.ReadAllBytes(readmePath).AsSpan().StartsWith(new byte[] { 0xEF, 0xBB, 0xBF }),
-            "README is UTF-8 without BOM");
+            "English README is UTF-8 without BOM");
+        Check(!File.ReadAllBytes(readmeZhCnPath).AsSpan().StartsWith(new byte[] { 0xEF, 0xBB, 0xBF }),
+            "Chinese README is UTF-8 without BOM");
         Check(!Directory.EnumerateFiles(Path.Combine(root, "compatibility"), ".*.tmp").Any(),
             "atomic write leaves no controlled temporary files");
 
@@ -415,17 +448,24 @@ try
         Reject<InvalidDataException>(workspace.CheckGeneratedFiles, "schema drift rejected");
         workspace.WriteGeneratedFiles();
         File.AppendAllText(readmePath, "drift", new UTF8Encoding(false));
-        Reject<InvalidDataException>(workspace.CheckGeneratedFiles, "README drift rejected");
+        Reject<InvalidDataException>(workspace.CheckGeneratedFiles, "English README drift rejected");
+        workspace.WriteGeneratedFiles();
+        File.AppendAllText(readmeZhCnPath, "drift", new UTF8Encoding(false));
+        Reject<InvalidDataException>(workspace.CheckGeneratedFiles, "Chinese README drift rejected");
         workspace.WriteGeneratedFiles();
         workspace.CheckGeneratedFiles();
 
         File.WriteAllText(schemaPath, "preserve schema", new UTF8Encoding(false));
         File.WriteAllText(readmePath, "preserve readme", new UTF8Encoding(false));
+        File.WriteAllText(readmeZhCnPath, "preserve Chinese readme", new UTF8Encoding(false));
         var validCatalog = File.ReadAllBytes(catalogPath);
         File.WriteAllText(catalogPath, "{}", new UTF8Encoding(false));
         Reject<InvalidDataException>(workspace.WriteGeneratedFiles, "invalid source prevents generation");
         Check(File.ReadAllText(schemaPath) == "preserve schema", "schema remains unchanged after validation failure");
-        Check(File.ReadAllText(readmePath) == "preserve readme", "README remains unchanged after validation failure");
+        Check(File.ReadAllText(readmePath) == "preserve readme",
+            "English README remains unchanged after validation failure");
+        Check(File.ReadAllText(readmeZhCnPath) == "preserve Chinese readme",
+            "Chinese README remains unchanged after validation failure");
         File.WriteAllBytes(catalogPath, validCatalog);
         workspace.WriteGeneratedFiles();
         workspace.CheckGeneratedFiles();
@@ -436,6 +476,7 @@ try
         var catalogPath = Path.Combine(root, "compatibility", "catalog.json");
         var schemaPath = Path.Combine(root, "compatibility", "catalog.schema.json");
         var readmePath = Path.Combine(root, "compatibility", "README.md");
+        var readmeZhCnPath = Path.Combine(root, "compatibility", "README.zh-CN.md");
         File.WriteAllBytes(catalogPath, CreateCatalogBytes());
         new CompatibilityCatalogWorkspace(root).WriteGeneratedFiles();
 
@@ -465,7 +506,19 @@ try
         var readmeWorkspace = new CompatibilityCatalogWorkspace(root, readmeGuard);
         Reject<InvalidDataException>(readmeWorkspace.WriteGeneratedFiles, "README target reparse boundary rejected");
         Check(File.ReadAllBytes(readmePath).SequenceEqual(readmeBefore),
-            "README target remains unchanged after path rejection");
+            "English README target remains unchanged after path rejection");
+
+        var schemaBeforeChineseRejection = File.ReadAllBytes(schemaPath);
+        var readmeBeforeChineseRejection = File.ReadAllBytes(readmePath);
+        var readmeZhCnBefore = File.ReadAllBytes(readmeZhCnPath);
+        var readmeZhCnGuard = new RecordingPathGuard(rejectedFile: readmeZhCnPath);
+        var readmeZhCnWorkspace = new CompatibilityCatalogWorkspace(root, readmeZhCnGuard);
+        Reject<InvalidDataException>(readmeZhCnWorkspace.WriteGeneratedFiles,
+            "Chinese README target reparse boundary rejected");
+        Check(File.ReadAllBytes(schemaPath).SequenceEqual(schemaBeforeChineseRejection) &&
+              File.ReadAllBytes(readmePath).SequenceEqual(readmeBeforeChineseRejection) &&
+              File.ReadAllBytes(readmeZhCnPath).SequenceEqual(readmeZhCnBefore),
+            "all generated targets remain unchanged when the Chinese README fails preflight");
 
         var temporaryGuard = new RecordingPathGuard(rejectTemporaryFile: true);
         var temporaryWorkspace = new CompatibilityCatalogWorkspace(root, temporaryGuard);

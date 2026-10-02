@@ -17,6 +17,9 @@ jobs:
       - name: Verify cross-platform version contract
         shell: pwsh
         run: .\tools\Test-TabLinkVersionContract.ps1
+      - name: Verify GitHub language contract
+        shell: pwsh
+        run: .\tools\Test-GitHubLanguageContract.ps1
       - name: Verify Android presentation measurement contract
         shell: pwsh
         run: .\tools\Test-AndroidPresentationMeasurement.ps1
@@ -51,6 +54,9 @@ jobs:
       - name: Verify cross-platform version contract
         shell: pwsh
         run: .\tools\Test-TabLinkVersionContract.ps1
+      - name: Verify GitHub language contract
+        shell: pwsh
+        run: .\tools\Test-GitHubLanguageContract.ps1
       - name: Set up JDK 17
         uses: actions/setup-java@v6
         with:

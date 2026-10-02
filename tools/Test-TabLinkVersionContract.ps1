@@ -97,14 +97,20 @@ if ($androidVersionCode -ne [int64]$versionIdentity.androidVersionCode) {
 }
 
 $releaseDocumentPath = Join-Path $resolvedRepositoryRoot ("RELEASE-$releaseVersion.md")
+$releaseChineseDocumentPath = Join-Path $resolvedRepositoryRoot ("RELEASE-$releaseVersion.zh-CN.md")
 $verificationDocumentPath = Join-Path $resolvedRepositoryRoot ("VERIFICATION-$releaseVersion.md")
+$verificationChineseDocumentPath = Join-Path $resolvedRepositoryRoot ("VERIFICATION-$releaseVersion.zh-CN.md")
 $rootReadmePath = Join-Path $resolvedRepositoryRoot 'README.md'
+$rootChineseReadmePath = Join-Path $resolvedRepositoryRoot 'README.zh-CN.md'
 $androidReadmePath = Join-Path $resolvedRepositoryRoot 'android\README.md'
 $publicReleasePath = Join-Path $resolvedRepositoryRoot 'PUBLIC-RELEASE.md'
 $currentDocumentationPaths = @(
     $releaseDocumentPath,
+    $releaseChineseDocumentPath,
     $verificationDocumentPath,
+    $verificationChineseDocumentPath,
     $rootReadmePath,
+    $rootChineseReadmePath,
     $androidReadmePath,
     $publicReleasePath
 )
@@ -130,24 +136,56 @@ foreach ($documentPath in $currentDocumentationPaths) {
 
 $previewLabel = "Preview $($versionIdentity.previewNumber)"
 if ($documentation[$releaseDocumentPath] -cnotmatch ('(?m)^# TabLink ' + [regex]::Escape($releaseVersion) +
-        ' ' + [regex]::Escape($previewLabel) + '[：:].+$')) {
+        ' ' + [regex]::Escape($previewLabel) + ': .+$')) {
     throw 'Current release document heading does not match eng\version.json.'
 }
+if ($documentation[$releaseChineseDocumentPath] -cnotmatch ('(?m)^# TabLink ' + [regex]::Escape($releaseVersion) +
+        ' ' + [regex]::Escape($previewLabel) + '：.+$')) {
+    throw 'Current Chinese release document heading does not match eng\version.json.'
+}
 if ($documentation[$verificationDocumentPath] -cnotmatch ('(?m)^# TabLink ' + [regex]::Escape($releaseVersion) +
-        ' ' + [regex]::Escape($previewLabel) + ' 验证记录$')) {
+        ' ' + [regex]::Escape($previewLabel) + ' verification record$')) {
     throw 'Current verification document heading does not match eng\version.json.'
 }
-$candidateIdentityPattern = '当前是 \*\*' + [regex]::Escape($releaseVersion) +
-    ' ' + [regex]::Escape($previewLabel) + ' 源码候选\*\*'
-$publishedIdentityPattern = 'GitHub 已发布 \*\*' + [regex]::Escape($releaseVersion) +
+if ($documentation[$verificationChineseDocumentPath] -cnotmatch ('(?m)^# TabLink ' + [regex]::Escape($releaseVersion) +
+        ' ' + [regex]::Escape($previewLabel) + ' 验证记录$')) {
+    throw 'Current Chinese verification document heading does not match eng\version.json.'
+}
+$englishPublishedIdentityPattern = 'The current public prerelease is \*\*' + [regex]::Escape($releaseVersion) +
+    ' ' + [regex]::Escape($previewLabel) + '\*\*\.'
+$englishAndroidIdentityPattern = 'the Android identity is `' + [regex]::Escape($releaseVersion) +
+    '` / build `' + $androidVersionCode + '`'
+if ($documentation[$rootReadmePath] -cnotmatch $englishPublishedIdentityPattern -or
+    $documentation[$rootReadmePath] -cnotmatch $englishAndroidIdentityPattern) {
+    throw 'English root README current release identity does not match eng\version.json.'
+}
+$chinesePublishedIdentityPattern = 'GitHub 已发布 \*\*' + [regex]::Escape($releaseVersion) +
     ' ' + [regex]::Escape($previewLabel) + '\*\*'
-$hasCurrentReleaseIdentity =
-    $documentation[$rootReadmePath] -cmatch $candidateIdentityPattern -or
-    $documentation[$rootReadmePath] -cmatch $publishedIdentityPattern
-if (-not $hasCurrentReleaseIdentity -or
-    $documentation[$rootReadmePath] -cnotmatch ('Android 身份为 \*\*' + [regex]::Escape($releaseVersion) +
-        ' / build ' + $androidVersionCode + '\*\*')) {
-    throw 'Root README current source identity does not match eng\version.json.'
+$chineseAndroidIdentityPattern = 'Android 身份为 \*\*' + [regex]::Escape($releaseVersion) +
+    ' / build ' + $androidVersionCode + '\*\*'
+if ($documentation[$rootChineseReadmePath] -cnotmatch $chinesePublishedIdentityPattern -or
+    $documentation[$rootChineseReadmePath] -cnotmatch $chineseAndroidIdentityPattern) {
+    throw 'Chinese root README current release identity does not match eng\version.json.'
+}
+
+$languagePairs = @(
+    @($rootReadmePath, $rootChineseReadmePath, 'README.zh-CN.md', 'README.md'),
+    @($releaseDocumentPath, $releaseChineseDocumentPath, "RELEASE-$releaseVersion.zh-CN.md", "RELEASE-$releaseVersion.md"),
+    @($verificationDocumentPath, $verificationChineseDocumentPath,
+        "VERIFICATION-$releaseVersion.zh-CN.md", "VERIFICATION-$releaseVersion.md")
+)
+foreach ($pair in $languagePairs) {
+    $englishPath, $chinesePath, $chineseName, $englishName = $pair
+    $englishText = $documentation[$englishPath]
+    $chineseText = $documentation[$chinesePath]
+    if ($englishText -cnotmatch ('\*\*English \(Singapore\)\*\*.*\[简体中文\]\(' +
+            [regex]::Escape($chineseName) + '\)')) {
+        throw "English current document must place the en-SG language choice before its Chinese link: $englishPath"
+    }
+    if ($chineseText -cnotmatch ('\[English \(Singapore\)\]\(' + [regex]::Escape($englishName) +
+            '\).*\*\*简体中文\*\*')) {
+        throw "Chinese current document must link back to the en-SG default before its Chinese choice: $chinesePath"
+    }
 }
 if ($documentation[$androidReadmePath] -cnotmatch ('(?m)^# TabLink Android 客户端 ' +
         [regex]::Escape($releaseVersion) + ' ' + [regex]::Escape($previewLabel) + ' 源码候选$')) {
