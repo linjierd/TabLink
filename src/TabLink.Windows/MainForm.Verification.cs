@@ -1,3 +1,5 @@
+using TabLink.Core;
+
 namespace TabLink.Windows;
 
 internal sealed partial class MainForm
@@ -15,8 +17,39 @@ internal sealed partial class MainForm
         foreach(var view in views)RenderView(directory,view.Name,view.Tab,view.Mode,new Size(1100,900));
         foreach(var view in views)RenderView(directory,"default-"+view.Name,view.Tab,view.Mode,new Size(960,680));
         foreach(var view in views)RenderView(directory,"compact-"+view.Name,view.Tab,view.Mode,new Size(760,640));
+        RenderView(directory,"compact-settings-author-custom",1,-1,new Size(760,640),form=>
+        {
+            var custom=new AuthorFooterPreferences
+            {
+                Enabled=true,
+                AuthorText="作者：这是一段用于验证窄窗口与高 DPI 自动换行的较长自定义显示名称（团队 / 社区维护者）",
+                GitHubLabel="项目主页、源代码和问题反馈",
+                GitHubUrl="https://github.com/example/example-project",
+                BlogLabel="博客、教程与完整使用说明",
+                BlogUrl="https://example.com/tablink/guide"
+            };
+            form.PopulateAuthorFooterEditors(custom);form.ApplyAuthorFooterPreferences(custom);
+        });
+        RenderView(directory,"compact-footer-hidden",0,0,new Size(760,640),form=>
+        {
+            var hidden=AuthorFooterPreferences.CreateDefault();hidden.Enabled=false;
+            form.PopulateAuthorFooterEditors(hidden);form.ApplyAuthorFooterPreferences(hidden);
+        });
+        RenderView(directory,"compact-footer-maximum",0,0,new Size(760,640),form=>
+        {
+            var maximum=new AuthorFooterPreferences
+            {
+                Enabled=true,
+                AuthorText=new string('作',AuthorFooterPreferences.MaximumAuthorTextLength),
+                GitHubLabel=new string('G',AuthorFooterPreferences.MaximumLinkLabelLength),
+                GitHubUrl="https://github.com/example/example-project",
+                BlogLabel=new string('博',AuthorFooterPreferences.MaximumLinkLabelLength),
+                BlogUrl="https://example.com/tablink/guide"
+            };
+            form.PopulateAuthorFooterEditors(maximum);form.ApplyAuthorFooterPreferences(maximum);
+        });
     }
-    static void RenderView(string directory,string name,int tab,int mode,Size size)
+    static void RenderView(string directory,string name,int tab,int mode,Size size,Action<MainForm>? configure=null)
     {
         using var form=new MainForm(verification:true);
         try
@@ -25,6 +58,7 @@ internal sealed partial class MainForm
             form.Size=size;form.ShowInTaskbar=false;form.Opacity=0;form.Show();Application.DoEvents();
             form.mainTabs.SelectedIndex=tab;
             if(mode>=0)form.connectionMode.SelectedIndex=mode;
+            configure?.Invoke(form);
             PrepareView(form);Save(form,directory,name);
         }
         finally{form.closing=true;form.Close();}

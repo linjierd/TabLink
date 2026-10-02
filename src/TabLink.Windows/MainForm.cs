@@ -105,6 +105,7 @@ internal sealed partial class MainForm : Form
             var videoPreferences=qualityPreferences.Load();
             selectedQuality=videoPreferences.Quality;selectedEncoder=videoPreferences.Encoder;
             allowSoftwareFallback=videoPreferences.AllowSoftwareFallback;
+            authorFooterPreferences=authorFooterStore.Load();
         }
         BuildUi();
         var showWindow=new ToolStripMenuItem("打开主窗口");
@@ -232,7 +233,7 @@ internal sealed partial class MainForm : Form
     {
         var root=new TableLayoutPanel{Dock=DockStyle.Fill,Padding=new Padding(16),ColumnCount=1,RowCount=4};
         root.RowStyles.Add(new RowStyle(SizeType.Absolute,96));root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent,100));root.RowStyles.Add(new RowStyle(SizeType.Absolute,48));Controls.Add(root);
+        root.RowStyles.Add(new RowStyle(SizeType.Percent,100));root.RowStyles.Add(new RowStyle(SizeType.AutoSize));Controls.Add(root);
         var header=new FlowLayoutPanel{Dock=DockStyle.Top,AutoSize=true,MinimumSize=new Size(0,88),FlowDirection=FlowDirection.TopDown,WrapContents=false,Margin=new Padding(0,0,0,8)};
         header.Controls.Add(new Label{Text="TabLink",Font=new Font("Segoe UI",22,FontStyle.Bold),AutoSize=true,ForeColor=accent});
         header.Controls.Add(new Label{Text="让手机、平板成为电脑的独立扩展桌面",AutoSize=true,ForeColor=muted});root.Controls.Add(header,0,0);
@@ -241,7 +242,7 @@ internal sealed partial class MainForm : Form
         state.SizeChanged+=(_,_)=>{var width=Math.Max(240,state.ClientSize.Width-state.Padding.Horizontal-12);status.MaximumSize=metrics.MaximumSize=new Size(width,0);};
         root.Controls.Add(mainTabs,0,2);
         var connectionPage=new TabPage("连接副屏"){BackColor=Color.White,Padding=new Padding(12)};
-        var exclusions=new TabPage("设备保护"){BackColor=Color.White,Padding=new Padding(12),AutoScroll=true};
+        var exclusions=new TabPage("设置"){BackColor=Color.White,Padding=new Padding(12),AutoScroll=true};
         var support=new TabPage("检测与日志"){BackColor=Color.White,Padding=new Padding(10)};
         mainTabs.TabPages.AddRange([connectionPage,exclusions,support]);
 
@@ -289,33 +290,27 @@ internal sealed partial class MainForm : Form
             var width=Math.Max(280,connectionPage.ClientSize.Width-connectionPage.Padding.Horizontal-28);
             connectionModeHint.MaximumSize=help.MaximumSize=new Size(width,0);
         };
-        var exclusionLayout=new TableLayoutPanel{Dock=DockStyle.Top,AutoSize=true,ColumnCount=1,RowCount=4};
-        for(var i=0;i<exclusionLayout.RowCount;i++)exclusionLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));exclusions.Controls.Add(exclusionLayout);
+        var settingsLayout=new TableLayoutPanel{Dock=DockStyle.Top,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,ColumnCount=1,RowCount=2,Margin=Padding.Empty};
+        settingsLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));settingsLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));exclusions.Controls.Add(settingsLayout);
+        settingsLayout.Controls.Add(BuildAuthorFooterSettingsPanel(),0,0);
+        var protectionGroup=new GroupBox{Text="设备保护",Dock=DockStyle.Top,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,Padding=new Padding(12),Margin=Padding.Empty};
+        var exclusionLayout=new TableLayoutPanel{Dock=DockStyle.Top,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,ColumnCount=1,RowCount=4,Margin=Padding.Empty};
+        for(var i=0;i<exclusionLayout.RowCount;i++)exclusionLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));protectionGroup.Controls.Add(exclusionLayout);settingsLayout.Controls.Add(protectionGroup,0,1);
         var exclusionHelp=new Label{Text="序列号或 VID/PID 任一匹配都会阻止 USB 连接与安装 APK。已默认保护你的 F50 Pro。\n新增规则命中正在使用的 USB 设备时，会先停止该连接。",AutoSize=true,MaximumSize=new Size(820,0),ForeColor=muted,Margin=new Padding(0,0,0,12)};
         exclusionLayout.Controls.Add(exclusionHelp,0,0);
         exclusionLayout.Controls.Add(rules,0,1);exclusionLayout.Controls.Add(Flow(LabeledField("设备序列号",serial),LabeledField("USB VID",vid),LabeledField("USB PID",pid)),0,2);exclusionLayout.Controls.Add(Flow(LabeledField("备注名称",label),addRule,removeRule),0,3);
-        exclusions.SizeChanged+=(_,_)=>exclusionHelp.MaximumSize=new Size(Math.Max(280,exclusions.ClientSize.Width-exclusions.Padding.Horizontal-SystemInformation.VerticalScrollBarWidth-20),0);
+        exclusions.SizeChanged+=(_,_)=>
+        {
+            var width=Math.Max(280,exclusions.ClientSize.Width-exclusions.Padding.Horizontal-SystemInformation.VerticalScrollBarWidth-32);
+            exclusionHelp.MaximumSize=new Size(width,0);ResizeAuthorFooterSettings(width);
+        };
 
         var supportLayout=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=1,RowCount=2};
         supportLayout.RowStyles.Add(new RowStyle(SizeType.Percent,78));supportLayout.RowStyles.Add(new RowStyle(SizeType.Percent,22));
         supportLayout.Controls.Add(BuildDiagnosticsPanel(),0,0);
         var logBox=new GroupBox{Text="连接记录",Dock=DockStyle.Fill,Padding=new Padding(10)};logBox.Controls.Add(log);supportLayout.Controls.Add(logBox,0,1);support.Controls.Add(supportLayout);
 
-        var footer=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=1,RowCount=2,Margin=Padding.Empty,Padding=Padding.Empty};
-        footer.RowStyles.Add(new RowStyle(SizeType.Percent,50));footer.RowStyles.Add(new RowStyle(SizeType.Percent,50));
-        footer.Controls.Add(new Label{Text="只启用一块副屏  ·  点 × 后在托盘继续运行",Dock=DockStyle.Fill,ForeColor=muted,TextAlign=ContentAlignment.MiddleLeft,Margin=Padding.Empty},0,0);
-        var authorRow=new FlowLayoutPanel{Dock=DockStyle.Fill,FlowDirection=FlowDirection.LeftToRight,WrapContents=false,Margin=Padding.Empty,Padding=Padding.Empty};
-        authorRow.Controls.Add(new Label{Text="作者：张林杰（Jey / @linjierd）",AutoSize=true,ForeColor=muted,Margin=new Padding(0,2,12,0)});
-        var github=new LinkLabel{Text="GitHub",AutoSize=true,LinkColor=accent,ActiveLinkColor=accent,VisitedLinkColor=accent,Margin=new Padding(0,2,12,0)};
-        var blog=new LinkLabel{Text="博客：linjie.space",AutoSize=true,LinkColor=accent,ActiveLinkColor=accent,VisitedLinkColor=accent,Margin=new Padding(0,2,0,0)};
-        github.LinkClicked+=(_,_)=>OpenAuthorLink("https://github.com/linjierd");blog.LinkClicked+=(_,_)=>OpenAuthorLink("https://linjie.space/");
-        authorRow.Controls.Add(github);authorRow.Controls.Add(blog);footer.Controls.Add(authorRow,0,1);root.Controls.Add(footer,0,3);
-    }
-    void OpenAuthorLink(string address)
-    {
-        try{Process.Start(new ProcessStartInfo(address){UseShellExecute=true});}
-        catch(Exception ex) when(ex is InvalidOperationException or System.ComponentModel.Win32Exception or System.Security.SecurityException)
-        {Log("无法打开链接："+SafeError(ex));SetStatus("无法打开链接，请手动访问 "+address);}
+        root.Controls.Add(BuildFooter(),0,3);
     }
     void ShowConnectionMode()
     {

@@ -120,6 +120,133 @@ try
             Assert(File.ReadAllText(path) == json); // Loading must not rewrite the user's rules.
         }
     });
+    await Test("Author footer defaults reproduce the public attribution", () =>
+    {
+        var path = Path.Combine(temporary, "author-footer-default.json");
+        var preferences = new AuthorFooterPreferencesStore(path).Load();
+        Assert(preferences.Enabled);
+        Assert(preferences.AuthorText == "作者：张林杰（Jey / @linjierd）");
+        Assert(preferences.GitHubLabel == "GitHub" && preferences.GitHubUrl == "https://github.com/linjierd");
+        Assert(preferences.BlogLabel == "博客：linjie.space" && preferences.BlogUrl == "https://linjie.space/");
+        Assert(!File.Exists(path));
+    });
+    await Test("Author footer roundtrip normalizes custom values and supports hidden links", () =>
+    {
+        var path = Path.Combine(temporary, "author-footer-roundtrip.json");
+        var store = new AuthorFooterPreferencesStore(path);
+        store.Save(AuthorFooterPreferences.CreateDefault());
+        store.Save(new AuthorFooterPreferences
+        {
+            Enabled = false,
+            AuthorText = "  Custom author  ",
+            GitHubLabel = " ",
+            GitHubUrl = " ",
+            BlogLabel = "  Project site  ",
+            BlogUrl = "  HTTPS://Example.COM/tablink  "
+        });
+        var read = store.Load();
+        Assert(!read.Enabled && read.AuthorText == "Custom author");
+        Assert(read.GitHubLabel == "" && read.GitHubUrl == "");
+        Assert(read.BlogLabel == "Project site" && read.BlogUrl == "https://example.com/tablink");
+        Assert(read.NormalizeAndValidate().BlogUrl == read.BlogUrl);
+        var json = File.ReadAllText(path);
+        Assert(json.Contains("\"SchemaVersion\": 1", StringComparison.Ordinal));
+        Assert(!json.Contains("ExcludedDevices", StringComparison.Ordinal));
+        Assert(Directory.GetFiles(Path.GetDirectoryName(path)!, "." + Path.GetFileName(path) + ".*.tmp").Length == 0);
+    });
+    await Test("Old device settings remain compatible and separate from author preferences", () =>
+    {
+        var settingsPath = Path.Combine(temporary, "old-settings.json");
+        const string oldSettings = "{\"SchemaVersion\":1,\"AdbPath\":null,\"ExcludedDevices\":[]}";
+        File.WriteAllText(settingsPath, oldSettings);
+        var deviceSettings = new SettingsStore(settingsPath).Load();
+        Assert(deviceSettings.SchemaVersion == 1 && deviceSettings.ExcludedDevices.Count == 0);
+
+        var authorPath = Path.Combine(temporary, "old-settings-author-footer.json");
+        var authorStore = new AuthorFooterPreferencesStore(authorPath);
+        Assert(authorStore.Load().Enabled);
+        authorStore.Save(AuthorFooterPreferences.CreateDefault());
+        Assert(File.ReadAllText(settingsPath) == oldSettings);
+        Assert(File.Exists(authorPath));
+    });
+    await Test("Damaged or unsafe persisted author preferences fall back without rewriting", () =>
+    {
+        var path = Path.Combine(temporary, "author-footer-damaged.json");
+        var invalidFiles = new[]
+        {
+            "{",
+            "{}",
+            "{\"SchemaVersion\":1,\"AuthorText\":\"A\",\"GitHubLabel\":\"\",\"GitHubUrl\":\"\",\"BlogLabel\":\"\",\"BlogUrl\":\"\"}",
+            "{\"SchemaVersion\":2,\"Enabled\":true,\"AuthorText\":\"A\",\"GitHubLabel\":\"\",\"GitHubUrl\":\"\",\"BlogLabel\":\"\",\"BlogUrl\":\"\"}",
+            "{\"SchemaVersion\":1,\"Enabled\":true,\"AuthorText\":\"A\",\"GitHubLabel\":\"GitHub\",\"GitHubUrl\":\"javascript:alert(1)\",\"BlogLabel\":\"\",\"BlogUrl\":\"\"}",
+            "{\"SchemaVersion\":1,\"Enabled\":true,\"AuthorText\":\"A\",\"GitHubLabel\":\"GitHub\",\"GitHubUrl\":\"https://user:password@example.com/\",\"BlogLabel\":\"\",\"BlogUrl\":\"\"}",
+            "{\"SchemaVersion\":1,\"Enabled\":true,\"enabled\":false,\"AuthorText\":\"A\",\"GitHubLabel\":\"\",\"GitHubUrl\":\"\",\"BlogLabel\":\"\",\"BlogUrl\":\"\"}",
+            "{\"SchemaVersion\":1,\"Enabled\":true,\"AuthorText\":\"A\",\"GitHubLabel\":\"\",\"GitHubUrl\":\"\",\"BlogLabel\":\"\",\"BlogUrl\":\"\",\"Extra\":1}",
+            "{\"SchemaVersion\":1,\"Enabled\":true,\"AuthorText\":\"A\",\"GitHubLabel\":\"\",\"GitHubUrl\":\"\",\"BlogLabel\":\"\",\"BlogUrl\":\"\",\"Extra\":{\"Value\":1,\"value\":2}}"
+        };
+        foreach (var json in invalidFiles)
+        {
+            File.WriteAllText(path, json);
+            var read = new AuthorFooterPreferencesStore(path).Load();
+            Assert(read.Enabled && read.AuthorText == "作者：张林杰（Jey / @linjierd）");
+            Assert(File.ReadAllText(path) == json);
+        }
+    });
+    await Test("Author footer rejects dangerous URLs, partial links and oversized text atomically", () =>
+    {
+        var path = Path.Combine(temporary, "author-footer-invalid-save.json");
+        var store = new AuthorFooterPreferencesStore(path);
+        store.Save(AuthorFooterPreferences.CreateDefault());
+        var original = File.ReadAllText(path);
+
+        void Reject(Action<AuthorFooterPreferences> change)
+        {
+            var candidate = AuthorFooterPreferences.CreateDefault();
+            change(candidate);
+            Throws<ArgumentException>(() => store.Save(candidate));
+            Assert(File.ReadAllText(path) == original);
+        }
+
+        Reject(value => value.GitHubUrl = "http://github.com/linjierd");
+        Reject(value => value.GitHubUrl = "file:///E:/secret.txt");
+        Reject(value => value.GitHubUrl = "https://user:password@example.com/");
+        Reject(value => value.GitHubLabel = "");
+        Reject(value => value.AuthorText = "line one\nline two");
+        Reject(value => value.AuthorText = "line one\u2028line two");
+        Reject(value => value.AuthorText = "safe\u202Etxt.exe");
+        Reject(value => value.AuthorText = "safe\U000E0001txt.exe");
+        Reject(value => value.AuthorText = "broken\uD800surrogate");
+        Reject(value => value.AuthorText = new string('x', AuthorFooterPreferences.MaximumAuthorTextLength + 1));
+        Reject(value => value.BlogLabel = new string('x', AuthorFooterPreferences.MaximumLinkLabelLength + 1));
+        Reject(value => value.BlogUrl = "https://example.com/" + new string('x', AuthorFooterPreferences.MaximumUrlLength));
+        Assert(Directory.GetFiles(Path.GetDirectoryName(path)!, "." + Path.GetFileName(path) + ".*.tmp").Length == 0);
+    });
+    await Test("Author footer failed replacement preserves the committed file and cleans temporary files", () =>
+    {
+        var path = Path.Combine(temporary, "author-footer-locked.json");
+        var store = new AuthorFooterPreferencesStore(path);
+        store.Save(AuthorFooterPreferences.CreateDefault());
+        var original = File.ReadAllBytes(path);
+        using (var locked = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            try
+            {
+                store.Save(new AuthorFooterPreferences
+                {
+                    Enabled = false,
+                    AuthorText = "Custom author",
+                    GitHubLabel = "",
+                    GitHubUrl = "",
+                    BlogLabel = "",
+                    BlogUrl = ""
+                });
+                throw new Exception("Expected the locked destination to reject replacement.");
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+        }
+        Assert(File.ReadAllBytes(path).SequenceEqual(original));
+        Assert(Directory.GetFiles(Path.GetDirectoryName(path)!, "." + Path.GetFileName(path) + ".*.tmp").Length == 0);
+    });
     await Test("Invalid in-memory settings block approval", () =>
     {
         var settings = new DevicePolicySettings();

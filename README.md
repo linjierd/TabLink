@@ -41,6 +41,7 @@ The native Android client supports Android 6.0 / API 23 and later. Actual H.264 
 - Wi-Fi and ordinary USB tethering without developer mode.
 - An ADB-over-USB compatibility route for devices and networks where the native route is unsuitable.
 - A tray-resident Windows host: closing the window with **×** hides it while the active session continues.
+- A Windows **Settings** page where the footer attribution can be shown or hidden and its author, GitHub, and blog text and HTTPS links can be customised without restarting or disconnecting the display.
 - Display-position changes without intentionally tearing down the session; capture and touch mapping are refreshed against the same virtual display.
 - A configurable full-screen Android receiver with a small status overlay and optional single-finger pointer control.
 - Device exclusion rules, trusted-device revocation, connection health stages, bounded repair actions, adaptive quality, and an explicitly exported privacy-filtered support bundle.
@@ -170,6 +171,8 @@ The Windows **Diagnostics and logs** page can export a privacy-filtered support 
 - `README.txt`
 
 The bundle is generated from a typed allow-list and does not read or copy raw logs, screenshots, settings, trust stores, USB receipts, display leases, serial numbers, network addresses, local paths, pairing links, tokens, certificates, or private keys. TabLink neither uploads nor attaches the bundle automatically. It leaves the computer only if the user saves, reviews, and chooses to share it.
+
+Footer attribution preferences are stored only in `%LOCALAPPDATA%\TabLink\author-footer.json`. They are separate from USB exclusion and approval policy, are never included in the support bundle, and do not change the official repository authorship or licence. Only absolute HTTPS links without embedded credentials are accepted.
 
 ## Compatibility catalogue
 
