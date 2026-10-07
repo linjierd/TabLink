@@ -35,7 +35,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'The checked-in Apple Xcode project is stale. Regenerate and commit it.' }
           python .\native\apple\tools\verify_source.py
           if ($LASTEXITCODE -ne 0) { throw 'Apple source verification failed.' }
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
       - name: Verify HarmonyOS localisation resources and project references
